@@ -39,10 +39,4 @@ export class RawgController {
       },
     };
   }
-  
-  @Get('/detail')
-  async getDetail() {
-    const result = await this.rawgService.getDetail();
-    return result;
-  }
 }

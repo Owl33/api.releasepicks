@@ -25,20 +25,7 @@ export class RawgService {
       'https://api.rawg.io/api';
     this.apiKey = this.configService.get<string>('RAWG_API_KEY') || '';
   }
-  async getDetail() {
-    try {
-      const response = await axios.get(`${this.baseUrl}/games/1007217`, {
-        params: {
-          key: this.apiKey,
-        },
-      });
-      console.log(response.data);
-      return response.data;
-    } catch (error) {
-      this.logger.error('RAWG API 호출 실패:', error.message);
-      throw new Error(`RAWG API 호출 실패: ${error.message}`);
-    }
-  }
+
   // 🚀 FIXED: 동적 월별 게임 데이터 조회
   async getMonthlyGames(month: string, pageSize: number = 40) {
     try {
@@ -54,20 +41,20 @@ export class RawgService {
         params: {
           key: this.apiKey,
           dates: `${startDate},${endDate}`, // 동적 날짜 범위
-          page_size: 30,
+          page_size: 50,
           ordering: '-added', // 인기도 기준 정렬
         },
         timeout: 10000,
       });
-
       const { count, results } = response.data;
 
       this.logger.log(
-        `RAWG ${month} 게임 조회 완료: ${results.length}개 (총 ${count}개)`,
+        `RAWG ${month} 게임 조회 완료: ${results.length}개 (총 ${count}개),
+     added filter로 ${results.filter((r) => r.added >= 3).length}개}`,
       );
       return {
         totalCount: count,
-        games: results,
+        games: results.filter((r) => r.added >= 3),
         page: 1,
         pageSize,
       };
@@ -93,7 +80,20 @@ export class RawgService {
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }
+  async getDevloper(gameId: number) {
+    try {
+      const response = await axios.get(`${this.baseUrl}/developers/${gameId}`, {
+        params: {
+          key: this.apiKey,
+        },
+      });
 
+      return response.data;
+    } catch (error) {
+      this.logger.error('RAWG API 호출 실패:', error.message);
+      throw new Error(`RAWG API 호출 실패: ${error.message}`);
+    }
+  }
   /**
    * 월별 게임 캘린더 데이터 조회 (완성된 형태)
    * RAWG API + 스토어 링크 통합 (YouTube는 외부에서 추가)
@@ -117,9 +117,12 @@ export class RawgService {
             game.name,
             game.platforms,
           );
+          const details = await this.getDetails(game.id);
+
           const video = await this.getYouTubeTrailer(game.name);
           return {
             ...calendarItem,
+            ...details,
             storeLinks,
             video,
           };
@@ -174,14 +177,12 @@ export class RawgService {
       added: game.added,
       added_by_status: game.added_by_status,
       screenshots: game.short_screenshots?.slice(1).map((item) => item.image), // 첫 번째는 메인 이미지와 동일
-
       // ESRB 등급
       esrbRating: game.esrb_rating?.name || null,
 
       // 🆕 평점 정보 활성화
       rating: game.rating,
       ratingsCount: game.ratings_count,
-      metacritic: game.metacritic,
     };
   }
 
@@ -275,6 +276,25 @@ export class RawgService {
       return undefined;
     }
   }
+  private async getDetails(gameId: number) {
+    try {
+      const response = await axios.get(`${this.baseUrl}/games/${gameId}`, {
+        params: {
+          key: this.apiKey,
+        },
+      });
+      const results = response.data;
+      return {
+        slugName: results.slug,
+        website: results.website,
+        developers: results.developers.map((d) => d.name),
+        publishers: results.publishers.map((p) => p.name),
+      };
+    } catch (error) {
+      this.logger.error('RAWG API 호출 실패:', error.message);
+      throw new Error(`RAWG API 호출 실패: ${error.message}`);
+    }
+  }
 
   /**
    * 필터링 및 정렬 적용
@@ -354,9 +374,9 @@ export class RawgService {
         (platforms ?? []).map((p) => {
           const slug = p.platform.slug;
 
-          if (slug.includes('playstation')) return 'playstation';
-          if (slug.includes('xbox')) return 'xbox';
-          if (slug.includes('nintendo')) return 'nintendo';
+          if (slug.includes('playstation')) return 'PlayStation';
+          if (slug.includes('xbox')) return 'Xbox';
+          if (slug.includes('nintendo')) return 'Nintendo';
           if (['pc', 'macos', 'linux'].some((os) => slug.includes(os)))
             return 'pc';
 

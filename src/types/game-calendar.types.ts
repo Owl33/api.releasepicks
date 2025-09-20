@@ -28,7 +28,6 @@ export interface RawgGameData {
   rating: number;
   ratingsCount: number;
 
-  metacritic: number;
 }
 
 // 스토어 URL 매핑 정보
@@ -56,32 +55,7 @@ export interface GameCalendarItem extends RawgGameData {
   video?: string;
   early_access: boolean;
 }
-const PLATFORM_MAP: Record<string, string> = {
-  // PC
-  pc: 'pc',
-  macos: 'pc',
-  linux: 'pc',
 
-  // PlayStation 계열
-  playstation: 'playstation',
-  playstation3: 'playstation',
-  playstation4: 'playstation',
-  playstation5: 'playstation',
-  'ps-vita': 'playstation',
-  psp: 'playstation',
-
-  // Xbox 계열
-  xbox: 'xbox',
-  xbox360: 'xbox',
-  'xbox-one': 'xbox',
-  'xbox-series-x': 'xbox',
-
-  // 닌텐도 계열
-  'nintendo-switch': 'nintendo',
-  wii: 'nintendo',
-  'wii-u': 'nintendo',
-  '3ds': 'nintendo',
-};
 // 월별 캘린더 응답 데이터
 export interface MonthlyCalendarResponse {
   month: string; // "2025-01" 형식
