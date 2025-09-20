@@ -19,7 +19,7 @@ export class GameDetail {
   rating: number;
 
   @Column({ type: 'boolean', nullable: true })
-  early_acceess: boolean;
+  early_access: boolean;
 
   @Column({ type: 'integer', nullable: true })
   ratings_count: number;

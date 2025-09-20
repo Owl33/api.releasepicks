@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import axios from 'axios';
 import { YouTubeService } from '../youtube/youtube.service';
+import { Game } from '../entities/game.entity';
+import { GameDetail } from '../entities/game-detail.entity';
 import {
   GameCalendarItem,
   MonthlyCalendarResponse,
@@ -17,6 +21,9 @@ export class RawgService {
   private readonly apiKey: string;
 
   constructor(
+    @InjectRepository(Game)
+    private gameRepository: Repository<Game>,
+    private dataSource: DataSource,
     private configService: ConfigService,
     private readonly youtubeService: YouTubeService,
   ) {
@@ -26,37 +33,67 @@ export class RawgService {
     this.apiKey = this.configService.get<string>('RAWG_API_KEY') || '';
   }
 
-  // 🚀 FIXED: 동적 월별 게임 데이터 조회
-  async getMonthlyGames(month: string, pageSize: number = 40) {
+  // 🚀 다중 페이지 월별 게임 데이터 조회
+  async getMonthlyGames(month: string, maxGames: number = 200) {
     try {
       // 동적 날짜 범위 계산
       const [year, monthNum] = month.split('-');
       const startDate = `${year}-${monthNum.padStart(2, '0')}-01`;
-
-      // 월의 마지막 날 계산
       const lastDay = new Date(parseInt(year), parseInt(monthNum), 0).getDate();
       const endDate = `${year}-${monthNum.padStart(2, '0')}-${lastDay.toString().padStart(2, '0')}`;
 
-      const response = await axios.get(`${this.baseUrl}/games`, {
-        params: {
-          key: this.apiKey,
-          dates: `${startDate},${endDate}`, // 동적 날짜 범위
-          page_size: 50,
-          ordering: '-added', // 인기도 기준 정렬
-        },
-        timeout: 10000,
-      });
-      const { count, results } = response.data;
+      const allGames: any[] = [];
+      let page = 1;
+      let totalCount = 0;
+      const pageSize = 40;
+
+      while (allGames.length < maxGames) {
+        this.logger.debug(`RAWG ${month} ${page}페이지 조회 중...`);
+
+        const response = await axios.get(`${this.baseUrl}/games`, {
+          params: {
+            key: this.apiKey,
+            dates: `${startDate},${endDate}`,
+            page_size: pageSize,
+            page: page,
+            ordering: '-added',
+          },
+          timeout: 10000,
+        });
+
+        const { count, results, next } = response.data;
+        totalCount = count;
+
+        if (!results || results.length === 0) {
+          this.logger.debug(`${page}페이지에서 데이터 없음, 종료`);
+          break;
+        }
+
+        // added >= 3 필터링
+        const filteredResults = results.filter((r) => r.added >= 3);
+        allGames.push(...filteredResults);
+
+        this.logger.debug(
+          `${page}페이지: ${results.length}개 → 필터링 후 ${filteredResults.length}개 (누적: ${allGames.length}개)`
+        );
+
+        // 다음 페이지가 없으면 종료
+        if (!next || allGames.length >= maxGames) {
+          break;
+        }
+
+        page++;
+      }
 
       this.logger.log(
-        `RAWG ${month} 게임 조회 완료: ${results.length}개 (총 ${count}개),
-     added filter로 ${results.filter((r) => r.added >= 3).length}개}`,
+        `RAWG ${month} 전체 조회 완료: ${allGames.length}개 수집 (총 ${totalCount}개 중, ${page}페이지)`
       );
+
       return {
-        totalCount: count,
-        games: results.filter((r) => r.added >= 3),
-        page: 1,
-        pageSize,
+        totalCount,
+        games: allGames.slice(0, maxGames), // 최대 개수 제한
+        page,
+        pageSize: allGames.length,
       };
     } catch (error) {
       this.logger.error('RAWG API 호출 실패:', error.message);
@@ -287,8 +324,8 @@ export class RawgService {
       return {
         slugName: results.slug,
         website: results.website,
-        developers: results.developers.map((d) => d.name),
-        publishers: results.publishers.map((p) => p.name),
+        developers: results.developers?.map((d) => d.name) || [],
+        publishers: results.publishers?.map((p) => p.name) || [],
       };
     } catch (error) {
       this.logger.error('RAWG API 호출 실패:', error.message);
@@ -384,5 +421,106 @@ export class RawgService {
         }),
       ),
     );
+  }
+
+  // 🆕 기존 데이터 과정을 활용한 월별 게임 데이터 저장
+  async saveMonthlyGamesToDatabase(month: string): Promise<{
+    saved: number;
+    skipped: number;
+    errors: number;
+  }> {
+    try {
+      this.logger.log(`${month} 월별 게임 데이터 저장 시작`);
+
+      // 1. 기존 데이터 처리 로직 활용 (다중 페이지)
+      const rawgData = await this.getMonthlyGames(month, 200);
+      const results = { saved: 0, skipped: 0, errors: 0 };
+
+      // 2. 각 게임에 대해 가공 + 저장
+      for (const game of rawgData.games as any[]) {
+        try {
+          // 기존 데이터 처리 로직 그대로 사용
+          const calendarItem = this.convertRawgToCalendarItem(game);
+          const storeLinks = await this.getStoreLinks(
+            game.id,
+            game.name,
+            game.platforms,
+          );
+          const details = await this.getDetails(game.id);
+
+          // DB에 저장 (분기 추가)
+          await this.saveToDatabase(game, calendarItem, details, storeLinks);
+          results.saved++;
+          this.logger.debug(`게임 저장 완료: ${game.name}`);
+        } catch (error) {
+          if (error.code === '23505' || error.message?.includes('중복')) {
+            results.skipped++;
+            this.logger.debug(`게임 중복 건너뜀: ${game.name}`);
+          } else {
+            this.logger.error(`게임 저장 실패: ${game.name}`, error.message);
+            results.errors++;
+          }
+        }
+      }
+
+      this.logger.log(
+        `${month} 월별 게임 데이터 저장 완료: 저장 ${results.saved}개, 건너뜀 ${results.skipped}개, 오류 ${results.errors}개`,
+      );
+
+      return results;
+    } catch (error) {
+      this.logger.error(`월별 게임 데이터 저장 실패:`, error.message);
+      throw new Error(`월별 게임 데이터 저장 실패: ${error.message}`);
+    }
+  }
+
+  // 정리된 데이터를 DB에 저장
+  private async saveToDatabase(
+    rawgGame: any,
+    calendarItem: any,
+    details: any,
+    storeLinks: any
+  ) {
+    // 중복 체크
+    const existing = await this.gameRepository.findOne({
+      where: { rawg_id: rawgGame.id }
+    });
+    if (existing) {
+      throw { code: '23505', message: '중복 게임' };
+    }
+
+    return await this.dataSource.transaction(async manager => {
+      // Game Entity 생성 및 저장
+      const game = manager.create(Game, {
+        rawg_id: rawgGame.id,
+        name: rawgGame.name,
+        released: new Date(rawgGame.released),
+        platforms: calendarItem.platforms,
+        genres: calendarItem.genres,
+        added: rawgGame.added,
+        image: rawgGame.background_image,
+        developers: details.developers || [],
+        publishers: details.publishers || [],
+      });
+      const savedGame = await manager.save(game);
+
+      // GameDetail Entity 생성 및 저장
+      const gameDetail = manager.create(GameDetail, {
+        game_id: savedGame.id,
+        slug_name: details.slugName,
+        tags: calendarItem.tags,
+        rating: calendarItem.rating,
+        early_access: calendarItem.early_access,
+        ratings_count: calendarItem.ratingsCount,
+        screenshots: calendarItem.screenshots,
+        store_links: storeLinks,
+        esrb_rating: calendarItem.esrbRating,
+        description: rawgGame.description_raw,
+        website: details.website,
+      });
+      await manager.save(gameDetail);
+
+      return savedGame;
+    });
   }
 }

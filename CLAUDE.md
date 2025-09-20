@@ -33,7 +33,7 @@ Claude Code 작업 가이드 문서
 - **프론트엔드**: React + Next.js (Phase 3)
 
 #### RAWG 모듈 → **데이터 수집 전담**
-- `POST /rawg/collect/:month` - 월별 게임 데이터 수집 → DB 저장
+- `POST /rawg/released/:month` - 월별 게임 데이터 수집 → DB 저장
 
 
 #### GameCalendar 모듈 → **서비스 제공 전담**

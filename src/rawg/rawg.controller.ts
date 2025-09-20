@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query } from '@nestjs/common';
 import { RawgService } from './rawg.service';
 import { CalendarFilters } from '../types/game-calendar.types';
 
@@ -37,6 +37,18 @@ export class RawgController {
         filtering: true,
         sorting: true,
       },
+    };
+  }
+
+  @Post('save/:month')
+  async saveMonthlyGames(@Param('month') month: string) {
+    const result = await this.rawgService.saveMonthlyGamesToDatabase(month);
+
+    return {
+      success: true,
+      message: `${month} 게임 데이터 저장 완료`,
+      data: result,
+      summary: `총 ${result.saved + result.skipped + result.errors}개 중 ${result.saved}개 저장됨`
     };
   }
 }
