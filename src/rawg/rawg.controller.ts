@@ -6,7 +6,7 @@ import { CalendarFilters } from '../types/game-calendar.types';
 export class RawgController {
   constructor(private readonly rawgService: RawgService) {}
 
-  @Get('calendar/:month')
+  @Get('released/:month')
   async getMonthlyCalendar(
     @Param('month') month: string,
     @Query() query: Partial<CalendarFilters>,

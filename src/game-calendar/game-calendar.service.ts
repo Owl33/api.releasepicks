@@ -1,24 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Game } from '../entities/game.entity';
+import { GameDetail } from '../entities/game-detail.entity';
 
 /**
  * GameCalendarService
  *
- * 추후 개인 DB와 소통하는 독립적인 서비스
- * 현재는 비어있는 상태 (Phase 2에서 DB 연동 예정)
+ * TypeORM을 사용한 게임 캘린더 서비스
  *
  * 역할:
- * - 내부 DB에서 게임 캘린더 데이터 조회
- * - 캐시된 게임 정보 제공
- * - DB 기반 필터링 및 정렬
+ * - DB에서 게임 캘린더 데이터 조회
+ * - 게임 정보 제공
+ * - Repository 패턴 사용
  */
 @Injectable()
 export class GameCalendarService {
   private readonly logger = new Logger(GameCalendarService.name);
 
-  constructor() {
-    // 독립적인 서비스 - 다른 서비스 의존성 없음
-    // 추후 DB Repository만 의존하게 될 예정
+  constructor(
+    @InjectRepository(Game)
+    private readonly gameRepository: Repository<Game>,
+    @InjectRepository(GameDetail)
+    private readonly gameDetailRepository: Repository<GameDetail>,
+  ) {}
+
+  // 여기에 코드를 추가하세요
+  // 예시:
+  async getAllGames() {
+    return this.gameRepository.find();
   }
-
-
 }

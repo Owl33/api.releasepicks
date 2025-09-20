@@ -5,7 +5,7 @@
 
 // 기본 게임 정보 (RAWG API 기반)
 export interface RawgGameData {
-  id: number;
+  rawgId: number;
   name: string;
   released: string | null;
   tba: boolean;

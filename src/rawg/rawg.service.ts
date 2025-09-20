@@ -113,11 +113,11 @@ export class RawgService {
         rawgData.games.map(async (game) => {
           const calendarItem = this.convertRawgToCalendarItem(game);
           const storeLinks = await this.getStoreLinks(
-            game.id,
+            game.rawgId,
             game.name,
             game.platforms,
           );
-          const details = await this.getDetails(game.id);
+          const details = await this.getDetails(game.rawgId);
 
           const video = await this.getYouTubeTrailer(game.name);
           return {
@@ -151,7 +151,7 @@ export class RawgService {
    */
   private convertRawgToCalendarItem(game: any): GameCalendarItem {
     return {
-      id: game.id,
+      rawgId: game.id,
       name: game.name,
       //To Be Announced true라면 출시일이 미정인 상태
       tba: game.tba,
