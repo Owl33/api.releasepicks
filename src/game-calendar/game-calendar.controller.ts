@@ -1,14 +1,18 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { GameCalendarService } from './game-calendar.service';
 
 @Controller('games')
 export class GameCalendarController {
   constructor(private readonly gameCalendarService: GameCalendarService) {}
 
-  // 여기에 API 엔드포인트를 추가하세요
-  // 예시:
-  @Get('/')
-  async getAllGames() {
-    return this.gameCalendarService.getAllGames();
+  // 전체 조회
+  @Get('/:yearMonth')
+  async getAllGames(@Param('yearMonth') yearMonth: string) {
+    const [yearStr, monthStr] = yearMonth.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr); // 1~12
+    const res = await this.gameCalendarService.getGamesByYearMonth(year, month);
+    console.log(res);
+    return res;
   }
 }
