@@ -47,7 +47,7 @@ export class RawgService {
       let totalCount = 0;
       const pageSize = 40;
 
-      while (allGames.length < maxGames) {
+      while (allGames.length < 20) {
         this.logger.debug(`RAWG ${month} ${page}페이지 조회 중...`);
 
         const response = await axios.get(`${this.baseUrl}/games`, {
@@ -74,7 +74,7 @@ export class RawgService {
         allGames.push(...filteredResults);
 
         this.logger.debug(
-          `${page}페이지: ${results.length}개 → 필터링 후 ${filteredResults.length}개 (누적: ${allGames.length}개)`
+          `${page}페이지: ${results.length}개 → 필터링 후 ${filteredResults.length}개 (누적: ${allGames.length}개)`,
         );
 
         // 다음 페이지가 없으면 종료
@@ -86,7 +86,7 @@ export class RawgService {
       }
 
       this.logger.log(
-        `RAWG ${month} 전체 조회 완료: ${allGames.length}개 수집 (총 ${totalCount}개 중, ${page}페이지)`
+        `RAWG ${month} 전체 조회 완료: ${allGames.length}개 수집 (총 ${totalCount}개 중, ${page}페이지)`,
       );
 
       return {
@@ -131,6 +131,26 @@ export class RawgService {
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }
+
+  // 🔥 신규 추가: RAWG API movies 엔드포인트 테스트
+  async getMovies(gameId: number) {
+    try {
+      this.logger.debug(`RAWG movies API 테스트: ${gameId}`);
+      const response = await axios.get(
+        `${this.baseUrl}/games/${gameId}/movies`,
+        {
+          params: {
+            key: this.apiKey,
+          },
+        },
+      );
+
+      return response.data;
+    } catch (error) {
+      this.logger.error('RAWG Movies API 호출 실패:', error.message);
+      throw new Error(`RAWG Movies API 호출 실패: ${error.message}`);
+    }
+  }
   /**
    * 월별 게임 캘린더 데이터 조회 (완성된 형태)
    * RAWG API + 스토어 링크 통합 (YouTube는 외부에서 추가)
@@ -150,13 +170,13 @@ export class RawgService {
         rawgData.games.map(async (game) => {
           const calendarItem = this.convertRawgToCalendarItem(game);
           const storeLinks = await this.getStoreLinks(
-            game.rawgId,
-            game.name,
-            game.platforms,
+            calendarItem.rawgId,
+            calendarItem.name,
+            calendarItem.platforms,
+            calendarItem.stores,
           );
-          const details = await this.getDetails(game.rawgId);
-
-          const video = await this.getYouTubeTrailer(game.name);
+          const details = await this.getDetails(calendarItem.rawgId);
+          const video = await this.getYouTubeTrailer(calendarItem.name);
           return {
             ...calendarItem,
             ...details,
@@ -230,6 +250,7 @@ export class RawgService {
     gameId: number,
     gameName: string,
     platforms: any,
+    stores: any,
   ): Promise<StoreLinks> {
     const STORE_KEYS = [
       'steam',
@@ -250,7 +271,6 @@ export class RawgService {
       // 3: "xbox",
       // 4: "nintendo"
     };
-
     const links: StoreLinks = {};
     const encodedName = encodeURIComponent(gameName);
     const slugs: string[] = (platforms ?? []).map((p: any) =>
@@ -260,21 +280,18 @@ export class RawgService {
     try {
       // 1) RAWG 결과로 먼저 채우기
       const res = await this.getStore(gameId);
+      console.log('리스폰스', res);
       res?.results?.forEach((r: any) => {
         const key = STORE_ID_MAP[r.store_id];
         if (key && !links[key] && r.url) links[key] = r.url;
       });
-
+      console.log('슬러그', slugs);
       // 2) 남은 스토어는 플랫폼 기반 fallback
       for (const s of STORE_KEYS) {
         if (links[s]) continue;
 
         if (s === 'steam' && slugs.includes('pc'))
           links.steam = `https://store.steampowered.com/search/?term=${encodedName}`;
-        if (s === 'gog' && slugs.includes('pc'))
-          links.gog = `https://www.gog.com/games?search=${encodedName}`;
-        if (s === 'epic' && slugs.includes('pc'))
-          links.epic = `https://store.epicgames.com/ko/expanded-search-results?q=${encodedName}`;
         if (s === 'playstation' && slugs.some((x) => x.includes('playstation')))
           links.playstation = `https://store.playstation.com/search/${encodedName}`;
         if (s === 'xbox' && slugs.some((x) => x.includes('xbox')))
@@ -295,19 +312,29 @@ export class RawgService {
 
   /**
    * 게임명 기반 YouTube 트레일러 조회
+   * 🔥 UPDATED: youtube-sr 기반 비디오 ID 처리
    */
   private async getYouTubeTrailer(
     gameName: string,
   ): Promise<string | undefined> {
     try {
-      this.logger.debug(`YouTube 트레일러 조회: ${gameName}`);
+      this.logger.debug(`🎬 YouTube 트레일러 조회 (youtube-sr): ${gameName}`);
 
-      // YouTubeService를 사용하여 실제 트레일러 검색
-      const trailer = await this.youtubeService.getSimpleTrailer(gameName);
-      return trailer;
+      // 🔥 NEW: YouTubeService에서 비디오 ID만 받아옴 (quota 없음)
+      const videoId = await this.youtubeService.getSimpleTrailer(gameName);
+
+      if (videoId) {
+        // 비디오 ID를 전체 YouTube URL로 변환
+        const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        this.logger.debug(`✅ 트레일러 발견: ${youtubeUrl}`);
+        return youtubeUrl;
+      }
+
+      this.logger.debug(`❌ 트레일러 없음: ${gameName}`);
+      return undefined;
     } catch (error) {
       this.logger.warn(
-        `YouTube 트레일러 조회 실패: ${gameName}`,
+        `❌ YouTube 트레일러 조회 실패: ${gameName}`,
         error.message,
       );
       return undefined;
@@ -442,9 +469,10 @@ export class RawgService {
           // 기존 데이터 처리 로직 그대로 사용
           const calendarItem = this.convertRawgToCalendarItem(game);
           const storeLinks = await this.getStoreLinks(
-            game.id,
-            game.name,
-            game.platforms,
+            calendarItem.rawgId,
+            calendarItem.name,
+            calendarItem.platforms,
+            calendarItem.stores,
           );
           const details = await this.getDetails(game.id);
 
@@ -479,17 +507,17 @@ export class RawgService {
     rawgGame: any,
     calendarItem: any,
     details: any,
-    storeLinks: any
+    storeLinks: any,
   ) {
     // 중복 체크
     const existing = await this.gameRepository.findOne({
-      where: { rawg_id: rawgGame.id }
+      where: { rawg_id: rawgGame.id },
     });
     if (existing) {
       throw { code: '23505', message: '중복 게임' };
     }
 
-    return await this.dataSource.transaction(async manager => {
+    return await this.dataSource.transaction(async (manager) => {
       // Game Entity 생성 및 저장
       const game = manager.create(Game, {
         rawg_id: rawgGame.id,

@@ -28,6 +28,8 @@ export class GameCalendarService {
   // 여기에 코드를 추가하세요
   // 예시:
   async getAllGames() {
-    return this.gameRepository.find();
+    return this.gameRepository.find({
+      take: 10,
+    });
   }
 }
