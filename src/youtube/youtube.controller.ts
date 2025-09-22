@@ -1,7 +1,14 @@
-import { Controller, Get, Param, Query, HttpStatus, HttpException } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  HttpStatus,
+  HttpException,
+} from '@nestjs/common';
 import { YouTubeService } from './youtube.service';
 import { YouTubeSearchFilters } from '../types/youtube.types';
-import { ApiResponse } from '../types/game-calendar.types';
+import { ApiResponse } from '../types/game-calendar-unified.types';
 
 @Controller('youtube')
 export class YouTubeController {
@@ -14,7 +21,6 @@ export class YouTubeController {
    * @param gameName - 게임명
    * @param query - 검색 옵션
    */
-
 
   /**
    * 간단한 트레일러 조회 (게임 캘린더용)
@@ -57,6 +63,4 @@ export class YouTubeController {
       );
     }
   }
-
- 
 }

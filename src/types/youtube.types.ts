@@ -64,7 +64,9 @@ export interface GameTrailerResult {
   gameName?: string;
   searchDate?: string;
   bestTrailer?: YouTubeSearchItem & { confidenceScore: TrailerConfidenceScore };
-  alternativeTrailers?: Array<YouTubeSearchItem & { confidenceScore: TrailerConfidenceScore }>;
+  alternativeTrailers?: Array<
+    YouTubeSearchItem & { confidenceScore: TrailerConfidenceScore }
+  >;
   searchAttempts?: number;
   searchQueries?: string[];
   noTrailerFound?: boolean;

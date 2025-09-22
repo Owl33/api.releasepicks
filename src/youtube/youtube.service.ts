@@ -25,7 +25,12 @@ export class YouTubeService {
     'activision',
     'bethesda',
   ];
-  private readonly trailerKeywords = ['trailer', 'official trailer', 'gameplay trailer', 'launch trailer'];
+  private readonly trailerKeywords = [
+    'trailer',
+    'official trailer',
+    'gameplay trailer',
+    'launch trailer',
+  ];
   private readonly excludeKeywords = [
     'review',
     'reaction',
@@ -37,7 +42,9 @@ export class YouTubeService {
   ];
 
   constructor() {
-    this.logger.log('🎬 YouTubeService 초기화: youtube-sr 패키지 사용 (quota 없음)');
+    this.logger.log(
+      '🎬 YouTubeService 초기화: youtube-sr 패키지 사용 (quota 없음)',
+    );
   }
 
   /**
@@ -48,7 +55,7 @@ export class YouTubeService {
     gameName: string,
     options: Partial<YouTubeSearchFilters> = {},
   ): Promise<GameTrailerResult> {
-    this.logger.log(`🎬 YouTube 트레일러 검색 (youtube-sr): ${gameName}`);
+    // this.logger.log(`🎬 YouTube 트레일러 검색 (youtube-sr): ${gameName}`);
 
     try {
       // 다양한 검색 쿼리 시도
@@ -59,8 +66,8 @@ export class YouTubeService {
         `${gameName} trailer`,
       ];
 
-      let allVideos: any[] = [];
-      let successfulQueries: string[] = [];
+      const allVideos: any[] = [];
+      const successfulQueries: string[] = [];
 
       for (const query of queries) {
         try {
@@ -73,7 +80,9 @@ export class YouTubeService {
             this.logger.debug(`"${query}" 검색 결과: ${videos.length}개`);
           }
         } catch (queryError) {
-          this.logger.warn(`검색 쿼리 실패: "${query}" - ${queryError.message}`);
+          this.logger.warn(
+            `검색 쿼리 실패: "${query}" - ${queryError.message}`,
+          );
           continue;
         }
       }
@@ -90,23 +99,32 @@ export class YouTubeService {
       }
 
       // 중복 제거 (비디오 ID 기준)
-      const uniqueVideos = allVideos.filter((video, index, self) =>
-        index === self.findIndex(v => v.id === video.id)
+      const uniqueVideos = allVideos.filter(
+        (video, index, self) =>
+          index === self.findIndex((v) => v.id === video.id),
       );
 
       // youtube-sr 결과를 YouTubeSearchItem 형식으로 변환
-      const convertedItems = uniqueVideos.map((video) => this.convertYoutubeSrToSearchItem(video));
+      const convertedItems = uniqueVideos.map((video) =>
+        this.convertYoutubeSrToSearchItem(video),
+      );
 
       // 신뢰도 계산 및 정렬
-      const scoredItems = convertedItems.map((item) => ({
-        ...item,
-        confidenceScore: this.calculateSimpleConfidence(item, gameName),
-      })).sort((a, b) => b.confidenceScore.totalScore - a.confidenceScore.totalScore);
+      const scoredItems = convertedItems
+        .map((item) => ({
+          ...item,
+          confidenceScore: this.calculateSimpleConfidence(item, gameName),
+        }))
+        .sort(
+          (a, b) => b.confidenceScore.totalScore - a.confidenceScore.totalScore,
+        );
 
       const bestTrailer = scoredItems[0];
       const alternativeTrailers = scoredItems.slice(1, 4); // 상위 3개 대안
 
-      this.logger.log(`🎆 최고 트레일러 발견: "${bestTrailer.title}" (신뢰도: ${bestTrailer.confidenceScore.totalScore.toFixed(2)})`);
+      // this.logger.log(
+      //   `🎆 최고 트레일러 발견: "${bestTrailer.title}" (신뢰도: ${bestTrailer.confidenceScore.totalScore.toFixed(2)})`,
+      // );
 
       return {
         gameName,
@@ -118,10 +136,10 @@ export class YouTubeService {
         noTrailerFound: false,
       };
     } catch (error) {
-      this.logger.error(
-        `❌ YouTube 트레일러 검색 실패: ${gameName}`,
-        error.message,
-      );
+      // this.logger.error(
+      //   `❌ YouTube 트레일러 검색 실패: ${gameName}`,
+      //   error.message,
+      // );
       return {
         gameName,
         searchDate: new Date().toISOString(),
@@ -141,12 +159,12 @@ export class YouTubeService {
   async getSimpleTrailer(gameName: string): Promise<string | undefined> {
     // 입력 검증
     if (!gameName || gameName.trim().length === 0) {
-      this.logger.warn('❌ 유효하지 않은 게임명');
+      // this.logger.warn('❌ 유효하지 않은 게임명');
       return undefined;
     }
 
     const sanitizedGameName = this.sanitizeGameName(gameName);
-    this.logger.debug(`🎬 간단 트레일러 검색: ${sanitizedGameName}`);
+    // this.logger.debug(`🎬 간단 트레일러 검색: ${sanitizedGameName}`);
 
     // 다중 검색 쿼리 전략 (fallback 포함)
     const searchStrategies = [
@@ -168,14 +186,14 @@ export class YouTubeService {
             const bestVideo = this.selectBestVideo(videos, sanitizedGameName);
 
             if (bestVideo && bestVideo.id) {
-              this.logger.debug(
-                `✅ 트레일러 발견: "${bestVideo.title}" (ID: ${bestVideo.id}, 검색어: "${query}")`,
-              );
+              // this.logger.debug(
+              //   `✅ 트레일러 발견: "${bestVideo.title}" (ID: ${bestVideo.id}, 검색어: "${query}")`,
+              // );
               return bestVideo.id;
             }
           }
         } catch (error) {
-          this.logger.debug(`⚠️ 검색 시도 실패: "${query}" - ${error.message}`);
+          // this.logger.debug(`⚠️ 검색 시도 실패: "${query}" - ${error.message}`);
           // 계속해서 다음 전략 시도
           continue;
         }
@@ -183,7 +201,7 @@ export class YouTubeService {
 
       // 첫 번째 시도 실패 시 잠시 대기 후 재시도
       if (attempt === 0) {
-        this.logger.debug('🔄 첫 번째 시도 실패, 1초 후 재시도');
+        // this.logger.debug('🔄 첫 번째 시도 실패, 1초 후 재시도');
         await this.sleep(1000);
       }
     }
@@ -206,7 +224,10 @@ export class YouTubeService {
   /**
    * 타임아웃이 포함된 검색
    */
-  private async searchWithTimeout(query: string, timeoutMs: number): Promise<any[]> {
+  private async searchWithTimeout(
+    query: string,
+    timeoutMs: number,
+  ): Promise<any[]> {
     return Promise.race([
       YouTube.search(query, { limit: 5 }),
       new Promise((_, reject) =>
@@ -248,13 +269,18 @@ export class YouTubeService {
     if (title.includes(normalizedGameName)) score += 0.6;
 
     // 트레일러 키워드
-    if (this.trailerKeywords.some(keyword => title.includes(keyword))) score += 0.3;
+    if (this.trailerKeywords.some((keyword) => title.includes(keyword)))
+      score += 0.3;
 
     // 공식 채널
-    if (this.officialChannelKeywords.some(keyword => channel.includes(keyword))) score += 0.2;
+    if (
+      this.officialChannelKeywords.some((keyword) => channel.includes(keyword))
+    )
+      score += 0.2;
 
     // 제외 키워드 페널티
-    if (this.excludeKeywords.some(keyword => title.includes(keyword))) score -= 0.5;
+    if (this.excludeKeywords.some((keyword) => title.includes(keyword)))
+      score -= 0.5;
 
     return Math.max(0, score);
   }
@@ -263,7 +289,7 @@ export class YouTubeService {
    * Sleep 유틸리티
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -274,7 +300,9 @@ export class YouTubeService {
       videoId: video.id,
       title: video.title || 'Unknown Title',
       description: video.description || '',
-      thumbnailUrl: video.thumbnail?.url || `https://img.youtube.com/vi/${video.id}/hqdefault.jpg`,
+      thumbnailUrl:
+        video.thumbnail?.url ||
+        `https://img.youtube.com/vi/${video.id}/hqdefault.jpg`,
       publishedAt: video.uploadDate || new Date().toISOString(),
       channelId: video.channel?.id || '',
       channelTitle: video.channel?.name || 'Unknown Channel',
@@ -304,40 +332,45 @@ export class YouTubeService {
 
     // 1. 제목 매칭 검사 (향상된 알고리즘)
     const exactTitleMatch = normalizedTitle.includes(normalizedGameName);
-    const partialTitleMatch = normalizedGameName.split(' ').some(word =>
-      word.length > 2 && normalizedTitle.includes(word)
-    );
-    const titleMatchScore = exactTitleMatch ? 0.6 : (partialTitleMatch ? 0.3 : 0);
+    const partialTitleMatch = normalizedGameName
+      .split(' ')
+      .some((word) => word.length > 2 && normalizedTitle.includes(word));
+    const titleMatchScore = exactTitleMatch ? 0.6 : partialTitleMatch ? 0.3 : 0;
 
     // 2. 트레일러 키워드 검사
-    const hasTrailerKeyword = this.trailerKeywords.some(keyword =>
-      normalizedTitle.includes(keyword)
+    const hasTrailerKeyword = this.trailerKeywords.some((keyword) =>
+      normalizedTitle.includes(keyword),
     );
     const trailerScore = hasTrailerKeyword ? 0.4 : 0;
 
     // 3. 공식 채널 검사 (향상된 검사)
     const isOfficialChannel = this.officialChannelKeywords.some((keyword) =>
-      normalizedChannel.includes(keyword)
+      normalizedChannel.includes(keyword),
     );
     const channelScore = isOfficialChannel ? 0.3 : 0;
 
     // 4. 제외 키워드 검사 (페널티)
-    const hasExcludeKeyword = this.excludeKeywords.some(keyword =>
-      normalizedTitle.includes(keyword)
+    const hasExcludeKeyword = this.excludeKeywords.some((keyword) =>
+      normalizedTitle.includes(keyword),
     );
     const excludePenalty = hasExcludeKeyword ? -0.5 : 0;
 
     // 5. 최종 점수 계산
-    const totalScore = Math.max(0, titleMatchScore + trailerScore + channelScore + excludePenalty);
+    const totalScore = Math.max(
+      0,
+      titleMatchScore + trailerScore + channelScore + excludePenalty,
+    );
 
     // 6. 디버깅 정보
-    this.logger.debug(`신뢰도 계산: "${item.title}" - 점수: ${totalScore.toFixed(2)} (제목:${titleMatchScore}, 트레일러:${trailerScore}, 채널:${channelScore}, 페널티:${excludePenalty})`);
+    this.logger.debug(
+      `신뢰도 계산: "${item.title}" - 점수: ${totalScore.toFixed(2)} (제목:${titleMatchScore}, 트레일러:${trailerScore}, 채널:${channelScore}, 페널티:${excludePenalty})`,
+    );
 
     return {
       videoId: item.videoId,
       totalScore,
       factors: {
-        titleMatch: exactTitleMatch ? 1.0 : (partialTitleMatch ? 0.5 : 0.0),
+        titleMatch: exactTitleMatch ? 1.0 : partialTitleMatch ? 0.5 : 0.0,
         channelCredibility: isOfficialChannel ? 0.9 : 0.3,
         keywords: hasTrailerKeyword ? 0.9 : 0.1,
         duration: 0.8, // youtube-sr에서 제공되지 않으므로 기본값

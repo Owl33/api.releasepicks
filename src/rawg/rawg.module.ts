@@ -7,10 +7,7 @@ import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
 
 @Module({
-  imports: [
-    YouTubeModule,
-    TypeOrmModule.forFeature([Game, GameDetail]),
-  ],
+  imports: [YouTubeModule, TypeOrmModule.forFeature([Game, GameDetail])],
   providers: [RawgService],
   controllers: [RawgController],
   exports: [RawgService],

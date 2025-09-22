@@ -262,20 +262,3 @@ interface GameCalendarItem {
   // ... 기타 필드
 }
 ```
-
-### **성능 최적화 사항**
-- **데이터 수집**: 페이지당 40개, 최대 200개/월
-- **YouTube 검색**: youtube-sr로 쿼터 무제한
-- **스토어 링크**: RAWG API + fallback URL 생성
-- **DB 최적화**: 관계형 설계 + JSONB 활용
-
----
-
-# important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-
-
-      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
