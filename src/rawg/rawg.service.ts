@@ -32,18 +32,18 @@ export class RawgService {
       let totalCount = 0;
       const pageSize = 40;
 
-      while (allGames.length < 20) {
-        this.logger.debug(`RAWG ${month} ${page}페이지 조회 중...`);
+      while (allGames.length < maxGames) {
+        this.logger.debug(`RAWG ${month} ${page}페이지 조회 중... (대상: ${maxGames}개)`);
 
         const response = await axios.get(`${this.baseUrl}/games`, {
           params: {
             key: this.apiKey,
             dates: `${startDate},${endDate}`,
-            page_size: pageSize,
+            page_size: Math.min(pageSize, maxGames - allGames.length),
             page: page,
             ordering: '-added',
           },
-          timeout: 10000,
+          timeout: 15000, // 타임아웃 증가
         });
         const { count, results, next } = response.data;
         totalCount = count;
@@ -61,7 +61,7 @@ export class RawgService {
           `${page}페이지: ${results.length}개 → 필터링 후 ${filteredResults.length}개 (누적: ${allGames.length}개)`,
         );
 
-        // 다음 페이지가 없으면 종료
+        // 다음 페이지가 없거나 원하는 개수에 도달하면 종료
         if (!next || allGames.length >= maxGames) {
           break;
         }
@@ -93,6 +93,7 @@ export class RawgService {
           params: {
             key: this.apiKey,
           },
+          timeout: 10000, // 타임아웃 추가
         },
       );
       return response.data;
@@ -130,6 +131,7 @@ export class RawgService {
         params: {
           key: this.apiKey,
         },
+        timeout: 10000, // 타임아웃 추가
       });
       const results = response.data;
       return {
@@ -137,6 +139,9 @@ export class RawgService {
         website: results.website,
         developers: results.developers?.map((d) => d.name) || [],
         publishers: results.publishers?.map((p) => p.name) || [],
+        // 🎯 DLC 판별을 위한 중요 필드들 추가
+        parents_count: results.parents_count,
+        additions_count: results.additions_count,
       };
     } catch (error) {
       this.logger.error('RAWG API 호출 실패:', error.message);
@@ -187,5 +192,6 @@ export class RawgService {
       return [];
     }
   }
+
 
 }

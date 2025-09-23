@@ -281,6 +281,7 @@ export class StreamlinedSteamService {
       );
 
       const data = response.data;
+      
       // API 호출 실패 체크
       if (data.success !== 1 || !data.query_summary) {
         this.logger.warn(
@@ -454,6 +455,141 @@ export class StreamlinedSteamService {
 
     // 최소 점수 임계값 (0.3 이상만 인정)
     return bestScore >= 0.3 ? bestMatch : null;
+  }
+
+  /**
+   * 🔍 Steam DLC 역검색: DLC 목록에서 특정 게임명과 일치하는지 확인
+   * @param dlcIds DLC Steam ID 배열
+   * @param originalGameName 원본 게임명 (RAWG)
+   * @returns DLC 일치 결과
+   */
+  async checkIfGameIsDlcInList(
+    dlcIds: number[],
+    originalGameName: string,
+  ): Promise<{
+    isDlc: boolean;
+    matchedDlc?: {
+      steam_id: number;
+      name: string;
+      similarity: number;
+    };
+    reason: string;
+  }> {
+    try {
+      this.logger.debug(`DLC 역검색 시작: ${originalGameName} in [${dlcIds.join(', ')}]`);
+
+      // DLC 목록이 없거나 너무 많으면 건너뛰기
+      if (!dlcIds || dlcIds.length === 0) {
+        return {
+          isDlc: false,
+          reason: 'DLC 목록 없음'
+        };
+      }
+
+      if (dlcIds.length > 20) {
+        this.logger.warn(`DLC 목록이 너무 많음 (${dlcIds.length}개), 건너뛰기`);
+        return {
+          isDlc: false,
+          reason: `DLC 목록이 너무 많음 (${dlcIds.length}개)`
+        };
+      }
+
+      // 각 DLC의 이름을 조회하여 비교
+      for (const dlcId of dlcIds) {
+        try {
+          const dlcName = await this.getDlcName(dlcId);
+          if (!dlcName) continue;
+
+          const similarity = this.calculateNameSimilarity(originalGameName, dlcName);
+
+          this.logger.debug(`DLC 비교: "${originalGameName}" vs "${dlcName}" = ${similarity.toFixed(2)}`);
+
+          // 유사도 80% 이상이면 일치로 판단
+          if (similarity >= 0.8) {
+            return {
+              isDlc: true,
+              matchedDlc: {
+                steam_id: dlcId,
+                name: dlcName,
+                similarity
+              },
+              reason: `DLC 목록에서 발견: "${dlcName}" (유사도: ${(similarity * 100).toFixed(1)}%)`
+            };
+          }
+        } catch (error) {
+          this.logger.warn(`DLC ${dlcId} 조회 실패:`, error.message);
+          continue;
+        }
+      }
+
+      return {
+        isDlc: false,
+        reason: `DLC 목록 ${dlcIds.length}개 중 일치하는 게임 없음`
+      };
+    } catch (error) {
+      this.logger.error(`DLC 역검색 실패: ${originalGameName}`, error.message);
+      return {
+        isDlc: false,
+        reason: `DLC 역검색 오류: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * 🔍 특정 Steam ID의 게임명만 조회 (경량화)
+   */
+  private async getDlcName(steamId: number): Promise<string | null> {
+    try {
+      const response = await axios.get<SteamAppDetailsResponse>(
+        `${this.STEAM_APPDETAILS_URL}?appids=${steamId}&l=korean&cc=KR`,
+        {
+          timeout: 5000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        },
+      );
+
+      const appData = response.data[steamId.toString()];
+
+      if (!appData || !appData.success || !appData.data) {
+        return null;
+      }
+
+      return appData.data.name || null;
+    } catch (error) {
+      this.logger.warn(`Steam ${steamId} 이름 조회 실패:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 🔍 게임명 유사도 계산 (Jaro-Winkler 유사 알고리즘)
+   */
+  private calculateNameSimilarity(name1: string, name2: string): number {
+    if (!name1 || !name2) return 0;
+
+    const clean1 = name1.toLowerCase().trim();
+    const clean2 = name2.toLowerCase().trim();
+
+    // 정확히 일치
+    if (clean1 === clean2) return 1.0;
+
+    // 한쪽이 다른 쪽을 포함 (DLC 패턴)
+    if (clean1.includes(clean2) || clean2.includes(clean1)) {
+      const shorter = clean1.length < clean2.length ? clean1 : clean2;
+      const longer = clean1.length >= clean2.length ? clean1 : clean2;
+      return shorter.length / longer.length;
+    }
+
+    // 단어 기반 유사도 (간단한 Jaccard 유사도)
+    const words1 = new Set(clean1.split(/\s+/));
+    const words2 = new Set(clean2.split(/\s+/));
+
+    const intersection = new Set([...words1].filter(x => words2.has(x)));
+    const union = new Set([...words1, ...words2]);
+
+    return intersection.size / union.size;
   }
 
   /**

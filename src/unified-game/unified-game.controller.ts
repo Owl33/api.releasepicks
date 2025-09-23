@@ -160,4 +160,24 @@ export class UnifiedGameController {
       };
     }
   }
+
+  /**
+   * 🗑️ POST API: 배치 캐시 클리어
+   * 디버깅 및 새로운 데이터 갱신을 위한 캐시 클리어
+   */
+  @Post('clear-cache')
+  async clearBatchCache(): Promise<{ message: string; timestamp: Date }> {
+    this.logger.log('배치 캐시 클리어 요청');
+
+    try {
+      await this.unifiedGameService.clearBatchCache();
+      return {
+        message: '배치 캐시가 성공적으로 클리어되었습니다.',
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      this.logger.error('배치 캐시 클리어 실패', error.message);
+      throw error;
+    }
+  }
 }

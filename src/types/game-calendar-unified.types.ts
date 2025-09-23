@@ -162,8 +162,17 @@ export interface GameCalendarData {
   /** 무료 게임 여부 */
   is_free?: boolean;
 
-  /** DLC 여부 (RAWG parent_count 기반) */
+  /** DLC 여부 (통합 분석 결과) */
   is_dlc?: boolean;
+
+  /** 게임 타입 분류 (통합 분석 결과) */
+  game_type?: 'main_game' | 'dlc' | 'edition' | 'port' | 'standalone';
+
+  /** 게임 타입 분석 신뢰도 (0-1) */
+  game_type_confidence?: number;
+
+  /** 게임 타입 분석 근거 */
+  game_type_reason?: string;
 
   // ===== 메타 정보 =====
   /** 플랫폼 타입 */

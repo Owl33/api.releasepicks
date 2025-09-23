@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const port = process.env.PORT ? Number(process.env.PORT) : 8080;
+  const port = process.env.PORT ? Number(process.env.PORT) : 8081;
 
   app.enableCors({
     origin: ['http://localhost:3000'],
@@ -12,7 +12,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  await app.listen(port);
+  await app.listen(8081);
   console.log(`🚀 서버가 포트 ${port}에서 실행 중입니다`);
 }
 bootstrap();
