@@ -159,6 +159,7 @@ export interface SteamIdSearchResult {
   match_score?: number; // 유사도 점수 (0-1)
   original_query: string;
   found_name?: string;
+  search_strategy?: string; // 성공한 검색 전략 정보
 }
 
 // Steam API 호출 옵션

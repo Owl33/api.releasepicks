@@ -11,11 +11,9 @@ import {
   MonthlyUnifiedGameResult,
   UnifiedGameOptions,
   PlatformProcessingInfo,
-  SteamScreenshot,
-  SteamReviewData,
   StoreLinks,
 } from '../types/game-calendar-unified.types';
-import { GameNameUtils } from '../utils/game-name.utils';
+import { GameAnalysisService, ClassificationContext } from '../utils/game-analysis.service';
 
 /**
  * 통합 게임 처리 서비스
@@ -232,61 +230,46 @@ export class UnifiedGameService {
       const parentCount = detailedGame.parents_count || 0;
       const additionsCount = detailedGame.additions_count || 0;
 
-      // 2. 게임명 분석 (항상 수행)
-      const nameAnalysis = GameNameUtils.analyzeGameName(rawgGame.name);
+      // 2. 게임명 분석 및 분류 컨텍스트 구성
+      const nameAnalysis = GameAnalysisService.analyzeGameName(rawgGame.name);
 
-      // 3. 조건부 Steam 검색 전략: RAWG 데이터 기반 결정
-      let searchName: string;
-      let searchStrategy: string;
+      // 3. Steam ID 검색을 위해 store_links 가져오기
+      const storeLinksForSteam = await this.getStoreLinksWithRetry(
+        rawgGame.id,
+        rawgGame.name,
+        rawgGame.platforms,
+        rawgGame.stores,
+      );
 
-      if (parentCount > 0) {
-        // DLC/자식 게임: 정리된 게임명 사용
-        searchName = nameAnalysis.cleanedName;
-        searchStrategy = 'cleaned_for_dlc';
-        this.logger.debug(
-          `DLC/자식 게임 검색: ${rawgGame.name} → ${searchName} (parents: ${parentCount})`,
-        );
-      } else if (additionsCount > 0) {
-        // 본편 게임 (추가 콘텐츠 보유): 원본명 사용
-        searchName = rawgGame.name;
-        searchStrategy = 'original_for_main_game';
-        this.logger.debug(
-          `본편 게임 검색: ${rawgGame.name} (원본명 사용, additions: ${additionsCount})`,
-        );
-      } else {
-        // 독립 게임: 원본명 사용
-        searchName = rawgGame.name;
-        searchStrategy = 'original_for_standalone';
-        this.logger.debug(
-          `독립 게임 검색: ${rawgGame.name} (원본명 사용, parents: ${parentCount}, additions: ${additionsCount})`,
-        );
-      }
+      // 4. 게임 분류 컨텍스트 구성
+      const classificationContext: ClassificationContext = {
+        rawgName: rawgGame.name,
+        parentsCount: parentCount,
+        additionsCount: additionsCount,
+        hasStoreLink: !!storeLinksForSteam?.steam,
+        nameAnalysis,
+      };
 
-      // 4. Steam ID 검색 (조건부 정리된 게임명 사용)
-      const steam_idResult = await this.steamService.findSteamId(searchName);
+      // 5. 초기 분류 및 검색 전략 수립
+      const initialClassification = GameAnalysisService.classifyGame(classificationContext);
+      const searchStrategies = GameAnalysisService.generateSearchStrategies(classificationContext);
+
+      this.logger.debug(
+        `게임 분류 예측: ${initialClassification.gameType} (신뢰도: ${initialClassification.confidence.toFixed(2)}) - ${initialClassification.reason}`,
+      );
+      this.logger.debug(`검색 전략: [${searchStrategies.join(', ')}]`);
+
+      // 6. Steam ID 검색 (store_links 우선 + 다중 전략)
+      const steam_idResult = await this.steamService.findSteamId(
+        rawgGame.name,
+        storeLinksForSteam,
+        searchStrategies
+      );
+
+      // 7. Steam ID 검색 실패 시 RAWG 전용 처리
       if (!steam_idResult.success || !steam_idResult.steam_id) {
-        this.logger.debug(
-          `Steam ID 검색 실패 (${searchStrategy}): ${rawgGame.name}`,
-        );
-
-        // Fallback: 원본명으로 재시도 (정리된 이름으로 실패한 경우)
-        if (searchStrategy === 'cleaned_for_dlc') {
-          this.logger.debug(`원본명으로 재시도: ${rawgGame.name}`);
-          const fallbackResult = await this.steamService.findSteamId(
-            rawgGame.name,
-          );
-          if (fallbackResult.success && fallbackResult.steam_id) {
-            // 원본명으로 성공하면 계속 진행
-            steam_idResult.success = true;
-            steam_idResult.steam_id = fallbackResult.steam_id;
-            searchStrategy = 'fallback_original';
-            this.logger.debug(`원본명 재시도 성공: ${rawgGame.name}`);
-          }
-        }
-
-        if (!steam_idResult.success || !steam_idResult.steam_id) {
-          return await this.processRawgOnlyData(rawgGame);
-        }
+        this.logger.debug(`Steam ID 검색 완전 실패: ${rawgGame.name}`);
+        return await this.processRawgOnlyData(rawgGame);
       }
 
       // 5. Steam 게임 데이터 수집
@@ -304,29 +287,63 @@ export class UnifiedGameService {
         steam_idResult.steam_id,
       );
 
-      // 7. RAWG + Steam 데이터 병합
+      // 7. RAWG + Steam 데이터 병합 (이미 가져온 store_links 재사용)
       const unifiedData = await this.mergeRawgAndSteamData(
         rawgGame,
         steam_data,
         steamReviews,
         nameAnalysis,
+        storeLinksForSteam, // 이미 가져온 store_links 재사용
       );
 
-      // 8. 최종 DLC 구분 분석 (RAWG + Steam + 게임명 통합 분석, 상세 정보 사용)
-      const gameTypeAnalysis = await this.analyzeGameTypeUnified(
-        detailedGame,
-        steam_data,
-        nameAnalysis,
-      );
+      // 8. Steam 데이터를 포함한 최종 분류
+      const finalClassificationContext: ClassificationContext = {
+        ...classificationContext,
+        steamType: steam_data.steam_type,
+        dlcList: steam_data.dlc_list,
+        hasFullgameInfo: !!steam_data.fullgame_info,
+      };
+
+      const finalClassification = GameAnalysisService.classifyGame(finalClassificationContext);
+
+      // 🎯 DLC 역검색이 필요한 경우만 수행 (성능 최적화)
+      let finalResult = finalClassification;
+      if (finalClassification.reason.includes('역검색 필요')) {
+        this.logger.debug(`DLC 역검색 수행: ${rawgGame.name}`);
+        const dlcCheckResult = await GameAnalysisService.checkIfGameIsDlcInList(
+          steam_data.dlc_list || [],
+          rawgGame.name,
+        );
+
+        if (dlcCheckResult.isDlc) {
+          finalResult = {
+            gameType: 'dlc',
+            confidence: 0.92,
+            reason: `Steam DLC 역검색 성공: ${dlcCheckResult.reason}`,
+            isMainGame: false,
+            priority: 60,
+            searchStrategies: finalClassification.searchStrategies,
+          };
+        } else {
+          finalResult = {
+            ...finalClassification,
+            gameType: 'main_game',
+            confidence: 0.88,
+            reason: `Steam 본편 게임 (${steam_data.dlc_list?.length || 0}개 DLC 보유, 역검색 결과: ${dlcCheckResult.reason})`,
+            isMainGame: true,
+          };
+        }
+      }
+
       this.logger.debug(
-        `게임 타입 분석 결과: ${rawgGame.name} → ${gameTypeAnalysis.game_type} (신뢰도: ${gameTypeAnalysis.confidence})`,
+        `최종 게임 타입: ${rawgGame.name} → ${finalResult.gameType} (신뢰도: ${finalResult.confidence.toFixed(2)}) - ${finalResult.reason}`,
       );
 
       // 9. 최종 분석 결과 적용
-      unifiedData.is_dlc = !gameTypeAnalysis.is_main_game;
-      unifiedData.game_type = gameTypeAnalysis.game_type;
-      unifiedData.game_type_confidence = gameTypeAnalysis.confidence;
-      unifiedData.game_type_reason = gameTypeAnalysis.reason;
+      unifiedData.is_dlc = !finalResult.isMainGame;
+      unifiedData.game_type = finalResult.gameType;
+      unifiedData.game_type_confidence = finalResult.confidence;
+      unifiedData.game_type_reason = finalResult.reason;
       this.logger.debug(
         `Steam 통합 처리 성공: ${rawgGame.name} → ${steam_data.korea_name || steam_data.original_name}`,
       );
@@ -347,7 +364,7 @@ export class UnifiedGameService {
       (await this.getDetailsWithRetry(rawgGame.id)) || rawgGame;
 
     // 1. 게임명 분석
-    const nameAnalysis = GameNameUtils.analyzeGameName(rawgGame.name);
+    const nameAnalysis = GameAnalysisService.analyzeGameName(rawgGame.name);
     this.logger.debug(
       `RAWG 전용 게임명 분석: ${rawgGame.name} (DLC패턴: ${nameAnalysis.patterns.isDlc})`,
     );
@@ -433,169 +450,32 @@ export class UnifiedGameService {
       steam_integrated: false,
     };
 
-    // 4. 최종 DLC 구분 분석 (RAWG + 게임명 분석, 상세 정보 사용)
-    const gameTypeAnalysis = await this.analyzeGameTypeUnified(
-      detailedGame,
-      undefined,
+    // 4. 게임 분류 (RAWG 전용)
+    const classificationContext: ClassificationContext = {
+      rawgName: rawgGame.name,
+      parentsCount: detailedGame.parents_count || 0,
+      additionsCount: detailedGame.additions_count || 0,
+      hasStoreLink: false, // RAWG 전용이므로 store link 없음
       nameAnalysis,
-    );
+    };
+
+    const classification = GameAnalysisService.classifyGame(classificationContext);
+
     this.logger.debug(
-      `RAWG 전용 게임 타입 분석: ${rawgGame.name} → ${gameTypeAnalysis.game_type} (신뢰도: ${gameTypeAnalysis.confidence})`,
+      `RAWG 전용 게임 분류: ${rawgGame.name} → ${classification.gameType} (신뢰도: ${classification.confidence.toFixed(2)}) - ${classification.reason}`,
     );
 
     // 5. 최종 분석 결과 적용하여 반환
     return {
       ...baseData,
       // === DLC 관련 (통합 분석 결과) ===
-      is_dlc: !gameTypeAnalysis.is_main_game,
-      game_type: gameTypeAnalysis.game_type,
-      game_type_confidence: gameTypeAnalysis.confidence,
-      game_type_reason: gameTypeAnalysis.reason,
+      is_dlc: !classification.isMainGame,
+      game_type: classification.gameType,
+      game_type_confidence: classification.confidence,
+      game_type_reason: classification.reason,
     };
   }
 
-  /**
-   * 🎮 통합 DLC 구분 로직 (후처리)
-   * RAWG + Steam + 게임명 분석을 종합하여 최종 판별
-   */
-  private async analyzeGameTypeUnified(
-    rawgGame: any,
-    steamData?: any,
-    nameAnalysis?: any,
-  ) {
-    const additionsCount = rawgGame.additions_count || 0;
-    const parentCount = rawgGame.parents_count || 0; // 복수형 수정!
-
-    // 🥇 RAWG parent_count > 0 → DLC/에디션/포트 (가장 신뢰할 만함)
-    if (parentCount > 0) {
-      const gameType: 'dlc' | 'edition' | 'port' = nameAnalysis?.patterns.isDlc
-        ? 'dlc'
-        : nameAnalysis?.patterns.isEdition
-          ? 'edition'
-          : 'port';
-
-      return {
-        game_type: gameType,
-        confidence: 0.98,
-        reason: `RAWG 자식 게임 (${parentCount}개의 부모 게임 존재) - ${gameType}로 분류`,
-        is_main_game: gameType === 'edition', // 에디션은 본편으로 취급
-      };
-    }
-
-    // 🥈 RAWG additions_count > 0 → 본편 확정
-    if (additionsCount > 0) {
-      return {
-        game_type: 'main_game' as const,
-        confidence: 0.95,
-        reason: `RAWG 본편 게임 (${additionsCount}개의 추가 콘텐츠 보유)`,
-        is_main_game: true,
-      };
-    }
-
-    // 🥉 Steam DLC 역검색 분석 (정교한 판별)
-    if (steamData) {
-      const steamType = (
-        steamData.steam_type ||
-        steamData.type ||
-        ''
-      ).toLowerCase();
-      const dlcList = steamData.dlc_list || steamData.dlc || [];
-      const hasFullgameInfo = !!(steamData.fullgame_info || steamData.fullgame);
-
-      // Steam 공식 DLC 타입
-      if (steamType === 'dlc') {
-        return {
-          game_type: 'dlc' as const,
-          confidence: 0.95,
-          reason: `Steam 공식 DLC 타입${hasFullgameInfo ? ' (본편 정보 포함)' : ''}`,
-          is_main_game: false,
-        };
-      }
-
-      // Steam이 game 타입이지만 DLC 목록이 있는 경우 → 역검색 수행
-      if (steamType === 'game' && dlcList.length > 0) {
-        // DLC 역검색: 현재 게임이 본편의 DLC 목록에 포함되어 있는지 확인
-        const dlcCheckResult = await this.steamService.checkIfGameIsDlcInList(
-          dlcList,
-          rawgGame.name,
-        );
-
-        if (dlcCheckResult.isDlc) {
-          return {
-            game_type: 'dlc' as const,
-            confidence: 0.92,
-            reason: `Steam DLC 역검색 성공: ${dlcCheckResult.reason}`,
-            is_main_game: false,
-          };
-        }
-
-        // DLC 목록에 없으면 실제 본편 게임
-        return {
-          game_type: 'main_game' as const,
-          confidence: 0.88,
-          reason: `Steam 본편 게임 (${dlcList.length}개 DLC 보유, 역검색 결과: ${dlcCheckResult.reason})`,
-          is_main_game: true,
-        };
-      }
-
-      // Steam이 game 타입이고 DLC 목록이 없는 경우
-      if (steamType === 'game') {
-        // 게임명 패턴으로 추가 검증
-        if (nameAnalysis?.patterns.isDlc) {
-          return {
-            game_type: 'dlc' as const,
-            confidence: 0.75,
-            reason: `Steam game 타입이지만 게임명이 DLC 패턴: ${nameAnalysis.extractedInfo.subtitle || 'DLC 키워드 포함'}`,
-            is_main_game: false,
-          };
-        }
-
-        // 에디션 패턴 검사 추가 (GOTY, Complete 등)
-        if (nameAnalysis?.patterns.isEdition) {
-          return {
-            game_type: 'edition' as const,
-            confidence: 0.82,
-            reason: `Steam 에디션 게임: ${nameAnalysis.extractedInfo.detectedKeywords.join(', ')}`,
-            is_main_game: true,
-          };
-        }
-
-        return {
-          game_type: 'standalone' as const,
-          confidence: 0.85,
-          reason: 'Steam 단독 게임 (DLC 없음)',
-          is_main_game: true,
-        };
-      }
-    }
-
-    // 🏅 게임명 패턴 분석
-    if (nameAnalysis?.patterns.isDlc) {
-      return {
-        game_type: 'dlc' as const,
-        confidence: 0.7,
-        reason: `게임명 DLC 패턴: ${nameAnalysis.extractedInfo.subtitle || 'DLC 키워드 포함'}`,
-        is_main_game: false,
-      };
-    }
-
-    if (nameAnalysis?.patterns.isEdition) {
-      return {
-        game_type: 'edition' as const,
-        confidence: 0.8,
-        reason: `게임명 에디션 패턴: ${nameAnalysis.extractedInfo.detectedKeywords.join(', ')}`,
-        is_main_game: true,
-      };
-    }
-
-    // 🎯 기본값: 단독 본편
-    return {
-      game_type: 'standalone' as const,
-      confidence: 0.85,
-      reason: '단독 본편 게임 (추가 콘텐츠/부모 게임/특수 패턴 없음)',
-      is_main_game: true,
-    };
-  }
 
   /**
    * 🔀 RAWG + Steam 데이터 병합
@@ -606,10 +486,12 @@ export class UnifiedGameService {
     steam_data: any,
     steamReviews: any,
     nameAnalysis: any,
+    preloadedStoreLinks?: any, // 이미 가져온 store_links (중복 호출 방지)
   ): Promise<GameCalendarData> {
     // 기본 RAWG 데이터 생성 (재시도 로직 포함)
     const [storeLinks, details, video] = await Promise.all([
-      this.getStoreLinksWithRetry(
+      // preloadedStoreLinks가 있으면 사용, 없으면 새로 가져오기
+      preloadedStoreLinks || this.getStoreLinksWithRetry(
         rawgGame.id,
         rawgGame.name,
         rawgGame.platforms,

@@ -80,7 +80,7 @@ export class RawgService {
         pageSize: allGames.length,
       };
     } catch (error) {
-      this.logger.error('RAWG API 호출 실패:', error.message);
+      this.logger.error('RAWG API getMonthlyGames 호출 실패:', error.message);
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }
@@ -98,7 +98,7 @@ export class RawgService {
       );
       return response.data;
     } catch (error) {
-      this.logger.error('RAWG API 호출 실패:', error.message);
+      this.logger.error('RAWG API getStore 호출 실패:', error.message);
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }
@@ -112,7 +112,7 @@ export class RawgService {
 
       return response.data;
     } catch (error) {
-      this.logger.error('RAWG API 호출 실패:', error.message);
+      this.logger.error('RAWG API getDevloper 호출 실패:', error.message);
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }
@@ -144,7 +144,7 @@ export class RawgService {
         additions_count: results.additions_count,
       };
     } catch (error) {
-      this.logger.error('RAWG API 호출 실패:', error.message);
+      this.logger.error('RAWG API getDetails 호출 실패:', error.message);
       throw new Error(`RAWG API 호출 실패: ${error.message}`);
     }
   }

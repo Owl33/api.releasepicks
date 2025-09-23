@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import axios, { AxiosRequestConfig } from 'axios';
+import slugify from 'slugify';
+
+import axios from 'axios';
 import {
   SteamAppDetailsResponse,
   GameCalendarSteamData,
@@ -41,10 +43,39 @@ export class StreamlinedSteamService {
   /**
    * 1. Steam 공식 API로 게임명 기반 Steam ID 검색
    * GetAppList API + 클라이언트 측 필터링 사용
+   *
+   * @param gameName 검색할 게임명
+   * @param storeLinks RAWG에서 제공하는 스토어 링크 (store_links 우선 확인용)
+   * @param searchStrategies 추가 검색 전략들 (게임 분류 시스템에서 제공)
    */
-  async findSteamId(gameName: string): Promise<SteamIdSearchResult> {
+  async findSteamId(
+    gameName: string,
+    storeLinks?: { steam?: string },
+    searchStrategies?: string[]
+  ): Promise<SteamIdSearchResult> {
     try {
       this.logger.debug(`Steam ID 검색 시작 (공식 API): ${gameName}`);
+
+      // 🥇 RAWG store_links 우선 확인: Steam 스토어 링크가 있으면 App ID 직접 추출
+      if (storeLinks?.steam) {
+        const extractedAppId = this.extractSteamAppIdFromUrl(storeLinks.steam);
+        if (extractedAppId) {
+          this.logger.debug(
+            `RAWG store_links에서 Steam ID 발견: ${extractedAppId} (${storeLinks.steam})`,
+          );
+          return {
+            success: true,
+            steam_id: extractedAppId,
+            match_score: 1.0, // store_links는 100% 신뢰도
+            original_query: gameName,
+            found_name: `Steam App ${extractedAppId} (from store_links)`,
+          };
+        } else {
+          this.logger.debug(
+            `RAWG store_links에 Steam URL이 있지만 App ID 추출 실패: ${storeLinks.steam}`,
+          );
+        }
+      }
 
       // Steam 앱 목록 가져오기 (캐시 활용)
       const appList = await this.getSteamAppList();
@@ -55,33 +86,38 @@ export class StreamlinedSteamService {
           original_query: gameName,
         };
       }
+      this.buildSteamSlugMap(appList);
 
-      // 게임명 기반 필터링 및 매칭
-      const filteredApps = this.filterAppsByName(gameName, appList);
-      if (filteredApps.length === 0) {
-        this.logger.debug(`매칭되는 게임 없음: ${gameName}`);
-        return {
-          success: false,
-          original_query: gameName,
-        };
+      // 🎯 다중 검색 전략 시도
+      const searchNames = this.buildSearchNames(gameName, searchStrategies);
+
+      for (const [index, searchName] of searchNames.entries()) {
+        this.logger.debug(`검색 전략 ${index + 1}/${searchNames.length}: "${searchName}"`);
+
+        const filteredApps = this.filterAppsByName(searchName, appList);
+        if (filteredApps.length === 0) {
+          this.logger.debug(`매칭되는 게임 없음: ${searchName}`);
+          continue;
+        }
+
+        // 🎯 최적화된 매칭 찾기 (간소화된 로직)
+        const bestMatch = this.findBestAppMatchOptimized(searchName, filteredApps);
+        if (bestMatch) {
+          this.logger.debug(
+            `Steam ID 발견 (전략 ${index + 1}): ${bestMatch.appid} (${bestMatch.name}) - 유사도: ${bestMatch.matchScore?.toFixed(2)}`,
+          );
+          return {
+            success: true,
+            steam_id: bestMatch.appid,
+            match_score: bestMatch.matchScore,
+            original_query: gameName,
+            found_name: bestMatch.name,
+            search_strategy: `strategy_${index + 1}_${searchName}`,
+          };
+        }
       }
 
-      // 최적 매칭 찾기
-      const bestMatch = this.findBestAppMatch(gameName, filteredApps);
-      if (bestMatch) {
-        this.logger.debug(
-          `Steam ID 발견: ${bestMatch.appid} (${bestMatch.name}) - 유사도: ${bestMatch.matchScore?.toFixed(2)}`,
-        );
-        return {
-          success: true,
-          steam_id: bestMatch.appid,
-          match_score: bestMatch.matchScore,
-          original_query: gameName,
-          found_name: bestMatch.name,
-        };
-      }
-
-      this.logger.debug(`적절한 매칭 없음: ${gameName}`);
+      this.logger.debug(`모든 검색 전략 실패: ${gameName}`);
       return {
         success: false,
         original_query: gameName,
@@ -281,7 +317,6 @@ export class StreamlinedSteamService {
       );
 
       const data = response.data;
-      
       // API 호출 실패 체크
       if (data.success !== 1 || !data.query_summary) {
         this.logger.warn(
@@ -371,225 +406,163 @@ export class StreamlinedSteamService {
       return this.steamAppListCache || [];
     }
   }
+  private canonicalSlug(name: string) {
+    if (!name) return '';
+    return slugify(name, { lower: true, remove: /[*+~.()"'!:@,]/g })
+      .replace(/[-_]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
 
+  // 2) map 빌드 (한 번만 호출)
+  private steamSlugMap: Map<
+    string,
+    { appid: number; name: string; slug: string }[]
+  > | null = null;
+
+  private buildSteamSlugMap(appList: { appid: number; name: string }[]) {
+    const map = new Map<
+      string,
+      { appid: number; name: string; slug: string }[]
+    >();
+    for (const app of appList) {
+      const baseSlug = this.canonicalSlug(app.name);
+      const entry = { appid: app.appid, name: app.name, slug: baseSlug };
+      const push = (s: string) => {
+        if (!s) return;
+        const arr = map.get(s);
+        if (!arr) map.set(s, [entry]);
+        else arr.push(entry);
+      };
+      push(baseSlug);
+      // 흔한 변형들(옵션): 콜론 제거, 괄호 제거, 아포스트로피 제거
+      push(this.canonicalSlug(app.name.replace(/:.+$/, '')));
+      push(this.canonicalSlug(app.name.replace(/\(.*?\)/g, '')));
+      push(this.canonicalSlug(app.name.replace(/'/g, '')));
+    }
+    this.steamSlugMap = map;
+  }
   /**
    * 게임명 기반 Steam 앱 필터링
    */
   private filterAppsByName(
     gameName: string,
     appList: { appid: number; name: string }[],
-  ): { appid: number; name: string }[] {
-    const searchTerm = gameName.toLowerCase().trim();
+  ) {
+    if (!gameName) return [];
 
-    return appList.filter((app) => {
-      if (!app.name) return false;
+    const searchSlug = this.canonicalSlug(gameName);
+    if (this.steamSlugMap) {
+      const slugHits = this.steamSlugMap.get(searchSlug);
+      if (slugHits && slugHits.length) return slugHits;
+    }
 
-      const appName = app.name.toLowerCase();
-      // 정확한 매칭 우선
-      if (appName === searchTerm) return true;
+    // 보조: 원래 exact name 비교 유지 (대소문자 무시)
+    const lower = gameName.toLowerCase().trim();
+    const exactHits = appList.filter(
+      (a) => a.name && a.name.toLowerCase().trim() === lower,
+    );
+    if (exactHits.length)
+      return exactHits.map((a) => ({
+        appid: a.appid,
+        name: a.name,
+        slug: this.canonicalSlug(a.name),
+      }));
 
-      // 부분 매칭 (단어 포함)
-      const searchWords = searchTerm
-        .split(' ')
-        .filter((word) => word.length > 2);
-      if (searchWords.length === 0) return appName.includes(searchTerm);
-
-      return searchWords.every((word) => appName.includes(word));
-    });
+    return []; // 의도적으로 퍼지/부분매칭 없음
   }
 
   /**
-   * 최적 매칭 찾기 (유사도 점수 기반)
+   * 🎯 최적화된 매칭 찾기 (slug 기반 매칭용)
+   * buildSteamSlugMap 도입으로 인한 간소화된 로직
    */
-  private findBestAppMatch(
+  private findBestAppMatchOptimized(
     gameName: string,
-    apps: { appid: number; name: string }[],
+    apps: { appid: number; name: string; slug?: string }[],
   ): any {
     if (apps.length === 0) return null;
 
+    // 1개만 매칭되면 바로 반환 (slug 매칭은 이미 정확함)
+    if (apps.length === 1) {
+      return {
+        appid: apps[0].appid,
+        name: apps[0].name,
+        matchScore: 1.0, // slug 매칭 성공 = 100% 신뢰도
+      };
+    }
+
+    // 여러 개 매칭 시 간단한 선택 로직
     const searchTerm = gameName.toLowerCase().trim();
-    let bestMatch: any = null;
+    let bestMatch = apps[0];
     let bestScore = 0;
 
     for (const app of apps) {
       const appName = app.name.toLowerCase();
-      let score = 0;
+      let score = 0.8; // 기본 점수 (slug 매칭 성공)
 
-      // 정확한 매칭
+      // 정확한 이름 매칭이면 가산점
       if (appName === searchTerm) {
         score = 1.0;
       }
-      // 시작 매칭
-      else if (appName.startsWith(searchTerm)) {
-        score = 0.9;
-      }
-      // 포함 매칭
-      else if (appName.includes(searchTerm)) {
-        score = 0.7;
-      }
-      // 단어 매칭
-      else {
-        const searchWords = searchTerm.split(' ');
-        const matchedWords = searchWords.filter((word) =>
-          appName.includes(word),
-        );
-        if (matchedWords.length > 0) {
-          score = (matchedWords.length / searchWords.length) * 0.5;
-        }
+      // 더 짧은 이름 선호 (DLC보다 본편 우선)
+      else if (app.name.length < bestMatch.name.length) {
+        score += 0.1;
       }
 
-      // 더 짧은 이름 선호 (동일 점수일 때)
-      if (
-        score > bestScore ||
-        (score === bestScore &&
-          (!bestMatch || app.name.length < bestMatch.name.length))
-      ) {
+      if (score > bestScore) {
         bestScore = score;
-        bestMatch = {
-          appid: app.appid,
-          name: app.name,
-          matchScore: score,
-        };
+        bestMatch = app;
       }
     }
 
-    // 최소 점수 임계값 (0.3 이상만 인정)
-    return bestScore >= 0.3 ? bestMatch : null;
-  }
-
-  /**
-   * 🔍 Steam DLC 역검색: DLC 목록에서 특정 게임명과 일치하는지 확인
-   * @param dlcIds DLC Steam ID 배열
-   * @param originalGameName 원본 게임명 (RAWG)
-   * @returns DLC 일치 결과
-   */
-  async checkIfGameIsDlcInList(
-    dlcIds: number[],
-    originalGameName: string,
-  ): Promise<{
-    isDlc: boolean;
-    matchedDlc?: {
-      steam_id: number;
-      name: string;
-      similarity: number;
+    return {
+      appid: bestMatch.appid,
+      name: bestMatch.name,
+      matchScore: bestScore,
     };
-    reason: string;
-  }> {
-    try {
-      this.logger.debug(`DLC 역검색 시작: ${originalGameName} in [${dlcIds.join(', ')}]`);
+  }
 
-      // DLC 목록이 없거나 너무 많으면 건너뛰기
-      if (!dlcIds || dlcIds.length === 0) {
-        return {
-          isDlc: false,
-          reason: 'DLC 목록 없음'
-        };
-      }
 
-      if (dlcIds.length > 20) {
-        this.logger.warn(`DLC 목록이 너무 많음 (${dlcIds.length}개), 건너뛰기`);
-        return {
-          isDlc: false,
-          reason: `DLC 목록이 너무 많음 (${dlcIds.length}개)`
-        };
-      }
+  /**
+   * 🎯 검색 이름들 구성 (간소화)
+   * GameAnalysisService에서 제공하는 검색 전략들을 우선 사용
+   */
+  private buildSearchNames(gameName: string, searchStrategies?: string[]): string[] {
+    const searchNames: string[] = [];
 
-      // 각 DLC의 이름을 조회하여 비교
-      for (const dlcId of dlcIds) {
-        try {
-          const dlcName = await this.getDlcName(dlcId);
-          if (!dlcName) continue;
-
-          const similarity = this.calculateNameSimilarity(originalGameName, dlcName);
-
-          this.logger.debug(`DLC 비교: "${originalGameName}" vs "${dlcName}" = ${similarity.toFixed(2)}`);
-
-          // 유사도 80% 이상이면 일치로 판단
-          if (similarity >= 0.8) {
-            return {
-              isDlc: true,
-              matchedDlc: {
-                steam_id: dlcId,
-                name: dlcName,
-                similarity
-              },
-              reason: `DLC 목록에서 발견: "${dlcName}" (유사도: ${(similarity * 100).toFixed(1)}%)`
-            };
-          }
-        } catch (error) {
-          this.logger.warn(`DLC ${dlcId} 조회 실패:`, error.message);
-          continue;
-        }
-      }
-
-      return {
-        isDlc: false,
-        reason: `DLC 목록 ${dlcIds.length}개 중 일치하는 게임 없음`
-      };
-    } catch (error) {
-      this.logger.error(`DLC 역검색 실패: ${originalGameName}`, error.message);
-      return {
-        isDlc: false,
-        reason: `DLC 역검색 오류: ${error.message}`
-      };
+    // 1. GameAnalysisService에서 제공하는 전략들 우선 사용
+    if (searchStrategies && searchStrategies.length > 0) {
+      searchNames.push(...searchStrategies);
     }
+
+    // 2. 기본 게임명 (전략에 없는 경우만)
+    if (!searchNames.includes(gameName)) {
+      searchNames.push(gameName);
+    }
+
+    // 중복 제거 및 유효성 검사
+    return [...new Set(searchNames)].filter(name => name && name.length >= 3);
   }
 
   /**
-   * 🔍 특정 Steam ID의 게임명만 조회 (경량화)
+   * 🔗 Steam 스토어 URL에서 App ID 추출
+   * URL 형태: https://store.steampowered.com/app/123456/game_name/
    */
-  private async getDlcName(steamId: number): Promise<string | null> {
+  private extractSteamAppIdFromUrl(steamUrl: string): number | null {
     try {
-      const response = await axios.get<SteamAppDetailsResponse>(
-        `${this.STEAM_APPDETAILS_URL}?appids=${steamId}&l=korean&cc=KR`,
-        {
-          timeout: 5000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-        },
-      );
+      // Steam 스토어 URL 패턴 매칭
+      const steamUrlPattern = /store\.steampowered\.com\/app\/(\d+)/i;
+      const match = steamUrl.match(steamUrlPattern);
 
-      const appData = response.data[steamId.toString()];
-
-      if (!appData || !appData.success || !appData.data) {
-        return null;
+      if (match && match[1]) {
+        const appId = parseInt(match[1], 10);
+        return isNaN(appId) ? null : appId;
       }
 
-      return appData.data.name || null;
+      return null;
     } catch (error) {
-      this.logger.warn(`Steam ${steamId} 이름 조회 실패:`, error.message);
+      this.logger.warn(`Steam URL App ID 추출 실패: ${steamUrl}`, error.message);
       return null;
     }
-  }
-
-  /**
-   * 🔍 게임명 유사도 계산 (Jaro-Winkler 유사 알고리즘)
-   */
-  private calculateNameSimilarity(name1: string, name2: string): number {
-    if (!name1 || !name2) return 0;
-
-    const clean1 = name1.toLowerCase().trim();
-    const clean2 = name2.toLowerCase().trim();
-
-    // 정확히 일치
-    if (clean1 === clean2) return 1.0;
-
-    // 한쪽이 다른 쪽을 포함 (DLC 패턴)
-    if (clean1.includes(clean2) || clean2.includes(clean1)) {
-      const shorter = clean1.length < clean2.length ? clean1 : clean2;
-      const longer = clean1.length >= clean2.length ? clean1 : clean2;
-      return shorter.length / longer.length;
-    }
-
-    // 단어 기반 유사도 (간단한 Jaccard 유사도)
-    const words1 = new Set(clean1.split(/\s+/));
-    const words2 = new Set(clean2.split(/\s+/));
-
-    const intersection = new Set([...words1].filter(x => words2.has(x)));
-    const union = new Set([...words1, ...words2]);
-
-    return intersection.size / union.size;
   }
 
   /**
