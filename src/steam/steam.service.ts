@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import slugify from 'slugify';
 
 import axios from 'axios';
+import { STEAM_API, LoggerHelper } from '../utils/game-utilities';
+import { ErrorHandlerUtil } from '../common/utils/error-handler.util';
+import { DataMapper } from '../utils/data-processing';
 import {
   SteamAppDetailsResponse,
   GameCalendarSteamData,
@@ -22,17 +25,11 @@ import {
 export class StreamlinedSteamService {
   private readonly logger = new Logger(StreamlinedSteamService.name);
 
-  // Steam 공식 Web API 엔드포인트
-  private readonly STEAM_APPLIST_URL =
-    'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
-  private readonly STEAM_APPDETAILS_URL =
-    'https://store.steampowered.com/api/appdetails';
-
   // 기본 설정
   private readonly DEFAULT_OPTIONS: SteamApiOptions = {
     language: 'korean',
     country_code: 'KR',
-    timeout: 10000,
+    timeout: STEAM_API.DEFAULT_TIMEOUT,
   };
 
   // Steam 전체 앱 목록 캐시 (메모리 절약)
@@ -53,16 +50,12 @@ export class StreamlinedSteamService {
     storeLinks?: { steam?: string },
     searchStrategies?: string[]
   ): Promise<SteamIdSearchResult> {
-    try {
-      this.logger.debug(`Steam ID 검색 시작 (공식 API): ${gameName}`);
-
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
       // 🥇 RAWG store_links 우선 확인: Steam 스토어 링크가 있으면 App ID 직접 추출
       if (storeLinks?.steam) {
         const extractedAppId = this.extractSteamAppIdFromUrl(storeLinks.steam);
         if (extractedAppId) {
-          this.logger.debug(
-            `RAWG store_links에서 Steam ID 발견: ${extractedAppId} (${storeLinks.steam})`,
-          );
           return {
             success: true,
             steam_id: extractedAppId,
@@ -70,17 +63,13 @@ export class StreamlinedSteamService {
             original_query: gameName,
             found_name: `Steam App ${extractedAppId} (from store_links)`,
           };
-        } else {
-          this.logger.debug(
-            `RAWG store_links에 Steam URL이 있지만 App ID 추출 실패: ${storeLinks.steam}`,
-          );
         }
+        // store_links 실패는 정상적인 fallback이므로 로그 불필요
       }
 
       // Steam 앱 목록 가져오기 (캐시 활용)
       const appList = await this.getSteamAppList();
       if (!appList || appList.length === 0) {
-        this.logger.debug(`Steam 앱 목록 없음`);
         return {
           success: false,
           original_query: gameName,
@@ -92,20 +81,15 @@ export class StreamlinedSteamService {
       const searchNames = this.buildSearchNames(gameName, searchStrategies);
 
       for (const [index, searchName] of searchNames.entries()) {
-        this.logger.debug(`검색 전략 ${index + 1}/${searchNames.length}: "${searchName}"`);
 
         const filteredApps = this.filterAppsByName(searchName, appList);
         if (filteredApps.length === 0) {
-          this.logger.debug(`매칭되는 게임 없음: ${searchName}`);
           continue;
         }
 
         // 🎯 최적화된 매칭 찾기 (간소화된 로직)
         const bestMatch = this.findBestAppMatchOptimized(searchName, filteredApps);
         if (bestMatch) {
-          this.logger.debug(
-            `Steam ID 발견 (전략 ${index + 1}): ${bestMatch.appid} (${bestMatch.name}) - 유사도: ${bestMatch.matchScore?.toFixed(2)}`,
-          );
           return {
             success: true,
             steam_id: bestMatch.appid,
@@ -117,18 +101,22 @@ export class StreamlinedSteamService {
         }
       }
 
-      this.logger.debug(`모든 검색 전략 실패: ${gameName}`);
       return {
         success: false,
         original_query: gameName,
       };
-    } catch (error) {
-      this.logger.warn(`Steam ID 검색 실패: ${gameName}`, error.message);
-      return {
-        success: false,
-        original_query: gameName,
-      };
-    }
+      },
+      this.logger,
+      {
+        context: 'Steam ID 검색',
+        identifier: gameName,
+        rethrow: false,
+        defaultMessage: 'Steam ID 검색 실패',
+      }
+    ).then(result => result || {
+      success: false,
+      original_query: gameName,
+    });
   }
 
   /**
@@ -139,32 +127,34 @@ export class StreamlinedSteamService {
     steamId: number,
     options?: SteamApiOptions,
   ): Promise<GameCalendarSteamData | null> {
-    try {
-      this.logger.debug(`Steam 게임 데이터 수집 시작: ${steamId}`);
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
+        const mergedOptions = { ...this.DEFAULT_OPTIONS, ...options };
 
-      const mergedOptions = { ...this.DEFAULT_OPTIONS, ...options };
+        // Steam appDetails API 호출
+        const appDetails = await this.getAppDetails(steamId, mergedOptions);
+        if (!appDetails) {
+          this.logger.error(`Steam appDetails 조회 실패: ${steamId} - 데이터 없음`);
+          return null;
+        }
 
-      // Steam appDetails API 호출
-      const appDetails = await this.getAppDetails(steamId, mergedOptions);
-      if (!appDetails) {
-        this.logger.warn(`Steam appDetails 조회 실패: ${steamId}`);
-        return null;
+        // 게임 캘린더용 데이터 변환
+        try {
+          const calendarData = this.convertToCalendarData(appDetails);
+          return calendarData;
+        } catch (conversionError) {
+          this.logger.error(`Steam 데이터 변환 실패: ${steamId} - ${conversionError.message}`);
+          return null;
+        }
+      },
+      this.logger,
+      {
+        context: 'Steam 게임 데이터 수집',
+        identifier: steamId.toString(),
+        rethrow: false,
+        defaultMessage: 'Steam 게임 데이터 수집 실패',
       }
-
-      // 게임 캘린더용 데이터 변환
-      const calendarData = this.convertToCalendarData(appDetails);
-
-      this.logger.debug(
-        `Steam 게임 데이터 수집 완료: ${steamId} (${appDetails.name})`,
-      );
-      return calendarData;
-    } catch (error) {
-      this.logger.error(
-        `Steam 게임 데이터 수집 실패: ${steamId}`,
-        error.message,
-      );
-      return null;
-    }
+    ).then(result => result || null);
   }
 
   /**
@@ -174,41 +164,41 @@ export class StreamlinedSteamService {
     steamId: number,
     options: SteamApiOptions,
   ): Promise<SteamAppData | null> {
-    try {
-      const params = new URLSearchParams({
-        appids: steamId.toString(),
-        l: options.language || 'korean',
-        cc: options.country_code || 'KR',
-      });
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
+        const params = new URLSearchParams({
+          appids: steamId.toString(),
+          l: options.language || 'korean',
+          cc: options.country_code || 'KR',
+        });
 
-      const response = await axios.get<SteamAppDetailsResponse>(
-        `${this.STEAM_APPDETAILS_URL}?${params.toString()}`,
-        {
-          timeout: options.timeout,
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        const response = await axios.get<SteamAppDetailsResponse>(
+          `${STEAM_API.APPDETAILS_URL}?${params.toString()}`,
+          {
+            timeout: options.timeout,
+            headers: {
+              'User-Agent': STEAM_API.USER_AGENT,
+            },
           },
-        },
-      );
-
-      const appData = response.data[steamId.toString()];
-
-      if (!appData || !appData.success || !appData.data) {
-        this.logger.warn(
-          `Steam appDetails 응답 실패 또는 데이터 없음: ${steamId}`,
         );
-        return null;
-      }
 
-      return appData.data;
-    } catch (error) {
-      this.logger.error(
-        `Steam appDetails API 호출 실패: ${steamId}`,
-        error.message,
-      );
-      throw error;
-    }
+        const appData = response.data[steamId.toString()];
+
+        if (!appData || !appData.success || !appData.data) {
+          this.logger.error(`Steam appDetails 응답 실패: ${steamId} - 유효하지 않은 데이터`);
+          return null;
+        }
+
+        return appData.data;
+      },
+      this.logger,
+      {
+        context: 'Steam appDetails API',
+        identifier: steamId.toString(),
+        rethrow: true,
+        defaultMessage: 'Steam appDetails API 호출 실패',
+      }
+    );
   }
 
   /**
@@ -226,7 +216,7 @@ export class StreamlinedSteamService {
       developers: appData.developers || [],
       publishers: appData.publishers || [],
       release_date: appData.release_date?.date,
-      categories: appData.categories?.map((c) => c.description) || [],
+      categories: DataMapper.normalizeSteamCategories(appData.categories || []),
       image: appData.header_image,
       // DLC 관련 정보 (Steam 공식 type 필드 활용)
       is_full_game: appData.type === 'game',
@@ -234,7 +224,7 @@ export class StreamlinedSteamService {
       dlc_list: appData.dlc || [], // 본편인 경우 DLC 목록
 
       // 추가 정보
-      screenshots: appData.screenshots?.map((s) => s.path_full) || [],
+      screenshots: DataMapper.normalizeScreenshots(appData.screenshots?.map((s) => s.path_full)),
       website: appData.website,
       is_free: appData.is_free,
     };
@@ -284,8 +274,8 @@ export class StreamlinedSteamService {
     steam_id: number,
     options: SteamReviewApiOptions = {},
   ): Promise<SteamReviewSummary> {
-    try {
-      this.logger.debug(`Steam 리뷰 조회 시작: ${steam_id}`);
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
 
       const defaultOptions: Required<SteamReviewApiOptions> = {
         language: 'all',
@@ -310,8 +300,7 @@ export class StreamlinedSteamService {
           },
           timeout: this.DEFAULT_OPTIONS.timeout,
           headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': STEAM_API.USER_AGENT,
           },
         },
       );
@@ -319,9 +308,7 @@ export class StreamlinedSteamService {
       const data = response.data;
       // API 호출 실패 체크
       if (data.success !== 1 || !data.query_summary) {
-        this.logger.warn(
-          `Steam 리뷰 API 실패: ${steam_id} (success: ${data.success})`,
-        );
+        this.logger.error(`Steam 리뷰 API 실패: ${steam_id} - success: ${data.success}`);
         return this.createEmptyReviewSummary();
       }
 
@@ -343,15 +330,16 @@ export class StreamlinedSteamService {
         total_reviews: summary.total_reviews,
       };
 
-      this.logger.debug(
-        `Steam 리뷰 조회 성공: ${steam_id} - ${summary.review_score_desc} (${summary.total_reviews}개 리뷰, 긍정 ${positivePercentage}%)`,
-      );
-
       return reviewSummary;
-    } catch (error) {
-      this.logger.warn(`Steam 리뷰 조회 실패: ${steam_id}`, error.message);
-      return this.createEmptyReviewSummary();
-    }
+      },
+      this.logger,
+      {
+        context: 'Steam 리뷰 조회',
+        identifier: steam_id.toString(),
+        rethrow: false,
+        defaultMessage: 'Steam 리뷰 조회 실패',
+      }
+    ).then(result => result || this.createEmptyReviewSummary());
   }
 
   /**
@@ -373,38 +361,45 @@ export class StreamlinedSteamService {
    * Steam 공식 GetAppList API 호출 (캐시 활용)
    */
   private async getSteamAppList(): Promise<{ appid: number; name: string }[]> {
-    try {
-      // 캐시 확인
-      const now = Date.now();
-      if (
-        this.steamAppListCache &&
-        now - this.cacheTimestamp < this.CACHE_DURATION
-      ) {
-        this.logger.debug('Steam 앱 목록 캐시 사용');
-        return this.steamAppListCache;
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
+        // 캐시 확인
+        const now = Date.now();
+        if (
+          this.steamAppListCache &&
+          now - this.cacheTimestamp < this.CACHE_DURATION
+        ) {
+          return this.steamAppListCache;
+        }
+
+        const response = await axios.get(STEAM_API.APPLIST_URL, {
+          timeout: this.DEFAULT_OPTIONS.timeout,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        });
+
+        const appList = response.data?.applist?.apps || [];
+
+        if (appList.length === 0) {
+          this.logger.error('Steam GetAppList API 응답 비어있음');
+        }
+
+        // 캐시 업데이트
+        this.steamAppListCache = appList;
+        this.cacheTimestamp = now;
+
+        return appList;
+      },
+      this.logger,
+      {
+        context: 'Steam GetAppList API',
+        identifier: 'appList',
+        rethrow: false,
+        defaultMessage: 'Steam GetAppList API 호출 실패',
       }
-
-      this.logger.debug('Steam 공식 GetAppList API 호출');
-      const response = await axios.get(this.STEAM_APPLIST_URL, {
-        timeout: this.DEFAULT_OPTIONS.timeout,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      });
-
-      const appList = response.data?.applist?.apps || [];
-
-      // 캐시 업데이트
-      this.steamAppListCache = appList;
-      this.cacheTimestamp = now;
-
-      this.logger.debug(`Steam 앱 목록 캐시 업데이트: ${appList.length}개`);
-      return appList;
-    } catch (error) {
-      this.logger.warn('Steam GetAppList API 호출 실패', error.message);
-      return this.steamAppListCache || [];
-    }
+    ).then(result => result || this.steamAppListCache || []);
   }
   private canonicalSlug(name: string) {
     if (!name) return '';
@@ -560,7 +555,7 @@ export class StreamlinedSteamService {
 
       return null;
     } catch (error) {
-      this.logger.warn(`Steam URL App ID 추출 실패: ${steamUrl}`, error.message);
+      // LoggerHelper.logWarn(this.logger, 'Steam URL App ID 추출 실패', error.message, steamUrl);
       return null;
     }
   }
@@ -569,19 +564,27 @@ export class StreamlinedSteamService {
    * Steam 서비스 상태 체크 (헬스체크용)
    */
   async checkSteamApiHealth(): Promise<{ status: string; timestamp: Date }> {
-    try {
-      // 간단한 검색으로 Steam API 상태 확인
-      const testResult = await this.findSteamId('Counter-Strike');
+    return ErrorHandlerUtil.executeWithErrorHandling(
+      async () => {
+        // 간단한 검색으로 Steam API 상태 확인
+        const testResult = await this.findSteamId('Counter-Strike');
 
-      return {
-        status: testResult.success ? 'healthy' : 'degraded',
-        timestamp: new Date(),
-      };
-    } catch (error) {
-      return {
-        status: 'unhealthy',
-        timestamp: new Date(),
-      };
-    }
+        if (!testResult.success) {
+          this.logger.error('Steam API 상태 체크 실패: degraded 상태');
+        }
+
+        return {
+          status: testResult.success ? 'healthy' : 'degraded',
+          timestamp: new Date(),
+        };
+      },
+      this.logger,
+      {
+        context: 'Steam API 헬스체크',
+        identifier: 'health-check',
+        rethrow: false,
+        defaultMessage: 'Steam API 상태 체크 실패',
+      }
+    ).then(result => result || { status: 'unhealthy', timestamp: new Date() });
   }
 }

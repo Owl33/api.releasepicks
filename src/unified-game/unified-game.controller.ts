@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Param, Query, Logger } from '@nestjs/common';
 import { UnifiedGameService } from './unified-game.service';
+import { LoggerHelper } from '../utils/game-utilities';
 import {
   GameCalendarData,
   MonthlyUnifiedGameResult,
@@ -37,7 +38,7 @@ export class UnifiedGameController {
     @Query('minPopularity') minPopularity?: string,
     @Query('steamTimeout') steamTimeout?: string,
   ): Promise<MonthlyUnifiedGameResult> {
-    this.logger.log(`GET 요청: ${month} 월별 통합 게임 데이터 조회`);
+    LoggerHelper.logStart(this.logger, 'GET 요청', `${month} 월별 통합 게임 데이터 조회`);
 
     // 쿼리 파라미터 파싱
     const options: UnifiedGameOptions = {
@@ -54,13 +55,15 @@ export class UnifiedGameController {
     try {
       const result = await this.unifiedGameService.processGamesForMonth(month, options);
 
-      this.logger.log(
-        `GET 완료: ${month} - ${result.total_games}개 게임 (PC: ${result.pc_games}, 콘솔: ${result.console_games}, Steam 통합: ${result.steam_integrated_games}개)`
+      LoggerHelper.logComplete(
+        this.logger,
+        `GET 완료: ${month}`,
+        `${result.total_games}개 게임 (PC: ${result.pc_games}, 콘솔: ${result.console_games}, Steam 통합: ${result.steam_integrated_games}개)`
       );
 
       return result;
     } catch (error) {
-      this.logger.error(`GET 실패: ${month}`, error.message);
+      LoggerHelper.logError(this.logger, 'GET 실패', error, month);
       throw error;
     }
   }
@@ -88,7 +91,7 @@ export class UnifiedGameController {
     errors: number;
     message: string;
   }> {
-    this.logger.log(`POST 요청: ${month} 월별 통합 게임 데이터 저장`);
+    LoggerHelper.logStart(this.logger, 'POST 요청', `${month} 월별 통합 게임 데이터 저장`);
 
     // 쿼리 파라미터 파싱 (GET과 동일)
     const options: UnifiedGameOptions = {
@@ -107,14 +110,14 @@ export class UnifiedGameController {
 
       const message = `${month} 월별 게임 저장 완료: 저장 ${result.saved}개, 건너뜀 ${result.skipped}개, 오류 ${result.errors}개`;
 
-      this.logger.log(`POST 완료: ${message}`);
+      LoggerHelper.logComplete(this.logger, 'POST 완료', message);
 
       return {
         ...result,
         message,
       };
     } catch (error) {
-      this.logger.error(`POST 실패: ${month}`, error.message);
+      LoggerHelper.logError(this.logger, 'POST 실패', error, month);
       throw error;
     }
   }
@@ -134,7 +137,7 @@ export class UnifiedGameController {
       youtube: boolean;
     };
   }> {
-    this.logger.debug('처리 상태 조회 요청');
+    LoggerHelper.logStart(this.logger, '처리 상태 조회', '요청');
 
     try {
       // 각 서비스 상태 체크 (간단한 형태)
@@ -148,7 +151,7 @@ export class UnifiedGameController {
         },
       };
     } catch (error) {
-      this.logger.error('처리 상태 조회 실패', error.message);
+      LoggerHelper.logError(this.logger, '처리 상태 조회 실패', error);
       return {
         status: 'unhealthy',
         timestamp: new Date(),
@@ -167,7 +170,7 @@ export class UnifiedGameController {
    */
   @Post('clear-cache')
   async clearBatchCache(): Promise<{ message: string; timestamp: Date }> {
-    this.logger.log('배치 캐시 클리어 요청');
+    LoggerHelper.logStart(this.logger, '배치 캐시 클리어', '요청');
 
     try {
       await this.unifiedGameService.clearBatchCache();
@@ -176,7 +179,7 @@ export class UnifiedGameController {
         timestamp: new Date(),
       };
     } catch (error) {
-      this.logger.error('배치 캐시 클리어 실패', error.message);
+      LoggerHelper.logError(this.logger, '배치 캐시 클리어 실패', error);
       throw error;
     }
   }

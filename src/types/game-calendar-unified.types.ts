@@ -180,6 +180,19 @@ export interface GameCalendarData {
 
   /** Steam 통합 여부 */
   steam_integrated: boolean;
+
+  // ===== DLC 부모 게임 정보 (임시 필드) =====
+  /** RAWG parents 배열 (DLC인 경우) */
+  _rawg_parents?: RawgParentGameData[];
+
+  /** Steam fullgame_info (DLC인 경우) */
+  _steam_fullgame_info?: any;
+
+  /** 부모 게임 RAWG ID (임시 필드 - 배열 추가 및 관계 설정용) */
+  _parent_rawg_id?: number;
+
+  /** 부모 게임 Steam ID (임시 필드 - 배열 추가 및 관계 설정용) */
+  _parent_steam_id?: number;
 }
 
 /**

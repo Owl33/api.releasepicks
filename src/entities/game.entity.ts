@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToOne } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, OneToOne, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
 import { GameDetail } from './game-detail.entity';
 
 @Entity('games')
@@ -63,6 +63,24 @@ export class Game {
 
   @Column({ type: 'varchar', length: 50, nullable: true, name: 'steam_review_score' })
   steam_review_score?: string; // Steam 공식 review_score_desc: "압도적으로 긍정적" 등
+
+  // ===== DLC 부모-자식 관계 필드들 =====
+
+  // 부모 게임 관계 (DLC인 경우에만 값 존재)
+  @Column({ type: 'integer', nullable: true, name: 'parent_game_id' })
+  parent_game_id?: number; // 부모 게임의 games.id (DB PK)
+
+  @Column({ type: 'integer', nullable: true, name: 'parent_steam_game_id' })
+  parent_steam_game_id?: number; // 부모 게임의 Steam App ID
+
+  // 자기 참조 관계: 부모 게임 (DLC → 본편)
+  @ManyToOne(() => Game, (game) => game.children, { nullable: true })
+  @JoinColumn({ name: 'parent_game_id' })
+  parent?: Game;
+
+  // 자기 참조 관계: 자식 게임들 (본편 → DLC들)
+  @OneToMany(() => Game, (game) => game.parent)
+  children?: Game[];
 
   // 관계 설정 (1:1, games.id <- game_details.game_id)
   @OneToOne(() => GameDetail, (gameDetail) => gameDetail.game, {

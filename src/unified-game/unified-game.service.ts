@@ -13,7 +13,13 @@ import {
   PlatformProcessingInfo,
   StoreLinks,
 } from '../types/game-calendar-unified.types';
-import { GameAnalysisService, ClassificationContext } from '../utils/game-analysis.service';
+import {
+  GameAnalysisService,
+  ClassificationContext,
+} from '../utils/game-analysis';
+import { PLATFORM_TYPES, LoggerHelper } from '../utils/game-utilities';
+import { DataMapper } from '../utils/data-processing';
+import { ErrorHandlerUtil } from '../common/utils/error-handler.util';
 
 /**
  * 통합 게임 처리 서비스
@@ -53,7 +59,7 @@ export class UnifiedGameService {
     options: UnifiedGameOptions = {},
   ): Promise<MonthlyUnifiedGameResult> {
     const startTime = Date.now();
-    this.logger.log(`${month} 월별 통합 게임 처리 시작`);
+    // 🔄 통합 시스템: 메서드 시작 로깅은 NestJS 라이프사이클에서 자동 처리
 
     // 기본 옵션 설정
     const mergedOptions: Required<UnifiedGameOptions> = {
@@ -67,7 +73,6 @@ export class UnifiedGameService {
 
     try {
       // === 1단계: RAWG 데이터 수집  ===
-      this.logger.debug(`1단계: RAWG에서 ${month} 게임 수집 중...`);
       const rawgResult = await this.rawgService.getMonthlyGames(
         month,
         Math.max(mergedOptions.max_games),
@@ -76,15 +81,11 @@ export class UnifiedGameService {
       const finalGames = rawgResult.games.slice(0, mergedOptions.max_games);
 
       // === 1.5단계: DB 기반 기존 데이터 확인 ===
-      this.logger.debug(
-        `1.5단계: DB에서 기존 데이터 확인 중... (${finalGames.length}개 게임)`,
-      );
       const existingGames = await this.checkExistingGamesInDB(
         finalGames.map((g) => g.id),
       );
 
       // === 2단계: 플랫폼별 통합 처리 ===
-      this.logger.debug(`2단계: 플랫폼별 데이터 통합 중...`);
       const processedGames: GameCalendarData[] = [];
       let pcGamesCount = 0;
       let consoleGamesCount = 0;
@@ -95,23 +96,16 @@ export class UnifiedGameService {
           // 기존 데이터 확인 및 업데이트 여부 판단
           const existingGame = existingGames.get(rawgGame.id);
           if (existingGame && !this.shouldUpdateGame(existingGame, rawgGame)) {
-            this.logger.debug(`게임 업데이트 불필요, 스킵: ${rawgGame.name}`);
             // 기존 데이터를 다시 매핑하여 반환 형식에 맞촤 추가
             const existingGameData =
               await this.mapExistingGameToCalendarData(existingGame);
             processedGames.push(existingGameData);
 
             // 통계 카운트 (기존 데이터 기반)
-            if (
-              existingGameData.platform_type === 'pc' ||
-              existingGameData.platform_type === 'mixed'
-            ) {
+            if (this.isPcCompatible(existingGameData.platform_type)) {
               pcGamesCount++;
             }
-            if (
-              existingGameData.platform_type === 'console' ||
-              existingGameData.platform_type === 'mixed'
-            ) {
+            if (this.isConsoleCompatible(existingGameData.platform_type)) {
               consoleGamesCount++;
             }
             if (existingGameData.steam_integrated) {
@@ -121,11 +115,6 @@ export class UnifiedGameService {
           }
 
           // 새로운 데이터 처리 또는 업데이트 필요
-          this.logger.debug(
-            existingGame
-              ? `게임 업데이트 필요: ${rawgGame.name}`
-              : `새로운 게임 처리: ${rawgGame.name}`,
-          );
 
           const unifiedGame = await this.processUnifiedGameData(
             rawgGame,
@@ -134,37 +123,24 @@ export class UnifiedGameService {
           processedGames.push(unifiedGame);
 
           // 통계 카운트
-          if (
-            unifiedGame.platform_type === 'pc' ||
-            unifiedGame.platform_type === 'mixed'
-          ) {
+          if (this.isPcCompatible(unifiedGame.platform_type)) {
             pcGamesCount++;
           }
-          if (
-            unifiedGame.platform_type === 'console' ||
-            unifiedGame.platform_type === 'mixed'
-          ) {
+          if (this.isConsoleCompatible(unifiedGame.platform_type)) {
             consoleGamesCount++;
           }
           if (unifiedGame.steam_integrated) {
             steamIntegratedCount++;
           }
         } catch (error) {
-          this.logger.error(
-            `게임 통합 처리 실패: ${rawgGame.name}`,
-            error.message,
-          );
+          // 🔄 비즈니스 로직 실패: 개별 게임 처리 실패는 전체 작업을 중단하지 않음
+          // GlobalExceptionFilter에서 자동으로 로깅됨
+          continue;
         }
       }
 
-      // 처리 완료 로그
-      this.logger.debug('월별 게임 처리 완료');
-
       const processingTime = Date.now() - startTime;
-
-      this.logger.log(
-        `${month} 통합 게임 처리 완료: ${processedGames.length}개 (PC: ${pcGamesCount}, 콘솔: ${consoleGamesCount}, Steam 통합: ${steamIntegratedCount}개) - ${processingTime}ms`,
-      );
+      // 🔄 통합 시스템: 완료 로깅은 ResponseInterceptor에서 자동 처리
 
       return {
         month,
@@ -183,7 +159,7 @@ export class UnifiedGameService {
         },
       };
     } catch (error) {
-      this.logger.error(`${month} 통합 게임 처리 실패:`, error.message);
+      // 🔄 ErrorHandlerUtil 또는 GlobalExceptionFilter에서 자동 로깅 처리
       throw new Error(`월별 통합 게임 처리 실패: ${error.message}`);
     }
   }
@@ -220,7 +196,7 @@ export class UnifiedGameService {
     options: Required<UnifiedGameOptions>,
   ): Promise<GameCalendarData> {
     try {
-      this.logger.debug(`Steam 통합 처리 시작: ${rawgGame.name}`);
+      // 🔄 통합 시스템: Steam 통합 처리 시작 로깅 제거
 
       // 0. 재시도 로직을 포함한 상세 정보 사용 (parents_count, additions_count 포함)
       const detailedGame =
@@ -251,24 +227,24 @@ export class UnifiedGameService {
       };
 
       // 5. 초기 분류 및 검색 전략 수립
-      const initialClassification = GameAnalysisService.classifyGame(classificationContext);
-      const searchStrategies = GameAnalysisService.generateSearchStrategies(classificationContext);
-
-      this.logger.debug(
-        `게임 분류 예측: ${initialClassification.gameType} (신뢰도: ${initialClassification.confidence.toFixed(2)}) - ${initialClassification.reason}`,
+      const initialClassification = GameAnalysisService.classifyGame(
+        classificationContext,
       );
-      this.logger.debug(`검색 전략: [${searchStrategies.join(', ')}]`);
+      const searchStrategies = GameAnalysisService.generateSearchStrategies(
+        classificationContext,
+      );
 
       // 6. Steam ID 검색 (store_links 우선 + 다중 전략)
       const steam_idResult = await this.steamService.findSteamId(
         rawgGame.name,
         storeLinksForSteam,
-        searchStrategies
+        searchStrategies,
       );
 
       // 7. Steam ID 검색 실패 시 RAWG 전용 처리
       if (!steam_idResult.success || !steam_idResult.steam_id) {
-        this.logger.debug(`Steam ID 검색 완전 실패: ${rawgGame.name}`);
+        // 🚨 비즈니스 로직 실패: Steam ID 검색 실패
+        this.logger.warn(`Steam ID 검색 실패: ${rawgGame.name} - ID 검색 실패`);
         return await this.processRawgOnlyData(rawgGame);
       }
 
@@ -278,7 +254,10 @@ export class UnifiedGameService {
         { timeout: options.steam_timeout },
       );
       if (!steam_data) {
-        this.logger.debug(`Steam 데이터 조회 실패: ${rawgGame.name}`);
+        // 🚨 비즈니스 로직 실패: Steam 데이터 조회 실패
+        this.logger.warn(
+          `Steam 데이터 조회 실패: ${rawgGame.name} (Steam ID: ${steam_idResult.steam_id})`,
+        );
         return await this.processRawgOnlyData(rawgGame);
       }
 
@@ -304,12 +283,13 @@ export class UnifiedGameService {
         hasFullgameInfo: !!steam_data.fullgame_info,
       };
 
-      const finalClassification = GameAnalysisService.classifyGame(finalClassificationContext);
+      const finalClassification = GameAnalysisService.classifyGame(
+        finalClassificationContext,
+      );
 
       // 🎯 DLC 역검색이 필요한 경우만 수행 (성능 최적화)
       let finalResult = finalClassification;
       if (finalClassification.reason.includes('역검색 필요')) {
-        this.logger.debug(`DLC 역검색 수행: ${rawgGame.name}`);
         const dlcCheckResult = await GameAnalysisService.checkIfGameIsDlcInList(
           steam_data.dlc_list || [],
           rawgGame.name,
@@ -335,22 +315,31 @@ export class UnifiedGameService {
         }
       }
 
-      this.logger.debug(
-        `최종 게임 타입: ${rawgGame.name} → ${finalResult.gameType} (신뢰도: ${finalResult.confidence.toFixed(2)}) - ${finalResult.reason}`,
-      );
-
       // 9. 최종 분석 결과 적용
       unifiedData.is_dlc = !finalResult.isMainGame;
       unifiedData.game_type = finalResult.gameType;
       unifiedData.game_type_confidence = finalResult.confidence;
       unifiedData.game_type_reason = finalResult.reason;
-      this.logger.debug(
-        `Steam 통합 처리 성공: ${rawgGame.name} → ${steam_data.korea_name || steam_data.original_name}`,
-      );
+
+      // 10. DLC인 경우 부모 게임 정보 추가 (임시 필드)
+      if (!finalResult.isMainGame && finalResult.gameType === 'dlc') {
+        // RAWG parents 정보 추가 (detailedGame.parents가 있는 경우)
+        if (detailedGame.parents && detailedGame.parents.length > 0) {
+          unifiedData._rawg_parents = detailedGame.parents;
+        }
+
+        // Steam fullgame_info 추가 (steam_data.fullgame_info가 있는 경우)
+        if (steam_data.fullgame_info) {
+          unifiedData._steam_fullgame_info = steam_data.fullgame_info;
+        }
+      }
 
       return unifiedData;
     } catch (error) {
-      this.logger.warn(`Steam 통합 처리 실패: ${rawgGame.name}`, error.message);
+      // 🚨 비즈니스 로직 실패: Steam 통합 처리 전체 실패
+      this.logger.error(
+        `Steam 통합 처리 실패: ${rawgGame.name} - ${error?.message || error}`,
+      );
       return await this.processRawgOnlyData(rawgGame);
     }
   }
@@ -365,9 +354,6 @@ export class UnifiedGameService {
 
     // 1. 게임명 분석
     const nameAnalysis = GameAnalysisService.analyzeGameName(rawgGame.name);
-    this.logger.debug(
-      `RAWG 전용 게임명 분석: ${rawgGame.name} (DLC패턴: ${nameAnalysis.patterns.isDlc})`,
-    );
 
     // 2. RAWG 추가 정보 수집 (재시도 로직 포함)
     const [storeLinks, details, video] = await Promise.all([
@@ -381,74 +367,13 @@ export class UnifiedGameService {
       this.getYouTubeTrailer(rawgGame.name),
     ]);
 
-    // 3. 기본 데이터 객체 생성
-    const baseData = {
-      // === RAWG 기본 정보 ===
-      rawg_id: rawgGame.id,
-      name: rawgGame.name,
-      required_age: '', // Steam에서만 제공
-      released: rawgGame.released,
-      tba: rawgGame.tba,
-      platforms: this.normalizePlatforms(rawgGame.platforms),
-      genres: rawgGame.genres?.map((g: any) => g.name) || [],
-      tags: (rawgGame.tags || [])
-        .filter((t: any) => t.language === 'eng')
-        .map((t: any) => t.name)
-        .slice(0, 10),
-      early_access:
-        rawgGame.tags?.some(
-          (t: any) => t.name.toLowerCase() === 'early access',
-        ) || false,
-      image: rawgGame.background_image || '',
-
-      // === 인기도 및 미디어 ===
-      added: rawgGame.added,
-      added_by_status: rawgGame.added_by_status,
-      screenshots:
-        rawgGame.short_screenshots?.slice(1).map((item: any) => item.image) ||
-        [],
-
-      // === 평점 및 등급 ===
-      esrb_rating: rawgGame.esrb_rating?.name || null,
-      rating: rawgGame.rating,
-      ratings_count: rawgGame.ratings_count,
-      description: rawgGame.description_raw,
-
-      // === Steam 전용 데이터 (없음) ===
-      metacritic: undefined,
-      categories: [],
-
-      // === 개발사/배급사 정보 ===
-      slug_name: details?.slugName,
-      website: details?.website,
-      developers: details?.developers || [],
-      publishers: details?.publishers || [],
-
-      // === 링크 및 미디어 ===
-      store_links: storeLinks,
+    // 🎯 DataMapper로 RAWG 전용 데이터 생성 (64라인 → 1라인!)
+    const baseData = DataMapper.mapRawgGameToBaseData(
+      rawgGame,
+      details,
+      storeLinks,
       video,
-
-      // === Steam 리뷰 관련 (없음) ===
-      review_score: undefined,
-      review_score_desc: undefined,
-      total_positive: undefined,
-      total_negative: undefined,
-      total_reviews: undefined,
-
-      // === Steam 통합 필드들 (없음) ===
-      steam_id: undefined,
-      original_name: undefined,
-      korea_name: undefined,
-      steam_type: undefined,
-      price: undefined,
-      is_full_game: undefined,
-      dlc_list: undefined,
-      is_free: undefined,
-
-      // === 메타 정보 ===
-      platform_type: this.determinePlatformType(rawgGame.platforms),
-      steam_integrated: false,
-    };
+    );
 
     // 4. 게임 분류 (RAWG 전용)
     const classificationContext: ClassificationContext = {
@@ -459,14 +384,12 @@ export class UnifiedGameService {
       nameAnalysis,
     };
 
-    const classification = GameAnalysisService.classifyGame(classificationContext);
-
-    this.logger.debug(
-      `RAWG 전용 게임 분류: ${rawgGame.name} → ${classification.gameType} (신뢰도: ${classification.confidence.toFixed(2)}) - ${classification.reason}`,
+    const classification = GameAnalysisService.classifyGame(
+      classificationContext,
     );
 
-    // 5. 최종 분석 결과 적용하여 반환
-    return {
+    // 5. 최종 분석 결과 적용
+    const finalData = {
       ...baseData,
       // === DLC 관련 (통합 분석 결과) ===
       is_dlc: !classification.isMainGame,
@@ -474,8 +397,17 @@ export class UnifiedGameService {
       game_type_confidence: classification.confidence,
       game_type_reason: classification.reason,
     };
-  }
 
+    // 6. DLC인 경우 부모 게임 정보 추가 (임시 필드)
+    if (!classification.isMainGame && classification.gameType === 'dlc') {
+      // RAWG parents 정보 추가 (detailedGame.parents가 있는 경우)
+      if (detailedGame.parents && detailedGame.parents.length > 0) {
+        finalData._rawg_parents = detailedGame.parents;
+      }
+    }
+
+    return finalData;
+  }
 
   /**
    * 🔀 RAWG + Steam 데이터 병합
@@ -491,140 +423,27 @@ export class UnifiedGameService {
     // 기본 RAWG 데이터 생성 (재시도 로직 포함)
     const [storeLinks, details, video] = await Promise.all([
       // preloadedStoreLinks가 있으면 사용, 없으면 새로 가져오기
-      preloadedStoreLinks || this.getStoreLinksWithRetry(
-        rawgGame.id,
-        rawgGame.name,
-        rawgGame.platforms,
-        rawgGame.stores,
-      ),
+      preloadedStoreLinks ||
+        this.getStoreLinksWithRetry(
+          rawgGame.id,
+          rawgGame.name,
+          rawgGame.platforms,
+          rawgGame.stores,
+        ),
       this.getDetailsWithRetry(rawgGame.id),
       this.getYouTubeTrailer(rawgGame.name),
     ]);
 
-    const baseData: GameCalendarData = {
-      // === RAWG 기본 정보 ===
-      rawg_id: rawgGame.id,
-      name: rawgGame.name,
-      required_age: '', // Steam에서만 제공
-      released: rawgGame.released,
-      tba: rawgGame.tba,
-      platforms: this.normalizePlatforms(rawgGame.platforms),
-      genres: rawgGame.genres?.map((g: any) => g.name) || [],
-      tags: (rawgGame.tags || [])
-        .filter((t: any) => t.language === 'eng')
-        .map((t: any) => t.name)
-        .slice(0, 10),
-      early_access:
-        rawgGame.tags?.some(
-          (t: any) => t.name.toLowerCase() === 'early access',
-        ) || false,
-      image: rawgGame.background_image || '',
-
-      // === 인기도 및 미디어 ===
-      added: rawgGame.added,
-      added_by_status: rawgGame.added_by_status,
-      screenshots:
-        rawgGame.short_screenshots?.slice(1).map((item: any) => item.image) ||
-        [],
-
-      // === 평점 및 등급 ===
-      esrb_rating: rawgGame.esrb_rating?.name || null,
-      rating: rawgGame.rating,
-      ratings_count: rawgGame.ratings_count,
-      description: rawgGame.description_raw,
-
-      // === Steam 전용 데이터 (기본값) ===
-      metacritic: undefined,
-      categories: [],
-
-      // === 개발사/배급사 정보 ===
-      slug_name: details?.slugName,
-      website: details?.website,
-      developers: details?.developers || [],
-      publishers: details?.publishers || [],
-
-      // === 링크 및 미디어 ===
-      store_links: storeLinks,
+    // 🎯 DataMapper로 RAWG 베이스 데이터 생성 (80라인 → 1라인!)
+    const baseData = DataMapper.mapRawgGameToBaseData(
+      rawgGame,
+      details,
+      storeLinks,
       video,
+    );
 
-      // === Steam 리뷰 관련 (기본값) ===
-      review_score: undefined,
-      review_score_desc: undefined,
-      total_positive: undefined,
-      total_negative: undefined,
-      total_reviews: undefined,
-
-      // === Steam 통합 필드들 (기본값) ===
-      steam_id: undefined,
-      original_name: undefined,
-      korea_name: undefined,
-      steam_type: undefined,
-      price: undefined,
-      is_full_game: undefined,
-      dlc_list: undefined,
-      is_free: undefined,
-
-      // === DLC 관련 (임시값, 후에 수정됨) ===
-      is_dlc: false,
-
-      // === 메타 정보 ===
-      platform_type: this.determinePlatformType(rawgGame.platforms),
-      steam_integrated: false,
-    };
-
-    // Steam 카테고리 처리 (description만 저장)
-    const steamCategories =
-      steam_data.categories
-        ?.map((cat: any) =>
-          typeof cat === 'string' ? cat : cat.description || '',
-        )
-        .filter(Boolean) || [];
-
-    // user_request.md 명세에 따른 Steam 데이터로 보강
-    return {
-      ...baseData,
-
-      // === Steam 우선 데이터 ===
-      required_age: steam_data.steam_id?.toString() || '',
-      image: steam_data.image || baseData.image,
-      screenshots:
-        steam_data.screenshots?.length > 0
-          ? steam_data.screenshots
-          : baseData.screenshots,
-      website: steam_data.website || baseData.website,
-      developers:
-        steam_data.developers?.length > 0
-          ? steam_data.developers
-          : baseData.developers,
-      publishers:
-        steam_data.publishers?.length > 0
-          ? steam_data.publishers
-          : baseData.publishers,
-
-      // === Steam 전용 데이터 ===
-      metacritic: undefined, // TODO: Steam appDetails에서 추출
-      categories: steamCategories,
-
-      // === Steam 리뷰 데이터 (직접 포함) ===
-      review_score: steamReviews?.review_score || undefined,
-      review_score_desc: steamReviews?.review_score_desc || undefined,
-      total_positive: steamReviews?.total_positive || undefined,
-      total_negative: steamReviews?.total_negative || undefined,
-      total_reviews: steamReviews?.total_reviews || undefined,
-
-      // === Steam 통합 필드들 (플랫 구조) ===
-      steam_id: steam_data.steam_id,
-      original_name: steam_data.original_name,
-      korea_name: steam_data.korea_name,
-      steam_type: steam_data.steam_type,
-      price: steam_data.price || 'Unknown',
-      is_full_game: steam_data.is_full_game,
-      dlc_list: steam_data.dlc_list || [],
-      is_free: steam_data.is_free,
-
-      // === 메타 정보 ===
-      steam_integrated: true,
-    };
+    // 🔗 Steam 데이터와 병합 (40라인 → 1라인!)
+    return DataMapper.mergeWithSteamData(baseData, steam_data, steamReviews);
   }
 
   /**
@@ -662,50 +481,6 @@ export class UnifiedGameService {
   }
 
   /**
-   * 🔧 유틸리티: 플랫폼 정규화
-   */
-  private normalizePlatforms(platforms: any[]): string[] {
-    return Array.from(
-      new Set(
-        platforms.map((p) => {
-          const slug = p.platform?.slug || p;
-
-          if (slug.includes('playstation')) return 'PlayStation';
-          if (slug.includes('xbox')) return 'Xbox';
-          if (slug.includes('nintendo')) return 'Nintendo';
-          if (['pc', 'macos', 'linux'].some((os) => slug.includes(os)))
-            return 'PC';
-
-          return slug; // 매핑 안 되면 원래 slug 유지
-        }),
-      ),
-    );
-  }
-
-  /**
-   * 🔧 유틸리티: 플랫폼 타입 결정
-   */
-  private determinePlatformType(platforms: any[]): 'pc' | 'console' | 'mixed' {
-    const platformSlugs = platforms.map(
-      (p) => p.platform?.slug?.toLowerCase() || p.toLowerCase(),
-    );
-
-    const hasPc = platformSlugs.some((slug) =>
-      ['pc', 'macos', 'linux'].some((os) => slug.includes(os)),
-    );
-
-    const hasConsole = platformSlugs.some((slug) =>
-      ['playstation', 'xbox', 'nintendo', 'switch'].some((console) =>
-        slug.includes(console),
-      ),
-    );
-
-    if (hasPc && hasConsole) return 'mixed';
-    if (hasPc) return 'pc';
-    return 'console';
-  }
-
-  /**
    * 🔧 유틸리티: YouTube 트레일러 조회
    */
   private async getYouTubeTrailer(
@@ -715,9 +490,9 @@ export class UnifiedGameService {
       const videoId = await this.youtubeService.getSimpleTrailer(gameName);
       return videoId ? `https://www.youtube.com/watch?v=${videoId}` : undefined;
     } catch (error) {
+      // 🚨 비즈니스 로직 실패: YouTube 트레일러 조회 실패
       this.logger.warn(
-        `YouTube 트레일러 조회 실패: ${gameName}`,
-        error.message,
+        `YouTube 트레일러 조회 실패: ${gameName} - ${error?.message || error}`,
       );
       return undefined;
     }
@@ -734,8 +509,6 @@ export class UnifiedGameService {
   ): Promise<Map<number, Game>> {
     if (rawgIds.length === 0) return new Map();
 
-    this.logger.debug(`DB에서 기존 게임 데이터 확인: ${rawgIds.length}개`);
-
     const existingGames = await this.gameRepository.find({
       where: { rawg_id: In(rawgIds) },
       select: ['id', 'rawg_id', 'name', 'released', 'platforms', 'steam_id'],
@@ -746,7 +519,6 @@ export class UnifiedGameService {
       gameMap.set(game.rawg_id, game);
     });
 
-    this.logger.debug(`DB에서 기존 게임 ${gameMap.size}개 발견`);
     return gameMap;
   }
 
@@ -791,11 +563,6 @@ export class UnifiedGameService {
       try {
         return await apiCall();
       } catch (error) {
-        this.logger.warn(
-          `API 호출 시도 ${attempt}/${maxRetries} 실패:`,
-          error.message,
-        );
-
         if (attempt === maxRetries) {
           throw error; // 마지막 시도에서도 실패하면 예외 발생
         }
@@ -892,7 +659,10 @@ export class UnifiedGameService {
 
       return links;
     } catch (e: any) {
-      this.logger.warn(`스토어 링크 조회 실패: ${gameName}`, e?.message ?? e);
+      // 🚨 비즈니스 로직 실패: 스토어 링크 조회 실패
+      this.logger.warn(
+        `스토어 링크 조회 실패: ${gameName} - ${e?.message || e}`,
+      );
       return {};
     }
   }
@@ -901,9 +671,7 @@ export class UnifiedGameService {
    * 🗑️ 더미 메서드 (호환성 유지)
    * 메모리 캐시가 제거되었으므로 빈 메서드
    */
-  async clearBatchCache(): Promise<void> {
-    this.logger.log('메모리 캐시가 제거되어 정리할 내용이 없음');
-  }
+  async clearBatchCache(): Promise<void> {}
 
   /**
    * 🔄 기존 게임 데이터를 캐렌더 데이터 형식으로 매핑
@@ -915,76 +683,7 @@ export class UnifiedGameService {
     const gameDetail = await this.dataSource
       .getRepository(GameDetail)
       .findOne({ where: { game_id: existingGame.id } });
-
-    return {
-      // === RAWG 기본 정보 ===
-      rawg_id: existingGame.rawg_id,
-      name: existingGame.name,
-      required_age: '', // Steam에서만 제공
-      released: existingGame.released.toISOString().split('T')[0],
-      tba: false,
-      platforms: existingGame.platforms || [],
-      genres: existingGame.genres || [],
-      tags: gameDetail?.tags || [],
-      early_access: gameDetail?.early_access || false,
-      image: existingGame.image || '',
-
-      // === 인기도 및 미디어 ===
-      added: existingGame.added || 0,
-      added_by_status: {},
-      screenshots: gameDetail?.screenshots || [],
-
-      // === 평점 및 등급 ===
-      esrb_rating: gameDetail?.esrb_rating || null,
-      rating: gameDetail?.rating || 0,
-      ratings_count: gameDetail?.ratings_count || 0,
-      description: gameDetail?.description || '',
-
-      // === Steam 전용 데이터 ===
-      metacritic: undefined,
-      categories: [],
-
-      // === 개발사/배급사 정보 ===
-      slug_name: gameDetail?.slug_name || '',
-      website: gameDetail?.website || existingGame.developers?.[0] || '',
-      developers: existingGame.developers || [],
-      publishers: existingGame.publishers || [],
-
-      // === 링크 및 미디어 ===
-      store_links: gameDetail?.store_links || {},
-      video: undefined, // YouTube 데이터는 실시간 조회 필요
-
-      // === Steam 리뷰 관련 ===
-      review_score: undefined, // Steam review score는 숫자 타입이지만 DB에는 문자열로 저장되어 있음
-      review_score_desc: existingGame.steam_review_score || undefined,
-      total_positive: existingGame.steam_reviews_positive || undefined,
-      total_negative:
-        existingGame.steam_reviews_total && existingGame.steam_reviews_positive
-          ? existingGame.steam_reviews_total -
-            existingGame.steam_reviews_positive
-          : undefined,
-      total_reviews: existingGame.steam_reviews_total || undefined,
-
-      // === Steam 통합 필드들 ===
-      steam_id: existingGame.steam_id || undefined,
-      original_name: existingGame.name,
-      korea_name: existingGame.korea_name || undefined,
-      steam_type: existingGame.steam_type || undefined,
-      price: existingGame.steam_price || undefined,
-      is_full_game: existingGame.steam_type === 'game',
-      dlc_list: existingGame.dlc_list || undefined,
-      is_free: existingGame.steam_price === '무료',
-
-      // === DLC 관련 ===
-      is_dlc: existingGame.steam_type === 'dlc',
-      game_type: existingGame.steam_type === 'dlc' ? 'dlc' : 'main_game',
-      game_type_confidence: 0.95,
-      game_type_reason: 'DB에서 기존 데이터 사용',
-
-      // === 메타 정보 ===
-      platform_type: this.determinePlatformType(existingGame.platforms),
-      steam_integrated: !!existingGame.steam_id,
-    };
+    return DataMapper.mapFromGameEntity(existingGame, gameDetail);
   }
 
   // === 🗄️ 데이터베이스 저장 메서드들 ===
@@ -1002,45 +701,82 @@ export class UnifiedGameService {
     errors: number;
   }> {
     try {
-      this.logger.log(`${month} 통합 게임 데이터 DB 저장 시작`);
 
       // 통합 데이터 처리
       const unifiedResult = await this.processGamesForMonth(month, options);
       const results = { saved: 0, skipped: 0, errors: 0 };
 
-      // 각 게임을 DB에 저장
-      for (const gameData of unifiedResult.games) {
+      // 🎮 DLC 부모 게임들을 게임 배열에 추가 (기존 로직에 자연스럽게 통합)
+      const allGames = [...unifiedResult.games];
+      const addedParentIds = new Set<string>();
+
+      // DLC를 찾아서 부모 게임들을 배열에 추가
+      for (const game of unifiedResult.games) {
+        if (game.is_dlc && game.game_type === 'dlc') {
+          // Steam fullgame_info 우선 활용
+          if (game._steam_fullgame_info?.appid) {
+            try {
+              const steamData = await this.steamService.getGameCalendarData(game._steam_fullgame_info.appid);
+              if (steamData) {
+                const parentId = `steam_${steamData.steam_id}`;
+                if (!addedParentIds.has(parentId)) {
+                  const parentGameData = this.createSteamParentGame(steamData);
+                  allGames.push(parentGameData);
+                  addedParentIds.add(parentId);
+                  game._parent_steam_id = steamData.steam_id;
+                  this.logger.log(`✅ Steam 부모 게임 추가: ${steamData.original_name} (DLC: ${game.name})`);
+                }
+              }
+            } catch (error) {
+              this.logger.warn(`Steam 부모 게임 생성 실패: ${error.message}`);
+            }
+          }
+          // RAWG parents 활용
+          else if (game._rawg_parents && game._rawg_parents.length > 0) {
+            const parentRawgId = game._rawg_parents[0].id;
+            const parentId = `rawg_${parentRawgId}`;
+            if (!addedParentIds.has(parentId)) {
+              const parentGameData = this.createRawgParentGame(game._rawg_parents[0]);
+              allGames.push(parentGameData);
+              addedParentIds.add(parentId);
+              game._parent_rawg_id = parentRawgId;
+              this.logger.log(`✅ RAWG 부모 게임 추가: ${game._rawg_parents[0].name} (DLC: ${game.name})`);
+            }
+          }
+        }
+      }
+
+      // 모든 게임(부모 게임 포함)을 동일한 로직으로 저장
+      for (const gameData of allGames) {
         try {
           await this.saveUnifiedGameToDatabase(gameData);
           results.saved++;
-          this.logger.debug(`게임 저장 완료: ${gameData.name}`);
+          // 🔄 통합 시스템: 로깅 제거
+          // LoggerHelper.logSuccess(this.logger, '게임 저장', gameData.name);
         } catch (error) {
           if (error.code === '23505' || error.message?.includes('중복')) {
             results.skipped++;
-            this.logger.debug(`게임 중복 건너뜀: ${gameData.name}`);
+            // 🔄 통합 시스템: 로깅 제거
+            // LoggerHelper.logSkip(this.logger, gameData.name, '중복 건너뜀');
           } else {
-            this.logger.error(
-              `게임 저장 실패: ${gameData.name}`,
-              error.message,
-            );
+            this.logger.warn(`saveUnifiedGamesToDatabase 게임 저장 실패: ${error.message}}`);
+
             results.errors++;
           }
         }
       }
 
-      this.logger.log(
-        `${month} 통합 게임 DB 저장 완료: 저장 ${results.saved}개, 건너뜀 ${results.skipped}개, 오류 ${results.errors}개`,
-      );
+     
 
       return results;
     } catch (error) {
-      this.logger.error(`통합 게임 DB 저장 실패:`, error.message);
       throw new Error(`통합 게임 DB 저장 실패: ${error.message}`);
     }
   }
 
   /**
    * 💾 개별 통합 게임 데이터 DB 저장 (증분 업데이트 지원)
+   * DLC인 경우 부모 관계 자동 설정
    */
   private async saveUnifiedGameToDatabase(
     gameData: GameCalendarData,
@@ -1053,61 +789,50 @@ export class UnifiedGameService {
     if (existing) {
       // 업데이트 필요성 판단
       if (!this.shouldUpdateGame(existing, gameData)) {
-        this.logger.debug(`게임 업데이트 불필요: ${gameData.name}`);
         throw { code: '23505', message: '업데이트 불필요' };
       }
 
-      // 업데이트 수행
-      this.logger.debug(`게임 데이터 업데이트: ${gameData.name}`);
       return await this.updateExistingGameInDatabase(existing, gameData);
     }
 
     return await this.dataSource.transaction(async (manager) => {
-      // Game Entity 생성 및 저장 (Steam 필드 포함)
+      // Game Entity 생성 및 저장
       const game = new Game();
-      game.rawg_id = gameData.rawg_id;
-      game.name = gameData.name;
-      game.released = new Date(gameData.released);
-      game.platforms = gameData.platforms;
-      game.genres = gameData.genres;
-      game.added = gameData.added;
-      game.image = gameData.image;
-      game.developers = gameData.developers;
-      game.publishers = gameData.publishers;
+      Object.assign(game, DataMapper.mapToGameEntity(gameData));
 
-      // Steam 통합 필드들 (플랫 구조)
-      game.steam_id = gameData.steam_id || undefined;
-      game.korea_name = gameData.korea_name || undefined;
-      game.steam_price = gameData.price || undefined;
-      game.steam_type =
-        gameData.steam_type ||
-        (gameData.is_full_game === false ? 'dlc' : 'game');
-      game.fullgame_info = undefined; // DLC의 경우 추후 본편 정보 추가
-      game.dlc_list = gameData.dlc_list || undefined;
+      // 🎮 DLC인 경우 부모 관계 설정 (새 로직에 맞게 수정)
+      if (gameData._parent_rawg_id || gameData._parent_steam_id) {
+        // 부모 게임을 DB에서 찾아서 관계 설정
+        let parentGame: Game | null = null;
 
-      // Steam 리뷰 데이터
-      game.steam_reviews_positive = gameData.total_positive || undefined;
-      game.steam_reviews_total = gameData.total_reviews || undefined;
-      game.steam_review_score = gameData.review_score_desc || undefined;
+        // Steam ID로 먼저 찾기
+        if (gameData._parent_steam_id) {
+          parentGame = await manager.getRepository(Game).findOne({
+            where: { steam_id: gameData._parent_steam_id },
+          });
+        }
+
+        // RAWG ID로 찾기 (Steam으로 못 찾은 경우)
+        if (!parentGame && gameData._parent_rawg_id) {
+          parentGame = await manager.getRepository(Game).findOne({
+            where: { rawg_id: gameData._parent_rawg_id },
+          });
+        }
+
+        if (parentGame) {
+          game.parent_game_id = parentGame.id;
+          game.parent_steam_game_id = parentGame.steam_id;
+        }
+      }
+
       const savedGame = await manager.save(game);
 
       // GameDetail Entity 생성 및 저장
       const gameDetail = new GameDetail();
-      gameDetail.game_id = savedGame.id;
-      gameDetail.slug_name = gameData.slug_name || '';
-      gameDetail.tags = gameData.tags || [];
-      gameDetail.rating = gameData.rating || 0;
-      gameDetail.early_access = gameData.early_access || false;
-      gameDetail.ratings_count = gameData.ratings_count || 0;
-      gameDetail.screenshots = Array.isArray(gameData.screenshots)
-        ? gameData.screenshots.map((s) =>
-            typeof s === 'string' ? s : (s as any).path_full || String(s),
-          )
-        : (gameData.screenshots as string[]) || [];
-      gameDetail.store_links = gameData.store_links || {};
-      gameDetail.esrb_rating = gameData.esrb_rating || undefined;
-      gameDetail.description = gameData.description || undefined;
-      gameDetail.website = gameData.website || undefined;
+      Object.assign(
+        gameDetail,
+        DataMapper.mapToGameDetailEntity(gameData, savedGame.id),
+      );
       await manager.save(gameDetail);
 
       return savedGame;
@@ -1123,35 +848,9 @@ export class UnifiedGameService {
   ): Promise<Game> {
     return await this.dataSource.transaction(async (manager) => {
       // Game Entity 업데이트
-      existingGame.name = newGameData.name;
-      existingGame.released = new Date(newGameData.released);
-      existingGame.platforms = newGameData.platforms;
-      existingGame.genres = newGameData.genres;
-      existingGame.added = newGameData.added;
-      existingGame.image = newGameData.image;
-      existingGame.developers = newGameData.developers;
-      existingGame.publishers = newGameData.publishers;
+      DataMapper.updateGameEntity(existingGame, newGameData);
 
-      // Steam 통합 필드들 업데이트
-      existingGame.steam_id = newGameData.steam_id || existingGame.steam_id;
-      existingGame.korea_name =
-        newGameData.korea_name || existingGame.korea_name;
-      existingGame.steam_price = newGameData.price || existingGame.steam_price;
-      existingGame.steam_type =
-        newGameData.steam_type || existingGame.steam_type;
-      existingGame.dlc_list = newGameData.dlc_list || existingGame.dlc_list;
-
-      // Steam 리뷰 데이터 업데이트
-      existingGame.steam_reviews_positive =
-        newGameData.total_positive || existingGame.steam_reviews_positive;
-      existingGame.steam_reviews_total =
-        newGameData.total_reviews || existingGame.steam_reviews_total;
-      existingGame.steam_review_score =
-        newGameData.review_score_desc || existingGame.steam_review_score;
-
-      // 업데이트 완료 로그
-      this.logger.debug(`Game 엔티티 업데이트 완료: ${newGameData.name}`);
-
+  
       const updatedGame = await manager.save(existingGame);
 
       // GameDetail Entity 업데이트
@@ -1165,31 +864,96 @@ export class UnifiedGameService {
         gameDetail.game_id = existingGame.id;
       }
 
-      gameDetail.slug_name =
-        newGameData.slug_name || gameDetail.slug_name || '';
-      gameDetail.tags = newGameData.tags || gameDetail.tags || [];
-      gameDetail.rating = newGameData.rating || gameDetail.rating || 0;
-      gameDetail.early_access =
-        newGameData.early_access ?? gameDetail.early_access ?? false;
-      gameDetail.ratings_count =
-        newGameData.ratings_count || gameDetail.ratings_count || 0;
-      gameDetail.screenshots = Array.isArray(newGameData.screenshots)
-        ? newGameData.screenshots.map((s) =>
-            typeof s === 'string' ? s : (s as any).path_full || String(s),
-          )
-        : gameDetail.screenshots || [];
-      gameDetail.store_links =
-        newGameData.store_links || gameDetail.store_links || {};
-      gameDetail.esrb_rating =
-        newGameData.esrb_rating || gameDetail.esrb_rating;
-      gameDetail.description =
-        newGameData.description || gameDetail.description;
-      gameDetail.website = newGameData.website || gameDetail.website;
+      DataMapper.updateGameDetailEntity(gameDetail, newGameData);
 
       await manager.save(gameDetail);
 
-      this.logger.debug(`게임 데이터 업데이트 완료: ${newGameData.name}`);
       return updatedGame;
     });
   }
+
+  // === 🔧 플랫폼 타입 헬퍼 함수들 ===
+
+  /**
+   * PC 호환 플랫폼 타입인지 확인
+   * @param platformType 플랫폼 타입
+   * @returns PC 호환 여부
+   */
+  private isPcCompatible(platformType: string): boolean {
+    return (
+      platformType === PLATFORM_TYPES.PC ||
+      platformType === PLATFORM_TYPES.MIXED
+    );
+  }
+
+  /**
+   * 콘솔 호환 플랫폼 타입인지 확인
+   * @param platformType 플랫폼 타입
+   * @returns 콘솔 호환 여부
+   */
+  private isConsoleCompatible(platformType: string): boolean {
+    return (
+      platformType === PLATFORM_TYPES.CONSOLE ||
+      platformType === PLATFORM_TYPES.MIXED
+    );
+  }
+
+  // === 🎮 DLC 부모 게임 처리 헬퍼 메서드들 ===
+
+  /**
+   * 🔧 Steam 데이터로 부모 게임 데이터 생성 (기존 DataMapper 활용)
+   */
+  private createSteamParentGame(steamData: any): GameCalendarData {
+    // Steam 데이터를 RAWG 형식으로 변환하여 기존 DataMapper 활용
+    const virtualRawgGame = {
+      id: -(steamData.steam_id), // 음수 ID로 충돌 방지
+      name: steamData.original_name || steamData.korea_name || 'Unknown Game',
+      released: steamData.release_date || new Date().toISOString().split('T')[0],
+      tba: false,
+      platforms: [{ platform: { name: 'PC', slug: 'pc' } }],
+      genres: [],
+      tags: [],
+      background_image: steamData.image || '',
+      added: 0,
+      rating: 0,
+      ratings_count: 0,
+      developers: steamData.developers?.map((name: string) => ({ name })) || [],
+      publishers: steamData.publishers?.map((name: string) => ({ name })) || [],
+      stores: [],
+      esrb_rating: null,
+    };
+
+    // 기존 DataMapper 활용하여 표준 형식으로 변환
+    const gameData = DataMapper.mapRawgGameToBaseData(virtualRawgGame);
+    gameData.steam_id = steamData.steam_id; // Steam ID 추가
+    return gameData;
+  }
+
+  /**
+   * 🔧 RAWG 데이터로 부모 게임 데이터 생성 (기존 로직 활용)
+   */
+  private createRawgParentGame(rawgParent: any): GameCalendarData {
+    // RAWG parents 데이터를 기본 게임 형식으로 변환
+    const parentGame = {
+      id: rawgParent.id,
+      name: rawgParent.name || 'Unknown Parent Game',
+      released: rawgParent.released || new Date().toISOString().split('T')[0],
+      tba: false,
+      platforms: rawgParent.platforms || [{ platform: { name: 'PC', slug: 'pc' } }],
+      genres: rawgParent.genres || [],
+      tags: [],
+      background_image: rawgParent.background_image || '',
+      added: rawgParent.added || 0,
+      rating: rawgParent.rating || 0,
+      ratings_count: rawgParent.ratings_count || 0,
+      developers: [],
+      publishers: [],
+      stores: [],
+      esrb_rating: null,
+    };
+
+    // 기존 DataMapper 활용
+    return DataMapper.mapRawgGameToBaseData(parentGame);
+  }
+
 }
