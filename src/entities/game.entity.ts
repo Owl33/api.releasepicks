@@ -1,4 +1,12 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToOne, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  OneToOne,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
 import { GameDetail } from './game-detail.entity';
 
 @Entity('games')
@@ -33,6 +41,38 @@ export class Game {
   @Column({ type: 'text', array: true, nullable: true })
   publishers: string[];
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'upcoming',
+    name: 'release_status',
+  })
+  release_status: string;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'pc',
+    name: 'platform_type',
+  })
+  platform_type: string;
+
+  @Column({
+    type: 'char',
+    length: 7,
+    nullable: true,
+    name: 'last_verified_month',
+  })
+  last_verified_month?: string;
+
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    name: 'last_synced_source',
+  })
+  last_synced_source?: string;
+
   // ===== Steam 통합 필드들 =====
 
   // Steam 기본 정보 (게임 캘린더 필수)
@@ -54,6 +94,14 @@ export class Game {
   @Column({ type: 'integer', array: true, nullable: true, name: 'dlc_list' })
   dlc_list?: number[]; // 본편인 경우 DLC ID 목록
 
+  @Column({
+    type: 'integer',
+    array: true,
+    nullable: true,
+    name: 'rawg_parent_ids',
+  })
+  rawg_parent_ids?: number[];
+
   // Steam 리뷰 (출시된 게임만)
   @Column({ type: 'integer', nullable: true, name: 'steam_reviews_positive' })
   steam_reviews_positive?: number;
@@ -61,7 +109,12 @@ export class Game {
   @Column({ type: 'integer', nullable: true, name: 'steam_reviews_total' })
   steam_reviews_total?: number;
 
-  @Column({ type: 'varchar', length: 50, nullable: true, name: 'steam_review_score' })
+  @Column({
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+    name: 'steam_review_score',
+  })
   steam_review_score?: string; // Steam 공식 review_score_desc: "압도적으로 긍정적" 등
 
   // ===== DLC 부모-자식 관계 필드들 =====

@@ -56,63 +56,64 @@ export class YouTubeService {
   ): Promise<GameTrailerResult> {
     return await ErrorHandlerUtil.executeYoutubeApiCall(
       async () => {
-      // 다양한 검색 쿼리 시도
-      const queries = [
-        `${gameName} official trailer`,
-        `${gameName} gameplay trailer`,
-        `${gameName} launch trailer`,
-        `${gameName} trailer`,
-      ];
+        // 다양한 검색 쿼리 시도
+        const queries = [
+          `${gameName} official trailer`,
+          `${gameName} gameplay trailer`,
+          `${gameName} launch trailer`,
+          `${gameName} trailer`,
+        ];
 
-      const allVideos: any[] = [];
-      const successfulQueries: string[] = [];
+        const allVideos: any[] = [];
+        const successfulQueries: string[] = [];
 
-      for (const query of queries) {
-        try {
-          const videos = await YouTube.search(query, { limit: 5 });
+        for (const query of queries) {
+          try {
+            const videos = await YouTube.search(query, { limit: 5 });
 
-          if (videos && videos.length > 0) {
-            allVideos.push(...videos);
-            successfulQueries.push(query);
+            if (videos && videos.length > 0) {
+              allVideos.push(...videos);
+              successfulQueries.push(query);
+            }
+          } catch (queryError) {
+            // 🔄 내부 로직 실패: 쿼리별 실패는 일반적인 상황이므로 계속 시도
+            continue;
           }
-        } catch (queryError) {
-          // 🔄 내부 로직 실패: 쿼리별 실패는 일반적인 상황이므로 계속 시도
-          continue;
         }
-      }
 
-      if (allVideos.length === 0) {
-        // 🔄 비즈니스 로직 실패: 모든 쿼리가 실패한 경우
-        throw new Error(`모든 YouTube 검색 쿼리 실패: ${gameName}`);
-      }
+        if (allVideos.length === 0) {
+          // 🔄 비즈니스 로직 실패: 모든 쿼리가 실패한 경우
+          throw new Error(`모든 YouTube 검색 쿼리 실패: ${gameName}`);
+        }
 
-      // 중복 제거 (비디오 ID 기준)
-      const uniqueVideos = allVideos.filter(
-        (video, index, self) =>
-          index === self.findIndex((v) => v.id === video.id),
-      );
-
-      // youtube-sr 결과를 YouTubeSearchItem 형식으로 변환
-      const convertedItems = uniqueVideos.map((video) =>
-        this.convertYoutubeSrToSearchItem(video),
-      );
-
-      // 신뢰도 계산 및 정렬
-      const scoredItems = convertedItems
-        .map((item) => ({
-          ...item,
-          confidenceScore: this.calculateSimpleConfidence(item, gameName),
-        }))
-        .sort(
-          (a, b) => b.confidenceScore.totalScore - a.confidenceScore.totalScore,
+        // 중복 제거 (비디오 ID 기준)
+        const uniqueVideos = allVideos.filter(
+          (video, index, self) =>
+            index === self.findIndex((v) => v.id === video.id),
         );
 
-      const bestTrailer = scoredItems[0];
-      const alternativeTrailers = scoredItems.slice(1, 4); // 상위 3개 대안
+        // youtube-sr 결과를 YouTubeSearchItem 형식으로 변환
+        const convertedItems = uniqueVideos.map((video) =>
+          this.convertYoutubeSrToSearchItem(video),
+        );
 
-      // this.logger.log(
-      //   `🎆 최고 트레일러 발견: "${bestTrailer.title}" (신뢰도: ${bestTrailer.confidenceScore.totalScore.toFixed(2)})`,
-      // );
+        // 신뢰도 계산 및 정렬
+        const scoredItems = convertedItems
+          .map((item) => ({
+            ...item,
+            confidenceScore: this.calculateSimpleConfidence(item, gameName),
+          }))
+          .sort(
+            (a, b) =>
+              b.confidenceScore.totalScore - a.confidenceScore.totalScore,
+          );
+
+        const bestTrailer = scoredItems[0];
+        const alternativeTrailers = scoredItems.slice(1, 4); // 상위 3개 대안
+
+        // this.logger.log(
+        //   `🎆 최고 트레일러 발견: "${bestTrailer.title}" (신뢰도: ${bestTrailer.confidenceScore.totalScore.toFixed(2)})`,
+        // );
 
         return {
           gameName,
@@ -126,7 +127,7 @@ export class YouTubeService {
       },
       this.logger,
       '트레일러 검색',
-      gameName
+      gameName,
     ).catch((error) => {
       // 🔄 ErrorHandlerUtil에서 처리되지 않은 에러는 기본 결과 반환
       return {
@@ -155,7 +156,6 @@ export class YouTubeService {
 
     return await ErrorHandlerUtil.executeYoutubeApiCall(
       async () => {
-
         // 다중 검색 쿼리 전략 (fallback 포함)
         const searchStrategies = [
           `${sanitizedGameName} official trailer`,
@@ -168,34 +168,36 @@ export class YouTubeService {
         for (let attempt = 0; attempt < 2; attempt++) {
           for (const query of searchStrategies) {
             try {
+              const videos = await this.searchWithTimeout(query, 5000); // 5초 타임아웃
 
-          const videos = await this.searchWithTimeout(query, 5000); // 5초 타임아웃
+              if (videos && videos.length > 0) {
+                const bestVideo = this.selectBestVideo(
+                  videos,
+                  sanitizedGameName,
+                );
 
-          if (videos && videos.length > 0) {
-            const bestVideo = this.selectBestVideo(videos, sanitizedGameName);
-
-              if (bestVideo && bestVideo.id) {
-                return bestVideo.id;
+                if (bestVideo && bestVideo.id) {
+                  return bestVideo.id;
+                }
               }
+            } catch (error) {
+              // 🔄 내부 로직 실패: 검색 시도 실패는 일반적인 상황이므로 계속 시도
+              continue;
             }
-          } catch (error) {
-            // 🔄 내부 로직 실패: 검색 시도 실패는 일반적인 상황이므로 계속 시도
-            continue;
+          }
+
+          // 첫 번째 시도 실패 시 잠시 대기 후 재시도
+          if (attempt === 0) {
+            await this.sleep(1000);
           }
         }
-
-        // 첫 번째 시도 실패 시 잠시 대기 후 재시도
-        if (attempt === 0) {
-          await this.sleep(1000);
-        }
-      }
 
         // 🔄 비즈니스 로직 실패: 모든 전략이 실패한 경우
         throw new Error(`모든 YouTube 검색 전략 실패: ${sanitizedGameName}`);
       },
       this.logger,
       '간단 트레일러 검색',
-      gameName
+      gameName,
     ).catch((error) => {
       // 🔄 ErrorHandlerUtil에서 처리되지 않은 에러는 undefined 반환
       return undefined;

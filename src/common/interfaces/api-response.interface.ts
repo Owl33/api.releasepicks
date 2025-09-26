@@ -29,7 +29,10 @@ export interface PaginatedApiResponse<T = any> extends ApiResponse<T[]> {
  * 🔧 성공 응답 헬퍼
  */
 export class ApiResponseHelper {
-  static success<T>(data: T, message?: string): Omit<ApiResponse<T>, 'timestamp' | 'path'> {
+  static success<T>(
+    data: T,
+    message?: string,
+  ): Omit<ApiResponse<T>, 'timestamp' | 'path'> {
     return {
       success: true,
       data,
@@ -40,7 +43,7 @@ export class ApiResponseHelper {
   static error(
     code: string,
     message: string,
-    details?: any
+    details?: any,
   ): Omit<ApiResponse<null>, 'timestamp' | 'path'> {
     return {
       success: false,
@@ -58,7 +61,7 @@ export class ApiResponseHelper {
     total: number,
     page: number,
     limit: number,
-    message?: string
+    message?: string,
   ): Omit<PaginatedApiResponse<T>, 'timestamp' | 'path'> {
     return {
       success: true,

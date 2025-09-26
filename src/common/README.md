@@ -15,7 +15,7 @@
 - **결과**: 동일 작업에 대해 2번 로깅, 성능 저하
 
 #### 2. **구조 혼재 문제**
-- **기존 패턴**: LoggerHelper 개별 호출 (game-utilities.ts의 SteamApiClient 등)
+- **기존 패턴**: LoggerHelper 개별 호출 (과거 `game-utilities.ts` 등)
 - **새 패턴**: ErrorHandlerUtil 통합 호출
 - **결과**: 일관성 부족, 유지보수 복잡성
 
@@ -48,7 +48,7 @@ interface ApiResponse<T> {
 ### 3. 로깅 레이어 🚨
 ```typescript
 // 현재 문제 상태
-- LoggerHelper: ✅ 구현 (game-utilities.ts)
+- LoggerHelper: ✅ 구현 (`src/common/utils/logger.helper.ts`)
 - ErrorHandlerUtil 로깅: 🚨 중복 발생
 - GlobalExceptionFilter 로깅: ✅ 정상
 ```

@@ -51,7 +51,12 @@ export class GameDetail {
   @Column({ type: 'text', nullable: true, name: 'korean_description' })
   korean_description?: string; // 한글 설명
 
-  @Column({ type: 'text', array: true, nullable: true, name: 'steam_categories' })
+  @Column({
+    type: 'text',
+    array: true,
+    nullable: true,
+    name: 'steam_categories',
+  })
   steam_categories?: string[]; // Steam 카테고리
 
   // 관계 설정

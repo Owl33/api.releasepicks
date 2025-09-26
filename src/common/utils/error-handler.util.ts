@@ -23,7 +23,7 @@ export class ErrorHandlerUtil {
   static async executeWithErrorHandling<T>(
     operation: () => Promise<T>,
     logger: Logger,
-    options: ErrorHandlerOptions = {}
+    options: ErrorHandlerOptions = {},
   ): Promise<T> {
     const {
       context = 'Unknown Operation',
@@ -31,7 +31,7 @@ export class ErrorHandlerUtil {
       rethrow = true,
       defaultMessage,
       httpStatus = HttpStatus.INTERNAL_SERVER_ERROR,
-      errorCode
+      errorCode,
     } = options;
 
     try {
@@ -44,7 +44,7 @@ export class ErrorHandlerUtil {
         identifier,
         defaultMessage,
         httpStatus,
-        errorCode
+        errorCode,
       });
 
       // 🔄 로깅은 GlobalExceptionFilter에서 처리하므로 여기서는 제거
@@ -66,19 +66,15 @@ export class ErrorHandlerUtil {
     apiCall: () => Promise<T>,
     logger: Logger,
     apiName: string,
-    identifier?: string
+    identifier?: string,
   ): Promise<T> {
-    return this.executeWithErrorHandling(
-      apiCall,
-      logger,
-      {
-        context: `${apiName} API 호출`,
-        identifier,
-        errorCode: ErrorCodes.API_CALL_FAILED,
-        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
-        defaultMessage: `${apiName} API 호출 실패`
-      }
-    );
+    return this.executeWithErrorHandling(apiCall, logger, {
+      context: `${apiName} API 호출`,
+      identifier,
+      errorCode: ErrorCodes.API_CALL_FAILED,
+      httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+      defaultMessage: `${apiName} API 호출 실패`,
+    });
   }
 
   /**
@@ -89,19 +85,15 @@ export class ErrorHandlerUtil {
     dbOperation: () => Promise<T>,
     logger: Logger,
     operation: string,
-    identifier?: string
+    identifier?: string,
   ): Promise<T> {
-    return this.executeWithErrorHandling(
-      dbOperation,
-      logger,
-      {
-        context: `DB ${operation}`,
-        identifier,
-        errorCode: ErrorCodes.DATABASE_ERROR,
-        httpStatus: HttpStatus.INTERNAL_SERVER_ERROR,
-        defaultMessage: `데이터베이스 ${operation} 실패`
-      }
-    );
+    return this.executeWithErrorHandling(dbOperation, logger, {
+      context: `DB ${operation}`,
+      identifier,
+      errorCode: ErrorCodes.DATABASE_ERROR,
+      httpStatus: HttpStatus.INTERNAL_SERVER_ERROR,
+      defaultMessage: `데이터베이스 ${operation} 실패`,
+    });
   }
 
   /**
@@ -111,19 +103,15 @@ export class ErrorHandlerUtil {
     steamCall: () => Promise<T>,
     logger: Logger,
     operation: string,
-    steamId?: string | number
+    steamId?: string | number,
   ): Promise<T> {
-    return this.executeWithErrorHandling(
-      steamCall,
-      logger,
-      {
-        context: `Steam ${operation}`,
-        identifier: steamId?.toString(),
-        errorCode: ErrorCodes.STEAM_API_ERROR,
-        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
-        defaultMessage: `Steam ${operation} 실패`
-      }
-    );
+    return this.executeWithErrorHandling(steamCall, logger, {
+      context: `Steam ${operation}`,
+      identifier: steamId?.toString(),
+      errorCode: ErrorCodes.STEAM_API_ERROR,
+      httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+      defaultMessage: `Steam ${operation} 실패`,
+    });
   }
 
   /**
@@ -133,19 +121,15 @@ export class ErrorHandlerUtil {
     rawgCall: () => Promise<T>,
     logger: Logger,
     operation: string,
-    gameId?: string | number
+    gameId?: string | number,
   ): Promise<T> {
-    return this.executeWithErrorHandling(
-      rawgCall,
-      logger,
-      {
-        context: `RAWG ${operation}`,
-        identifier: gameId?.toString(),
-        errorCode: ErrorCodes.RAWG_API_ERROR,
-        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
-        defaultMessage: `RAWG ${operation} 실패`
-      }
-    );
+    return this.executeWithErrorHandling(rawgCall, logger, {
+      context: `RAWG ${operation}`,
+      identifier: gameId?.toString(),
+      errorCode: ErrorCodes.RAWG_API_ERROR,
+      httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+      defaultMessage: `RAWG ${operation} 실패`,
+    });
   }
 
   /**
@@ -155,19 +139,15 @@ export class ErrorHandlerUtil {
     youtubeCall: () => Promise<T>,
     logger: Logger,
     operation: string,
-    gameName?: string
+    gameName?: string,
   ): Promise<T> {
-    return this.executeWithErrorHandling(
-      youtubeCall,
-      logger,
-      {
-        context: `YouTube ${operation}`,
-        identifier: gameName,
-        errorCode: ErrorCodes.YOUTUBE_API_ERROR,
-        httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
-        defaultMessage: `YouTube ${operation} 실패`
-      }
-    );
+    return this.executeWithErrorHandling(youtubeCall, logger, {
+      context: `YouTube ${operation}`,
+      identifier: gameName,
+      errorCode: ErrorCodes.YOUTUBE_API_ERROR,
+      httpStatus: HttpStatus.SERVICE_UNAVAILABLE,
+      defaultMessage: `YouTube ${operation} 실패`,
+    });
   }
 
   /**
@@ -180,7 +160,7 @@ export class ErrorHandlerUtil {
       maxRetries?: number;
       retryDelay?: number;
       retryCondition?: (error: any) => boolean;
-    } = {}
+    } = {},
   ): Promise<T> {
     const {
       maxRetries = 3,
@@ -193,15 +173,11 @@ export class ErrorHandlerUtil {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        return await this.executeWithErrorHandling(
-          operation,
-          logger,
-          {
-            ...errorOptions,
-            context: `${errorOptions.context || 'Retry Operation'} (시도 ${attempt}/${maxRetries})`,
-            rethrow: false
-          }
-        );
+        return await this.executeWithErrorHandling(operation, logger, {
+          ...errorOptions,
+          context: `${errorOptions.context || 'Retry Operation'} (시도 ${attempt}/${maxRetries})`,
+          rethrow: false,
+        });
       } catch (error) {
         lastError = error;
 
@@ -218,7 +194,7 @@ export class ErrorHandlerUtil {
 
     throw this.processError(lastError, {
       ...errorOptions,
-      defaultMessage: `${maxRetries}회 재시도 후 실패: ${errorOptions.defaultMessage || '작업 실패'}`
+      defaultMessage: `${maxRetries}회 재시도 후 실패: ${errorOptions.defaultMessage || '작업 실패'}`,
     });
   }
 
@@ -227,9 +203,10 @@ export class ErrorHandlerUtil {
    */
   private static processError(
     error: any,
-    options: Omit<ErrorHandlerOptions, 'rethrow'> = {}
+    options: Omit<ErrorHandlerOptions, 'rethrow'> = {},
   ): Error | HttpException {
-    const { context, identifier, defaultMessage, httpStatus, errorCode } = options;
+    const { context, identifier, defaultMessage, httpStatus, errorCode } =
+      options;
 
     let message: string;
     let finalErrorCode: string;
@@ -264,9 +241,9 @@ export class ErrorHandlerUtil {
         {
           code: finalErrorCode,
           message,
-          details: error?.details || error?.stack
+          details: error?.details || error?.stack,
         },
-        httpStatus
+        httpStatus,
       );
     }
 
@@ -298,6 +275,6 @@ export class ErrorHandlerUtil {
    * ⏱️ 딜레이 유틸리티
    */
   private static delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

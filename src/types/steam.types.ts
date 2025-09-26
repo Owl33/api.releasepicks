@@ -1,3 +1,8 @@
+import {
+  GameStoreLinks,
+  SteamReviewSummary as CalendarSteamReviewSummary,
+} from './domain.types';
+
 /**
  * Steam API 관련 타입 정의 (snake_case 통일)
  * 게임 캘린더 특화 Steam 데이터 구조
@@ -124,12 +129,14 @@ export interface GameCalendarSteamData {
   image: string;
   korea_name?: string; // 한글명 (있는 경우)
   price: string; // "Free" 또는 "₩29,000" 형태
+  currency?: string;
   steam_type: string; // Steam 공식 타입: "game", "dlc", "music", "demo"
   description?: string; // 짧은 설명
   korean_description?: string; // 한글 상세 설명
   developers: string[]; // 개발사
   publishers: string[]; // 배급사
   release_date?: string; // 출시일
+  required_age?: number;
   categories: string[]; // Steam 카테고리
   // DLC 관련 정보
   is_full_game: boolean; // 본편 게임 여부
@@ -139,17 +146,20 @@ export interface GameCalendarSteamData {
     name: string;
   };
   dlc_list: number[]; // 본편인 경우 DLC 목록
+  parent_appid?: number;
 
-  // Steam 리뷰 정보 (appDetails에서 바로 추출)
-  review_score?: string; // "압도적으로 긍정적" 등
-  total_positive?: number; // 긍정적 리뷰 수
-  total_negative?: number; // 부정적 리뷰 수
-  total_reviews?: number; // 전체 리뷰 수
+  // Steam 리뷰 정보 요약
+  review_summary?: CalendarSteamReviewSummary;
 
   // 추가 정보
   screenshots?: string[]; // 스크린샷 URL 목록
   website?: string; // 공식 웹사이트
   is_free: boolean; // 무료 게임 여부
+  store_url?: string; // Steam 상점 URL
+  metacritic?: {
+    score: number;
+    url: string;
+  } | null;
 }
 
 // Steam ID 검색 결과
@@ -160,6 +170,19 @@ export interface SteamIdSearchResult {
   original_query: string;
   found_name?: string;
   search_strategy?: string; // 성공한 검색 전략 정보
+}
+
+export interface SteamIdResolutionResult {
+  success: boolean;
+  steam_id?: number;
+  strategy?: string;
+  confidence?: number;
+  attempts: Array<{
+    query: string;
+    matched: boolean;
+  }>;
+  notes?: string;
+  apiCalls?: number;
 }
 
 // Steam API 호출 옵션
@@ -178,6 +201,38 @@ export interface SteamServiceConfig {
   request_timeout: number;
   retry_attempts: number;
   rate_limit_delay: number;
+}
+
+export interface SteamBridgeOptions {
+  timeout: number;
+}
+
+export interface SteamBridgeStats {
+  resolver_calls: number;
+  appdetails_calls: number;
+  review_calls: number;
+  cache_hits: {
+    appdetails: number;
+    reviews: number;
+  };
+  failures: Array<{
+    stage: 'resolver' | 'appdetails' | 'reviews';
+    reason: string;
+  }>;
+}
+
+export interface SteamBridgeResult {
+  integrated: boolean;
+  steam_id?: number;
+  data?: GameCalendarSteamData;
+  stats: SteamBridgeStats;
+}
+
+export interface SteamIntegrationContext {
+  gameName: string;
+  storeLinks?: GameStoreLinks;
+  presetSteamId?: number | null;
+  presetSteamUrl?: string | null;
 }
 
 // ===== Steam 리뷰 API 관련 타입들 =====
@@ -213,14 +268,9 @@ export interface SteamReviewsApiResponse {
 }
 
 // 간소화된 Steam 리뷰 데이터 (snake_case 통일)
-export interface SteamReviewSummary {
+export interface SteamReviewSummaryResult extends CalendarSteamReviewSummary {
   success: boolean;
   num_reviews: number;
-  review_score: number; // 0-9
-  review_score_desc: string; // "압도적으로 긍정적" 등
-  total_positive: number;
-  total_negative: number;
-  total_reviews: number;
 }
 
 // Steam 리뷰 API 옵션

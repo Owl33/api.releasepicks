@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { RawgParentGameData, RawgAdditionData } from '../types/game-calendar-unified.types';
+import { RawgParentHint, RawgAdditionData } from '../types/game-calendar-unified.types';
 import { ErrorHandlerUtil } from '../common/utils/error-handler.util';
+import { RAWG_API } from '../common/constants/api.constants';
 
 @Injectable()
 export class RawgService {
@@ -10,9 +11,7 @@ export class RawgService {
   private readonly baseUrl: string;
   private readonly apiKey: string;
 
-  constructor(
-    private configService: ConfigService,
-  ) {
+  constructor(private configService: ConfigService) {
     this.baseUrl =
       this.configService.get<string>('RAWG_API_BASE_URL') ||
       'https://api.rawg.io/api';
@@ -26,13 +25,19 @@ export class RawgService {
         // 동적 날짜 범위 계산
         const [year, monthNum] = month.split('-');
         const startDate = `${year}-${monthNum.padStart(2, '0')}-01`;
-        const lastDay = new Date(parseInt(year), parseInt(monthNum), 0).getDate();
+        const lastDay = new Date(
+          parseInt(year),
+          parseInt(monthNum),
+          0,
+        ).getDate();
         const endDate = `${year}-${monthNum.padStart(2, '0')}-${lastDay.toString().padStart(2, '0')}`;
 
         const allGames: any[] = [];
         let page = 1;
         let totalCount = 0;
         const pageSize = 40;
+
+        let apiCalls = 0;
 
         while (allGames.length < maxGames) {
           // 🔄 통합 시스템: 로깅은 ErrorHandlerUtil과 GlobalExceptionFilter에서 처리
@@ -44,10 +49,11 @@ export class RawgService {
               page: page,
               ordering: '-added',
             },
-            timeout: 15000, // 타임아웃 증가
+            timeout: RAWG_API.DETAILS_TIMEOUT,
           });
           const { count, results, next } = response.data;
           totalCount = count;
+          apiCalls += 1;
 
           if (!results || results.length === 0) {
             // 🔄 통합 시스템: 정보성 로그도 통합 시스템에서 처리
@@ -75,11 +81,12 @@ export class RawgService {
           games: allGames.slice(0, maxGames), // 최대 개수 제한
           page,
           pageSize: allGames.length,
+          apiCalls,
         };
       },
       this.logger,
       '월별 게임 조회',
-      month
+      month,
     );
   }
 
@@ -92,29 +99,33 @@ export class RawgService {
             params: {
               key: this.apiKey,
             },
-            timeout: 10000,
+            timeout: RAWG_API.STORES_TIMEOUT,
           },
         );
         return response.data;
       },
       this.logger,
       'getStore',
-      gameId
+      gameId,
     );
   }
   async getDevloper(gameId: number) {
     return ErrorHandlerUtil.executeRawgApiCall(
       async () => {
-        const response = await axios.get(`${this.baseUrl}/developers/${gameId}`, {
-          params: {
-            key: this.apiKey,
+        const response = await axios.get(
+          `${this.baseUrl}/developers/${gameId}`,
+          {
+            params: {
+              key: this.apiKey,
+            },
+            timeout: RAWG_API.DETAILS_TIMEOUT,
           },
-        });
+        );
         return response.data;
       },
       this.logger,
       'getDeveloper',
-      gameId
+      gameId,
     );
   }
 
@@ -133,7 +144,7 @@ export class RawgService {
           params: {
             key: this.apiKey,
           },
-          timeout: 10000,
+          timeout: RAWG_API.DETAILS_TIMEOUT,
         });
         const results = response.data;
         return {
@@ -148,11 +159,11 @@ export class RawgService {
       },
       this.logger,
       'getDetails',
-      gameId
+      gameId,
     );
   }
 
-  async getParentGames(gameId: number): Promise<RawgParentGameData[]> {
+  async getParentGames(gameId: number): Promise<RawgParentHint[]> {
     return ErrorHandlerUtil.executeWithErrorHandling(
       async () => {
         const response = await axios.get(
@@ -161,10 +172,28 @@ export class RawgService {
             params: {
               key: this.apiKey,
             },
-            timeout: 5000,
+            timeout: RAWG_API.STORES_TIMEOUT,
           },
         );
-        return response.data.results || [];
+        const results = Array.isArray(response.data.results)
+          ? response.data.results
+          : [];
+        return results
+          .filter((parent) => parent && typeof parent.id === 'number')
+          .map((parent) => ({
+            id: parent.id,
+            name: typeof parent.name === 'string' ? parent.name : '',
+            slug:
+              typeof parent.slug === 'string' && parent.slug.length > 0
+                ? parent.slug
+                : null,
+            platforms: this.normalizeParentPlatforms(parent.platforms),
+            background_image:
+              typeof parent.background_image === 'string' &&
+              parent.background_image.length > 0
+                ? parent.background_image
+                : null,
+          }));
       },
       this.logger,
       {
@@ -172,8 +201,44 @@ export class RawgService {
         identifier: gameId.toString(),
         rethrow: false, // 에러 시 null 반환, 빈 배열로 대체
         defaultMessage: '부모 게임 조회 실패',
+      },
+    ).then((result) => result || []); // null인 경우 빈 배열 반환
+  }
+
+  private normalizeParentPlatforms(platforms: any): string[] {
+    if (!Array.isArray(platforms)) {
+      return [];
+    }
+
+    const normalized: string[] = [];
+
+    for (const platform of platforms) {
+      if (!platform) {
+        continue;
       }
-    ).then(result => result || []); // null인 경우 빈 배열 반환
+
+      let slug: string | null = null;
+
+      if (typeof platform === 'string') {
+        slug = platform;
+      } else if (platform.platform) {
+        const raw = platform.platform.slug || platform.platform.name;
+        slug = raw ? String(raw) : null;
+      } else if (platform.slug || platform.name) {
+        slug = String(platform.slug || platform.name);
+      }
+
+      if (!slug) {
+        continue;
+      }
+
+      const lower = slug.toLowerCase();
+      if (!normalized.includes(lower)) {
+        normalized.push(lower);
+      }
+    }
+
+    return normalized;
   }
 
   /**
@@ -189,7 +254,7 @@ export class RawgService {
             params: {
               key: this.apiKey,
             },
-            timeout: 5000,
+            timeout: RAWG_API.STORES_TIMEOUT,
           },
         );
         return response.data.results || [];
@@ -200,9 +265,7 @@ export class RawgService {
         identifier: gameId.toString(),
         rethrow: false, // 에러 시 null 반환, 빈 배열로 대체
         defaultMessage: '추가 콘텐츠 조회 실패',
-      }
-    ).then(result => result || []); // null인 경우 빈 배열 반환
+      },
+    ).then((result) => result || []); // null인 경우 빈 배열 반환
   }
-
-
 }

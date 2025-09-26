@@ -15,8 +15,13 @@ import { Request } from 'express';
 import { ApiResponse } from '../interfaces/api-response.interface';
 
 @Injectable()
-export class ResponseInterceptor<T> implements NestInterceptor<T, ApiResponse<T>> {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<ApiResponse<T>> {
+export class ResponseInterceptor<T>
+  implements NestInterceptor<T, ApiResponse<T>>
+{
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<ApiResponse<T>> {
     const ctx = context.switchToHttp();
     const request = ctx.getRequest<Request>();
 
@@ -51,9 +56,7 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, ApiResponse<T>
    */
   private isApiResponse(data: any): boolean {
     return (
-      data &&
-      typeof data === 'object' &&
-      typeof data.success === 'boolean'
+      data && typeof data === 'object' && typeof data.success === 'boolean'
     );
   }
 
@@ -68,13 +71,15 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, ApiResponse<T>
       if (cleanPath.includes('search')) return '검색 완료';
       if (cleanPath.includes('steam')) return 'Steam 데이터 조회 완료';
       if (cleanPath.includes('youtube')) return 'YouTube 데이터 조회 완료';
-      if (cleanPath.includes('unified-games')) return '통합 게임 데이터 조회 완료';
+      if (cleanPath.includes('unified-games'))
+        return '통합 게임 데이터 조회 완료';
       return '데이터 조회 완료';
     }
 
     if (method === 'POST') {
       if (cleanPath.includes('save')) return '데이터 저장 완료';
-      if (cleanPath.includes('unified-games')) return '통합 게임 데이터 저장 완료';
+      if (cleanPath.includes('unified-games'))
+        return '통합 게임 데이터 저장 완료';
       return '작업 완료';
     }
 

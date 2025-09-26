@@ -1,0 +1,76 @@
+{
+  "rawg_id": 12345,
+  "steam_id": 777777,
+  "name": "Astral Frontier",
+  "original_name": "Astral Frontier",
+  "slug_name": "astral-frontier",
+  "release_date": "2025-08-15",
+  "release_status": "upcoming",
+  "tba": false,
+  "platform_type": "mixed",
+  "platforms": ["PC", "PlayStation"],
+  "genres": ["Action", "RPG"],
+  "tags": ["Spaceship", "Singleplayer"],
+  "developers": ["Nebula Works"],
+  "publishers": ["Lionheart Games"],
+  "rating": 4.1,
+  "ratings_count": 86,
+  "esrb_rating": "Teen",
+  "required_age": 13,
+  "early_access": false,
+  "description": "우주 전선을 배경으로 한 액션 RPG.",
+  "korean_description": "Astral Frontier는 플레이어가 함선을 이끌고 은하를 탐험하는 게임입니다.",
+  "website": "https://astral-frontier.example.com",
+  "categories": ["Single-player", "Steam Cloud"],
+  "image": "https://cdn.example.com/astral-frontier.jpg",
+  "screenshots": [
+    "https://cdn.example.com/screens/astral-frontier-1.jpg",
+    "https://cdn.example.com/screens/astral-frontier-2.jpg"
+  ],
+  "trailer_url": "https://youtube.com/watch?v=astral",
+  "store_links": {
+    "steam": "https://store.steampowered.com/app/777777",
+    "playstation": "https://store.playstation.com/astral-frontier"
+  },
+  "price": "₩29,000",
+  "currency": "KRW",
+  "steam_integrated": true,
+  "steam_type": "game",
+  "korea_name": "아스트랄 프론티어",
+  "is_full_game": true,
+  "dlc_list": [888888, 888889],
+  "is_free": false,
+  "review_summary": {
+    "review_score": 7,
+    "review_score_desc": "매우 긍정적",
+    "total_positive": 1456,
+    "total_negative": 210,
+    "total_reviews": 1666
+  },
+  "metacritic": {
+    "score": 83,
+    "url": "https://www.metacritic.com/game/pc/astral-frontier"
+  },
+  "is_dlc": false,
+  "parent_rawg_id": null,
+  "parent_steam_id": null,
+  "game_type": "main_game",
+  "game_type_confidence": 0.95,
+  "game_type_reason": "Steam appDetails 기반 재분류",
+  "last_verified_month": "2025-02",
+  "last_synced_source": "steam",
+  "added": 234,
+  "added_by_status": {
+    "owned": 100,
+    "wishlist": 134
+  },
+  "dlc_context": {
+    "steam_fullgame_info": null,
+    "classification": {
+      "type": "main_game",
+      "confidence": 0.95,
+      "reason": "Steam 본편 게임 (2개 DLC 보유)",
+      "strategies": ["Astral Frontier"]
+    }
+  }
+}

@@ -5,11 +5,12 @@ import { RawgController } from './rawg.controller';
 import { YouTubeModule } from '../youtube/youtube.module';
 import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
+import { RawgCollector } from './rawg.collector';
 
 @Module({
   imports: [YouTubeModule, TypeOrmModule.forFeature([Game, GameDetail])],
-  providers: [RawgService],
+  providers: [RawgService, RawgCollector],
   controllers: [RawgController],
-  exports: [RawgService],
+  exports: [RawgService, RawgCollector],
 })
 export class RawgModule {}

@@ -68,7 +68,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         errorCode = this.getErrorCodeFromStatus(status);
       } else if (typeof errorResponse === 'object') {
         message = (errorResponse as any).message || exception.message;
-        errorCode = (errorResponse as any).code || this.getErrorCodeFromStatus(status);
+        errorCode =
+          (errorResponse as any).code || this.getErrorCodeFromStatus(status);
         details = (errorResponse as any).details;
       } else {
         message = exception.message;
@@ -95,7 +96,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     this.logger.error(
       `${errorCode}: ${message}`,
       exception instanceof Error ? exception.stack : undefined,
-      `${request.method} ${path}`
+      `${request.method} ${path}`,
     );
 
     // 표준 에러 응답 생성
@@ -136,7 +137,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const lowerMessage = message.toLowerCase();
 
     if (lowerMessage.includes('steam')) {
-      if (lowerMessage.includes('id') && lowerMessage.includes('찾을 수 없습니다')) {
+      if (
+        lowerMessage.includes('id') &&
+        lowerMessage.includes('찾을 수 없습니다')
+      ) {
         return ErrorCodes.STEAM_ID_NOT_FOUND;
       }
       return ErrorCodes.STEAM_API_ERROR;

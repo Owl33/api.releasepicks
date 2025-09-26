@@ -1,11 +1,25 @@
-import { Controller, Get, Post, Param, Query, Logger } from '@nestjs/common';
-import { UnifiedGameService } from './unified-game.service';
-import { LoggerHelper } from '../utils/game-utilities';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Logger,
+  ParseIntPipe,
+} from '@nestjs/common';
+import {
+  PatchUpdateResult,
+  UnifiedGameService,
+} from './unified-game.service';
+import { LoggerHelper } from '../common/utils/logger.helper';
 import {
   GameCalendarData,
   MonthlyUnifiedGameResult,
   UnifiedGameOptions,
 } from '../types/game-calendar-unified.types';
+import type { UpdateGameDto } from './dto/update-game.dto';
 
 /**
  * 통합 게임 캘린더 컨트롤러
@@ -38,7 +52,11 @@ export class UnifiedGameController {
     @Query('minPopularity') minPopularity?: string,
     @Query('steamTimeout') steamTimeout?: string,
   ): Promise<MonthlyUnifiedGameResult> {
-    LoggerHelper.logStart(this.logger, 'GET 요청', `${month} 월별 통합 게임 데이터 조회`);
+    LoggerHelper.logStart(
+      this.logger,
+      'GET 요청',
+      `${month} 월별 통합 게임 데이터 조회`,
+    );
 
     // 쿼리 파라미터 파싱
     const options: UnifiedGameOptions = {
@@ -53,12 +71,15 @@ export class UnifiedGameController {
     };
 
     try {
-      const result = await this.unifiedGameService.processGamesForMonth(month, options);
+      const result = await this.unifiedGameService.processGamesForMonth(
+        month,
+        options,
+      );
 
       LoggerHelper.logComplete(
         this.logger,
         `GET 완료: ${month}`,
-        `${result.total_games}개 게임 (PC: ${result.pc_games}, 콘솔: ${result.console_games}, Steam 통합: ${result.steam_integrated_games}개)`
+        `${result.total_games}개 게임 (PC: ${result.pc_games}, 콘솔: ${result.console_games}, Steam 통합: ${result.steam_integrated_games}개)`,
       );
 
       return result;
@@ -91,7 +112,11 @@ export class UnifiedGameController {
     errors: number;
     message: string;
   }> {
-    LoggerHelper.logStart(this.logger, 'POST 요청', `${month} 월별 통합 게임 데이터 저장`);
+    LoggerHelper.logStart(
+      this.logger,
+      'POST 요청',
+      `${month} 월별 통합 게임 데이터 저장`,
+    );
 
     // 쿼리 파라미터 파싱 (GET과 동일)
     const options: UnifiedGameOptions = {
@@ -106,7 +131,10 @@ export class UnifiedGameController {
     };
 
     try {
-      const result = await this.unifiedGameService.saveUnifiedGamesToDatabase(month, options);
+      const result = await this.unifiedGameService.saveUnifiedGamesToDatabase(
+        month,
+        options,
+      );
 
       const message = `${month} 월별 게임 저장 완료: 저장 ${result.saved}개, 건너뜀 ${result.skipped}개, 오류 ${result.errors}개`;
 
@@ -122,6 +150,30 @@ export class UnifiedGameController {
     }
   }
 
+  /**
+   * ✏️ PATCH API: 단일 게임 부분 업데이트
+   */
+  @Patch('games/:rawgId')
+  async patchGame(
+    @Param('rawgId', ParseIntPipe) rawgId: number,
+    @Body() payload: UpdateGameDto,
+  ): Promise<PatchUpdateResult> {
+    LoggerHelper.logStart(
+      this.logger,
+      'PATCH 요청',
+      `rawg_id=${rawgId} 부분 업데이트`,
+    );
+
+    const result = await this.unifiedGameService.updateGame(rawgId, payload);
+
+    LoggerHelper.logComplete(
+      this.logger,
+      'PATCH 완료',
+      `rawg_id=${rawgId}, updated_fields=${result.updated_fields.join(',')}`,
+    );
+
+    return result;
+  }
 
   /**
    * 📊 GET API: 처리 상태 조회
