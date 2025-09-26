@@ -71,15 +71,7 @@ const buildRawgResult = (): RawgCollectorResult => {
       },
     ],
     media: null,
-    parentHints: [
-      {
-        id: 3000,
-        name: 'Galactic War',
-        slug: 'galactic-war',
-        platforms: ['pc'],
-        background_image: 'https://example.com/base.png',
-      },
-    ],
+    parent_rawg_id: 3000,
     steamStoreId: 9900,
     steamStoreUrl: 'https://store.steampowered.com/app/9900',
     failures: undefined,

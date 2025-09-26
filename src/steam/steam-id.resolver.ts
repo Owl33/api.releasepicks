@@ -49,7 +49,7 @@ export class SteamIdResolver {
 
     const searchNames = this.buildSearchNames(gameName, searchStrategies);
 
-    for (const [index, searchName] of searchNames.entries()) {
+    for (const [index, searchName] of Array.from(searchNames.entries())) {
       const filteredApps = this.filterAppsByName(searchName, appList);
       if (filteredApps.length === 0) {
         attempts.push({ query: searchName, matched: false });

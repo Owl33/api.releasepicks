@@ -9,7 +9,6 @@ import {
   RawgGameStore,
   RawgMediaInfo,
   RawgListGame,
-  RawgParentHint,
 } from '../types/game-calendar-unified.types';
 
 interface RawgCollectorStats {
@@ -26,7 +25,7 @@ interface RawgCollectorContext {
   detailCache: Map<number, RawgGameDetail | null>;
   storeCache: Map<number, RawgGameStore[] | null>;
   mediaCache: Map<number, RawgMediaInfo | null>;
-  parentCache: Map<number, RawgParentHint[] | null>;
+  parentCache: Map<number, any[] | null>;
   stats: RawgCollectorStats;
 }
 
@@ -67,7 +66,7 @@ export class RawgCollector {
         },
       );
 
-      const parents = await this.loadParents(rawgGame, detail, context).catch(
+      const parentRawgId = await this.loadParentRawgId(rawgGame, detail, context).catch(
         (error) => {
           failures.push(`parents:${error?.message || 'unknown'}`);
           context.stats.failures += 1;
@@ -97,7 +96,7 @@ export class RawgCollector {
         detail: detail || undefined,
         stores: stores || undefined,
         media: media || undefined,
-        parentHints: parents ?? undefined,
+        parent_rawg_id: parentRawgId ?? undefined,
         steamStoreId,
         steamStoreUrl,
         failures: failures.length > 0 ? failures : undefined,
@@ -117,7 +116,7 @@ export class RawgCollector {
       detailCache: new Map<number, RawgGameDetail | null>(),
       storeCache: new Map<number, RawgGameStore[] | null>(),
       mediaCache: new Map<number, RawgMediaInfo | null>(),
-      parentCache: new Map<number, RawgParentHint[] | null>(),
+      parentCache: new Map<number, any[] | null>(),
       stats: {
         list: 0,
         details: 0,
@@ -199,14 +198,17 @@ export class RawgCollector {
     return stores;
   }
 
-  private async loadParents(
+  private async loadParentRawgId(
     game: RawgListGame,
     detail: RawgGameDetail | null,
     context: RawgCollectorContext,
-  ): Promise<RawgParentHint[] | null> {
+  ): Promise<number | null> {
     if (context.parentCache.has(game.id)) {
       const cached = context.parentCache.get(game.id);
-      return cached ?? null;
+      if (!cached || cached.length === 0) {
+        return null;
+      }
+      return cached[0]?.id ?? null;
     }
 
     const parentHint = detail?.parents_count ?? 0;
@@ -220,7 +222,9 @@ export class RawgCollector {
     const normalized = Array.isArray(response) ? response : [];
 
     context.parentCache.set(game.id, normalized);
-    return normalized;
+
+    // 첫 번째 부모의 ID만 반환
+    return normalized.length > 0 ? normalized[0]?.id ?? null : null;
   }
 
   private async loadMedia(
@@ -277,5 +281,93 @@ export class RawgCollector {
     }
 
     return { steamStoreId: null, steamStoreUrl: null };
+  }
+
+  /**
+   * 특정 게임 ID들에 대해 전체 데이터를 수집합니다.
+   * 부모 게임 처리에 사용됩니다.
+   */
+  async collectSpecificGames(
+    gameIds: number[],
+    options: Partial<RawgCollectorOptions> = {},
+  ): Promise<RawgCollectedGame[]> {
+    if (!gameIds || gameIds.length === 0) {
+      return [];
+    }
+
+    const context = this.initializeContext();
+    const resolvedOptions: RawgCollectorOptions = {
+      maxGames: gameIds.length,
+      minPopularity: 0, // 부모 게임은 인기도 필터링 안 함
+      includeEarlyAccess: true,
+      enableTrailers: options.enableTrailers ?? false,
+    };
+
+    const collectedGames: RawgCollectedGame[] = [];
+
+    for (const gameId of gameIds) {
+      const failures: string[] = [];
+
+      // 최소한의 RawgListGame 객체 생성
+      const basicGame: RawgListGame = {
+        id: gameId,
+        slug: '', // loadDetails에서 실제 값을 얻을 예정
+        name: '', // loadDetails에서 실제 값을 얻을 예정
+        released: null,
+        tba: false,
+        background_image: null,
+        parent_platforms: [],
+        platforms: [],
+        genres: [],
+        tags: [],
+        rating: undefined,
+        added: 0,
+      };
+
+      const detail = await this.loadDetails(basicGame, context).catch(
+        (error) => {
+          failures.push(`details:${error?.message || 'unknown'}`);
+          context.stats.failures += 1;
+          return null;
+        },
+      );
+
+      const stores = await this.loadStores(basicGame, context).catch((error) => {
+        failures.push(`stores:${error?.message || 'unknown'}`);
+        context.stats.failures += 1;
+        return [];
+      });
+
+      const media = resolvedOptions.enableTrailers
+        ? await this.loadMedia(basicGame, detail, context).catch((error) => {
+            failures.push(`trailer:${error?.message || 'unknown'}`);
+            context.stats.failures += 1;
+            return null;
+          })
+        : null;
+
+      const { steamStoreId, steamStoreUrl } =
+        this.extractSteamStoreInfo(stores);
+
+      // 실제 게임 정보가 있다면 basicGame 업데이트
+      if (detail) {
+        // RawgGameDetail에는 name, slug이 없고 slugName만 있음
+        basicGame.slug = detail.slugName || `game-${gameId}`;
+        // name은 기본값 유지 (빈 문자열) - detail에서 name을 가져올 수 없음
+      }
+
+      collectedGames.push({
+        base: basicGame,
+        detail: detail || undefined,
+        stores: stores || undefined,
+        media: media || undefined,
+        parent_rawg_id: null, // 부모 게임은 parent_rawg_id를 수집하지 않음
+        steamStoreId,
+        steamStoreUrl,
+        failures: failures.length > 0 ? failures : undefined,
+      });
+    }
+
+    return collectedGames;
   }
 }

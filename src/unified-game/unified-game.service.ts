@@ -12,7 +12,6 @@ import {
   RawgCollectedGame,
   RawgCollectorResult,
   RawgCollectorOptions,
-  RawgParentHint,
   UnifiedGameOptions,
 } from '../types/game-calendar-unified.types';
 import { PlatformType, ReleaseStatus } from '../types/domain.types';
@@ -32,7 +31,6 @@ import { CalendarUpdateGateway } from './gateway/calendar-update.gateway';
 interface DlcParentCandidate {
   rawgId: number | null;
   steamId: number | null;
-  rawgHint?: RawgParentHint | null;
 }
 
 export interface PatchUpdateResult {
@@ -322,7 +320,7 @@ export class UnifiedGameService {
       return;
     }
 
-    const candidate = this.toParentCandidate(game, collected.parentHints);
+    const candidate = this.toParentCandidate(game);
     if (!candidate) {
       return;
     }
@@ -399,6 +397,7 @@ export class UnifiedGameService {
       return [];
     }
 
+    // 이미 처리된 게임들의 ID를 수집
     const seenRawgIds = new Set<number>();
     const seenSteamIds = new Set<number>();
 
@@ -411,58 +410,74 @@ export class UnifiedGameService {
       }
     }
 
+    // 부모 게임 ID들을 추출하고 중복 제거
+    const parentRawgIds = new Set<number>();
+    for (const candidate of Array.from(candidates.values())) {
+      const rawgId = candidate.rawgId;
+      if (rawgId && !seenRawgIds.has(rawgId)) {
+        parentRawgIds.add(rawgId);
+      }
+    }
+
+    if (parentRawgIds.size === 0) {
+      return [];
+    }
+
+    // RawgCollector를 사용해서 부모 게임들을 수집 (일반 게임과 동일한 데이터 품질)
+    const parentGameIds = Array.from(parentRawgIds);
+    const collectedParents = await this.rawgCollector.collectSpecificGames(
+      parentGameIds,
+      { enableTrailers: false }, // 부모 게임은 트레일러 수집 안 함
+    );
+
     const parents: GameCalendarData[] = [];
 
-    for (const candidate of candidates.values()) {
-      const rawgId = candidate.rawgId ?? null;
-      const steamId = candidate.steamId ?? null;
+    // 각 부모 게임을 일반 게임과 동일한 파이프라인으로 처리
+    for (const collected of collectedParents) {
+      try {
+        // 1. 기본 매핑
+        let baseData = this.mappingService.createFromRawg(collected);
 
-      if ((rawgId && seenRawgIds.has(rawgId)) || (steamId && seenSteamIds.has(steamId))) {
-        continue;
-      }
-
-      const cachedParent = this.tryGetCachedParent(rawgId, steamId);
-      if (cachedParent) {
-        parents.push(cachedParent);
-        if (cachedParent.rawg_id) {
-          seenRawgIds.add(cachedParent.rawg_id);
+        // 2. Steam 통합 (일반 게임과 동일한 로직)
+        if (this.shouldIntegrateWithSteam(baseData, this.defaultOptions)) {
+          const enhancement = await this.enhanceWithSteam(
+            baseData,
+            collected,
+            this.defaultOptions,
+          );
+          baseData = enhancement.game;
         }
-        if (cachedParent.steam_id) {
-          seenSteamIds.add(cachedParent.steam_id);
-        }
-        if (steamId) {
-          seenSteamIds.add(steamId);
-        }
-        continue;
-      }
 
-      let snapshot = await this.persistenceService.fetchGameSnapshot({
-        rawgId: rawgId ?? undefined,
-        steamId: steamId ?? undefined,
-      });
+        // 3. 메타데이터 설정
+        baseData.last_verified_month = null; // 부모 게임은 별도 검증 없음
+        baseData.last_synced_source = baseData.steam_integrated
+          ? 'steam'
+          : 'rawg';
 
-      if (!snapshot && candidate.rawgHint) {
-        snapshot = this.buildParentFromRawgHint(candidate.rawgHint);
-      }
+        // 4. 분류 적용
+        const classifiedGame = this.applyClassification(baseData, collected);
 
-      if (!snapshot) {
-        this.logger.warn(
-          `DLC 부모 게임을 찾을 수 없습니다. rawgId=${rawgId ?? 'null'}, steamId=${steamId ?? 'null'}`,
+        // 5. 캐시에 저장 (기존 캐시 메커니즘 활용)
+        this.cacheParentSnapshot(
+          classifiedGame,
+          classifiedGame.rawg_id ?? null,
+          classifiedGame.steam_id ?? null
         );
-        continue;
-      }
 
-      this.cacheParentSnapshot(snapshot, rawgId, steamId);
+        parents.push(classifiedGame);
 
-      parents.push(this.cloneGameData(snapshot));
-      if (snapshot.rawg_id) {
-        seenRawgIds.add(snapshot.rawg_id);
-      }
-      if (snapshot.steam_id) {
-        seenSteamIds.add(snapshot.steam_id);
-      }
-      if (steamId) {
-        seenSteamIds.add(steamId);
+        // 중복 방지를 위해 ID 추가
+        if (classifiedGame.rawg_id) {
+          seenRawgIds.add(classifiedGame.rawg_id);
+        }
+        if (classifiedGame.steam_id) {
+          seenSteamIds.add(classifiedGame.steam_id);
+        }
+      } catch (error) {
+        this.logger.error(
+          `부모 게임 처리 실패: ${collected.base?.name || collected.base?.id}`,
+          (error as Error)?.stack || String(error),
+        );
       }
     }
 
@@ -609,19 +624,6 @@ export class UnifiedGameService {
     }
   }
 
-  private tryGetCachedParent(
-    rawgId: number | null,
-    steamId: number | null,
-  ): GameCalendarData | null {
-    const keys = this.buildParentCacheKeys(rawgId, steamId);
-    for (const key of keys) {
-      const cached = this.parentSnapshotCache.get(key);
-      if (cached) {
-        return this.cloneGameData(cached);
-      }
-    }
-    return null;
-  }
 
   private cacheParentSnapshot(
     snapshot: GameCalendarData,
@@ -654,142 +656,9 @@ export class UnifiedGameService {
     }
     return Array.from(keys);
   }
-//buildParentFromRawgHint여기서 내가 원하는 구조와 다름, 파렌트게임은 정확한 데이터 구조를 가져야 하는데 그러지 않고있음
-//기존의 정식 게임과 똑같은 구조로 rawg에서 얻어온 데이터와 steam에서 얻어온 데이터를
-//합치는 구조로 만들어져야 하는데 왜 이렇게 축약된 구조로 return을 하는지 모르겠음.
-//아마 문서에 개념적인 실수가 있을거같은데 그것을 찾아보고 나서 현재 로직을 고쳐야함.
-  private buildParentFromRawgHint(
-    rawgParent: RawgParentHint,
-  ): GameCalendarData | null {
-    if (!rawgParent || typeof rawgParent.id !== 'number') {
-      return null;
-    }
-
-    const platformSlugs = this.normalizeParentPlatforms(rawgParent.platforms);
-    const platformType = this.resolvePlatformTypeFromList(platformSlugs);
-
-    const releaseStatus: ReleaseStatus = 'released';
-
-    return {
-      rawg_id: rawgParent.id,
-      steam_id: null,
-      name: rawgParent.name,
-      original_name: rawgParent.name,
-      slug_name: rawgParent.slug || null,
-      release_date: null,
-      release_status: releaseStatus,
-      tba: false,
-      platform_type: platformType,
-      platforms: platformSlugs,
-      genres: [],
-      tags: [],
-      developers: [],
-      publishers: [],
-      rating: undefined,
-      ratings_count: undefined,
-      esrb_rating: null,
-      required_age: null,
-      early_access: false,
-      description: undefined,
-      korean_description: undefined,
-      website: null,
-      image: rawgParent.background_image || null,
-      screenshots: [],
-      trailer_url: null,
-      store_links: {},
-      price: undefined,
-      currency: undefined,
-      steam_integrated: false,
-      steam_type: undefined,
-      korea_name: undefined,
-      is_full_game: true,
-      dlc_list: undefined,
-      is_free: false,
-      review_summary: undefined,
-      metacritic: null,
-      is_dlc: false,
-      parent_rawg_id: null,
-      parent_steam_id: null,
-      game_type: 'main_game',
-      game_type_confidence: 0.6,
-      game_type_reason: 'RAWG 부모 스냅샷 대체 데이터',
-      last_verified_month: null,
-      last_synced_source: null,
-      added: 0,
-      added_by_status: {},
-      dlc_context: undefined,
-      categories: [],
-    };
-  }
-
-  private normalizeParentPlatforms(rawgPlatforms: any): string[] {
-    if (!Array.isArray(rawgPlatforms)) {
-      return [];
-    }
-
-    const normalized: string[] = [];
-
-    for (const platform of rawgPlatforms) {
-      if (!platform) {
-        continue;
-      }
-
-      const slug = this.extractPlatformSlug(platform);
-      if (slug && !normalized.includes(slug)) {
-        normalized.push(slug);
-      }
-    }
-
-    return normalized;
-  }
-
-  private extractPlatformSlug(platform: any): string | null {
-    if (!platform) {
-      return null;
-    }
-
-    if (typeof platform === 'string') {
-      return platform.toLowerCase();
-    }
-
-    if (platform.platform) {
-      const slug = platform.platform.slug || platform.platform.name;
-      return slug ? String(slug).toLowerCase() : null;
-    }
-
-    if (platform.slug || platform.name) {
-      return String(platform.slug || platform.name).toLowerCase();
-    }
-
-    return null;
-  }
-
-  private resolvePlatformTypeFromList(platforms: string[]): PlatformType {
-    if (platforms.length === 0) {
-      return 'mixed';
-    }
-
-    const lower = platforms.map((slug) => slug.toLowerCase());
-    const hasPc = lower.some((slug) => slug.includes('pc') || slug === 'steam');
-    const consoleKeywords = ['playstation', 'xbox', 'nintendo', 'switch'];
-    const hasConsole = lower.some((slug) =>
-      consoleKeywords.some((keyword) => slug.includes(keyword)),
-    );
-
-    if (hasPc && !hasConsole) {
-      return 'pc';
-    }
-
-    if (!hasPc && hasConsole) {
-      return 'console';
-    }
-
-    return 'mixed';
-  }
 
   private toParentCandidate(
     game: GameCalendarData,
-    parentHints?: RawgParentHint[] | null,
   ): DlcParentCandidate | null {
     let parentSteamId = game.parent_steam_id ?? null;
     const steamContextId = game.dlc_context?.steam_fullgame_info?.appid;
@@ -801,15 +670,7 @@ export class UnifiedGameService {
       }
     }
 
-    let parentRawgId = game.parent_rawg_id ?? null;
-    const primaryRawgParent = Array.isArray(parentHints)
-      ? parentHints.find((parent) => parent && typeof parent.id === 'number') ?? null
-      : null;
-
-    if (!parentRawgId && primaryRawgParent?.id) {
-      parentRawgId = primaryRawgParent.id;
-      game.parent_rawg_id = primaryRawgParent.id;
-    }
+    const parentRawgId = game.parent_rawg_id ?? null;
 
     if (!parentSteamId && !parentRawgId) {
       return null;
@@ -818,7 +679,6 @@ export class UnifiedGameService {
     return {
       rawgId: parentRawgId,
       steamId: parentSteamId,
-      rawgHint: primaryRawgParent ?? undefined,
     };
   }
 

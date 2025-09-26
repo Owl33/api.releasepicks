@@ -4,7 +4,6 @@ import { YouTubeService } from '../../../src/youtube/youtube.service';
 import {
   RawgCollectorOptions,
   RawgListGame,
-  RawgParentHint,
 } from '../../../src/types/game-calendar-unified.types';
 
 describe('RawgCollector', () => {
@@ -101,8 +100,8 @@ describe('RawgCollector', () => {
     expect(result.apiCallStats.parents).toBe(1);
     expect(result.deliveredGames).toHaveLength(1);
     const collected = result.deliveredGames[0];
-    expect(collected.parentHints).toBeDefined();
-    expect(collected.parentHints?.[0]?.id).toBe(10);
+    expect(collected.parent_rawg_id).toBeDefined();
+    expect(collected.parent_rawg_id).toBe(10);
   });
 
   it('parents_count가 0이면 부모 API를 호출하지 않는다', async () => {
@@ -114,7 +113,7 @@ describe('RawgCollector', () => {
 
     expect(rawgService.getParentGames).not.toHaveBeenCalled();
     expect(result.apiCallStats.parents).toBe(0);
-    expect(result.deliveredGames[0].parentHints).toBeUndefined();
+    expect(result.deliveredGames[0].parent_rawg_id).toBeUndefined();
   });
 
   it('부모 API가 빈 배열을 반환해도 빈 배열이 전달된다', async () => {
@@ -126,7 +125,7 @@ describe('RawgCollector', () => {
     const result = await collector.collectMonthlyGames('2025-12', options);
 
     expect(rawgService.getParentGames).toHaveBeenCalledTimes(1);
-    expect(result.deliveredGames[0].parentHints).toEqual([]);
+    expect(result.deliveredGames[0].parent_rawg_id).toBeNull();
   });
 
   it('트레일러 옵션을 활성화하면 YouTube 호출과 Steam 스토어 추출을 수행한다', async () => {

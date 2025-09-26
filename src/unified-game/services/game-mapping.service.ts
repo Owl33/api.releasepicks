@@ -19,11 +19,7 @@ export class GameMappingService {
       collected.stores,
       collected.media,
       collected.steamStoreUrl,
-      Array.isArray(collected.parentHints)
-        ? collected.parentHints
-            .map((parent) => (parent && typeof parent.id === 'number' ? parent.id : null))
-            .filter((id): id is number => id !== null)
-        : null,
+      collected.parent_rawg_id ? [collected.parent_rawg_id] : null,
     );
 
     return baseData;

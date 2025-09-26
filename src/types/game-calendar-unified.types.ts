@@ -101,7 +101,7 @@ export interface RawgCollectedGame {
   detail?: RawgGameDetail | null;
   stores?: RawgGameStore[] | null;
   media?: RawgMediaInfo | null;
-  parentHints?: RawgParentHint[] | null;
+  parent_rawg_id?: number | null;
   steamStoreId?: number | null;
   steamStoreUrl?: string | null;
   failures?: string[];
@@ -250,17 +250,6 @@ export interface CalendarFilters {
   only_with_trailers?: boolean;
   sort_by?: 'release_date' | 'popularity' | 'name';
   sort_order?: 'asc' | 'desc';
-}
-
-/**
- * RAWG parent-games API 응답 힌트
- */
-export interface RawgParentHint {
-  id: number;
-  name: string;
-  slug: string | null;
-  platforms: string[];
-  background_image: string | null;
 }
 
 /**

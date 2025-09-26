@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { RawgParentHint, RawgAdditionData } from '../types/game-calendar-unified.types';
+import { RawgAdditionData } from '../types/game-calendar-unified.types';
 import { ErrorHandlerUtil } from '../common/utils/error-handler.util';
 import { RAWG_API } from '../common/constants/api.constants';
 
@@ -163,7 +163,7 @@ export class RawgService {
     );
   }
 
-  async getParentGames(gameId: number): Promise<RawgParentHint[]> {
+  async getParentGames(gameId: number): Promise<any[]> {
     return ErrorHandlerUtil.executeWithErrorHandling(
       async () => {
         const response = await axios.get(
