@@ -1,64 +1,37 @@
-import {
-  Controller,
-  Get,
-  Param,
-  Query,
-  HttpStatus,
-  HttpException,
-} from '@nestjs/common';
+import { Controller, Get, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
 import { YouTubeService } from './youtube.service';
-import { YouTubeSearchFilters } from '../types/youtube.types';
-import { ApiResponse } from '../types/game-calendar-unified.types';
+import { YouTubeSearchFilters, ApiResponse } from './youtube.types';
 
-@Controller('youtube')
+@Controller('api/youtube')
 export class YouTubeController {
-  constructor(private readonly youtubeService: YouTubeService) {}
+  constructor(private readonly yt: YouTubeService) {}
 
-  /**
-   * 게임 공식 트레일러 검색
-   * GET /youtube/trailer/:gameName
-   *
-   * @param gameName - 게임명
-   * @param query - 검색 옵션
-   */
-
-  /**
-   * 간단한 트레일러 조회 (게임 캘린더용)
-   * GET /youtube/simple/:gameName
-   *
-   * @param gameName - 게임명
-   */
-  @Get('simple/:gameName')
-  async getSimpleTrailer(@Param('gameName') gameName: string) {
+  @Get('trailer/:slug')
+  async getTrailer(
+    @Param('slug') slug: string,
+    @Query('maxResults') maxResults?: string,
+    @Query('lang') lang?: string,
+    @Query('region') region?: string,
+    @Query('strict') strict?: string,
+  ): Promise<ApiResponse> {
     try {
-      if (!gameName || gameName.trim().length === 0) {
-        throw new HttpException(
-          '게임명을 입력해주세요',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      const result = await this.youtubeService.getSimpleTrailer(
-        decodeURIComponent(gameName),
-      );
-
-      const response: ApiResponse<typeof result> = {
-        success: true,
-        message: result
-          ? `${gameName}의 YouTube 트레일러를 찾았습니다`
-          : `${gameName}의 YouTube 트레일러를 찾을 수 없습니다`,
-        data: result,
-        timestamp: new Date().toISOString(),
+      const filters: YouTubeSearchFilters = {
+        maxResults: maxResults ? Math.max(1, Math.min(10, Number(maxResults))) : 5,
+        lang: lang || undefined,
+        region: region || undefined,
+        strictOfficial: typeof strict === 'string' ? strict === '1' || strict === 'true' : false,
       };
 
-      return response;
-    } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-
+      const data = await this.yt.findOfficialTrailer(slug, filters);
+      return {
+        success: true,
+        message: data?.picked ? 'ok' : 'not found',
+        data,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (e: any) {
       throw new HttpException(
-        `간단한 트레일러 조회 실패: ${error.message}`,
+        `YouTube trailer lookup failed: ${e?.message || e}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

@@ -3,141 +3,135 @@ import {
   PrimaryGeneratedColumn,
   Column,
   OneToOne,
-  ManyToOne,
   OneToMany,
+  ManyToOne,
+  Index,
+  CreateDateColumn,
+  UpdateDateColumn,
   JoinColumn,
 } from 'typeorm';
 import { GameDetail } from './game-detail.entity';
+import { GameRelease } from './game-release.entity';
+import { GameCompanyRole } from './game-company-role.entity';
+import { GameType, ReleaseStatus } from './enums';
 
+/**
+ * 게임 통합 정보 테이블 (핵심 테이블)
+ * FINAL-ARCHITECTURE-DESIGN 명세 기반 - 1번 테이블
+ *
+ * 역할: 게임의 기본 정보와 통합 메타데이터 관리
+ * 특징: 외부 소스 ID 연결 + 인기도 시스템 중심
+ */
 @Entity('games')
+@Index('ux_games_steam_id', ['steam_id'], {
+  unique: true,
+  where: 'steam_id IS NOT NULL',
+})
+@Index('ux_games_rawg_id', ['rawg_id'], {
+  unique: true,
+  where: 'rawg_id IS NOT NULL',
+})
+@Index('ix_games_popularity', ['popularity_score'])
+@Index('ix_games_release_date', ['release_date_date', 'coming_soon'])
+@Index('ix_games_coming_soon', ['coming_soon'])
+@Index('ix_games_parent_steam', ['parent_steam_id'])
+@Index('ix_games_parent_rawg', ['parent_rawg_id'])
+@Index('ix_games_is_dlc', ['is_dlc'])
+@Index('ix_games_platform_type', ['platform_type'])
 export class Game {
-  @PrimaryGeneratedColumn()
+  @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
-
-  @Column({ type: 'int', unique: true, name: 'rawg_id' })
-  rawg_id: number;
 
   @Column({ type: 'text' })
   name: string;
 
-  @Column({ type: 'date' })
-  released: Date;
+  @Column({ type: 'citext', unique: true })
+  slug: string;
 
-  @Column({ type: 'text', array: true })
-  platforms: string[];
+  // ===== 외부 소스 ID =====
+  @Column({ type: 'integer', nullable: true })
+  steam_id: number | null;
 
-  @Column({ type: 'text', array: true, nullable: true })
-  genres: string[];
+  @Column({ type: 'integer', nullable: true })
+  rawg_id: number | null;
 
-  @Column({ type: 'integer' })
-  added: number;
+  // ===== 부모 게임 참조 (DLC → 본편 연결) =====
+  @Column({ type: 'integer', nullable: true })
+  parent_steam_id: number | null;
+
+  @Column({ type: 'integer', nullable: true })
+  parent_rawg_id: number | null;
+
+  // ===== 게임 분류 =====
+  @Column({
+    type: 'enum',
+    enum: GameType,
+    default: GameType.GAME,
+  })
+  game_type: GameType;
+
+  // ===== DLC 여부 플래그 =====
+  @Column({ type: 'boolean', default: false })
+  is_dlc: boolean;
+
+  // ===== 플랫폼 타입 (Phase 5.5 추가) =====
+  @Column({ type: 'text', nullable: true })
+  platform_type: 'pc' | 'playstation' | 'xbox' | 'nintendo' | null;
+
+  // ===== 대표 출시 정보 (가장 빠른 출시일 기준) =====
+  @Column({ type: 'date', nullable: true })
+  release_date_date: Date | null;
 
   @Column({ type: 'text', nullable: true })
-  image: string;
-
-  @Column({ type: 'text', array: true, nullable: true })
-  developers: string[];
-
-  @Column({ type: 'text', array: true, nullable: true })
-  publishers: string[];
+  release_date_raw: string | null;
 
   @Column({
-    type: 'varchar',
-    length: 20,
-    default: 'upcoming',
-    name: 'release_status',
-  })
-  release_status: string;
-
-  @Column({
-    type: 'varchar',
-    length: 20,
-    default: 'pc',
-    name: 'platform_type',
-  })
-  platform_type: string;
-
-  @Column({
-    type: 'char',
-    length: 7,
+    type: 'enum',
+    enum: ReleaseStatus,
     nullable: true,
-    name: 'last_verified_month',
   })
-  last_verified_month?: string;
+  release_status: ReleaseStatus | null;
 
-  @Column({
-    type: 'varchar',
-    length: 32,
-    nullable: true,
-    name: 'last_synced_source',
-  })
-  last_synced_source?: string;
+  @Column({ type: 'boolean', default: false })
+  coming_soon: boolean;
 
-  // ===== Steam 통합 필드들 =====
+  // ===== 인기도 시스템 ⭐ (단순화) =====
+  @Column({ type: 'integer', default: 0 })
+  popularity_score: number; // 0-100 정규화된 점수 (tier는 이걸로 계산)
 
-  // Steam 기본 정보 (게임 캘린더 필수)
-  @Column({ type: 'integer', nullable: true, name: 'steam_id' })
-  steam_id?: number;
+  // ===== 캐시된 요약 정보 =====
+  @Column({ type: 'text', array: true, default: '{}' })
+  platforms_summary: string[]; // ['pc', 'ps5', 'switch']
 
-  @Column({ type: 'varchar', length: 255, nullable: true, name: 'korea_name' })
-  korea_name?: string; // 한글 게임명
+  @Column({ type: 'integer', nullable: true })
+  followers_cache: number | null; // 대표 Steam 릴리스 팔로워 캐시
 
-  @Column({ type: 'varchar', length: 50, nullable: true, name: 'steam_price' })
-  steam_price?: string; // "₩29,000" 형태
+  // ===== 타임스탬프 =====
+  @CreateDateColumn({ type: 'timestamptz' })
+  created_at: Date;
 
-  @Column({ type: 'varchar', length: 20, nullable: true, name: 'steam_type' })
-  steam_type?: string; // Steam 공식 타입: "game", "dlc", "music", "demo"
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updated_at: Date;
 
-  @Column({ type: 'jsonb', nullable: true, name: 'fullgame_info' })
-  fullgame_info?: object; // DLC인 경우 본편 게임 정보
+  // ===== 관계 설정 =====
 
-  @Column({ type: 'integer', array: true, nullable: true, name: 'dlc_list' })
-  dlc_list?: number[]; // 본편인 경우 DLC ID 목록
+  // 부모 게임 관계 (DLC → 본편) - 임시 비활성화 (parent_steam_id/parent_rawg_id 사용 예정)
+  // @ManyToOne(() => Game, (game) => game.children, { nullable: true })
+  // parent: Game | null;
 
-  @Column({
-    type: 'integer',
-    array: true,
-    nullable: true,
-    name: 'rawg_parent_ids',
-  })
-  rawg_parent_ids?: number[];
+  // 자식 게임들 (본편 → DLC들)
+  // @OneToMany(() => Game, (game) => game.parent)
+  // children: Game[];
 
-  // Steam 리뷰 (출시된 게임만)
-  @Column({ type: 'integer', nullable: true, name: 'steam_reviews_positive' })
-  steam_reviews_positive?: number;
+  // 상세 정보 (1:1)
+  @OneToOne(() => GameDetail, (detail) => detail.game, { cascade: true })
+  details: GameDetail | null;
 
-  @Column({ type: 'integer', nullable: true, name: 'steam_reviews_total' })
-  steam_reviews_total?: number;
+  // 플랫폼별 출시 정보 (1:N)
+  @OneToMany(() => GameRelease, (release) => release.game, { cascade: true })
+  releases: GameRelease[];
 
-  @Column({
-    type: 'varchar',
-    length: 50,
-    nullable: true,
-    name: 'steam_review_score',
-  })
-  steam_review_score?: string; // Steam 공식 review_score_desc: "압도적으로 긍정적" 등
-
-  // ===== DLC 부모-자식 관계 필드들 =====
-
-  // 부모 게임 관계 (DLC인 경우에만 값 존재)
-  @Column({ type: 'integer', nullable: true, name: 'parent_game_id' })
-  parent_game_id?: number; // 부모 게임의 games.id (DB PK)
-
-  @Column({ type: 'integer', nullable: true, name: 'parent_steam_game_id' })
-  parent_steam_game_id?: number; // 부모 게임의 Steam App ID
-
-  // 자기 참조 관계: 부모 게임 (DLC → 본편)
-  @ManyToOne(() => Game, (game) => game.children, { nullable: true })
-  @JoinColumn({ name: 'parent_game_id' })
-  parent?: Game;
-
-  // 자기 참조 관계: 자식 게임들 (본편 → DLC들)
-  @OneToMany(() => Game, (game) => game.parent)
-  children?: Game[];
-
-  // 관계 설정 (1:1, games.id <- game_details.game_id)
-  @OneToOne(() => GameDetail, (gameDetail) => gameDetail.game, {
-    cascade: true,
-  })
-  game_detail?: GameDetail;
+  // 회사 관계 (N:M)
+  @OneToMany(() => GameCompanyRole, (role) => role.game)
+  company_roles: GameCompanyRole[];
 }

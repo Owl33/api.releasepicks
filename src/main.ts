@@ -1,18 +1,33 @@
-import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { ResponseTransformInterceptor } from './common/interceptors/response.interceptor';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  const port = process.env.PORT ? Number(process.env.PORT) : 8081;
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
-  app.enableCors({
-    origin: ['http://localhost:3000'],
-    preflightContinue: false,
-    credentials: true,
-  });
+  // 요청 ID
+  app.use(new RequestIdMiddleware().use);
 
-  await app.listen(port);
-  console.log(`🚀 서버가 포트 ${port}에서 실행 중입니다`);
+  // 전역 인터셉터: 로깅 → 성공응답 표준화
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    new ResponseTransformInterceptor(),
+  );
+
+  // 전역 예외 필터: HTTP → 나머지
+  app.useGlobalFilters(
+    new HttpExceptionFilter(),
+    new AllExceptionsFilter(),
+  );
+
+  // CORS/프리픽스 등 필요 시 추가
+  // app.enableCors();
+  // app.setGlobalPrefix('api');
+
+  await app.listen(8080);
 }
 bootstrap();
