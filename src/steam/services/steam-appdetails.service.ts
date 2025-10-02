@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { SteamReleaseDateRaw } from 'src/entities/enums';
 
 /**
  * Steam AppDetails 서비스
@@ -23,7 +24,10 @@ export class SteamAppDetailsService {
     // Steam AppDetails API Rate Limit (안전 기준)
     // 공식 권장: 초당 200 요청 → 5ms 간격
     // 안전 마진 적용: 300ms (초당 3.3 요청, IP 밴 방지)
-    this.requestDelay = parseInt(this.configService.get<string>('STEAM_APPDETAILS_DELAY') || '300', 10);
+    this.requestDelay = parseInt(
+      this.configService.get<string>('STEAM_APPDETAILS_DELAY') || '300',
+      10,
+    );
   }
 
   /**
@@ -53,7 +57,7 @@ export class SteamAppDetailsService {
             l: 'korean', // 한국어
           },
           timeout: 10000,
-        })
+        }),
       );
 
       const requestDuration = Date.now() - requestStart;
@@ -73,18 +77,20 @@ export class SteamAppDetailsService {
         this.logger.debug(`📋 게임이 아님: AppID ${appId} (${data.type})`);
         return null;
       }
-
       return this.parseAppDetails(data);
-
     } catch (error) {
       // 429 에러 (Rate Limit) 특별 처리
       if (error.response?.status === 429) {
-        this.logger.error(`🚨 AppDetails Rate Limit 초과 (429) - AppID ${appId}`);
+        this.logger.error(
+          `🚨 AppDetails Rate Limit 초과 (429) - AppID ${appId}`,
+        );
         // 429 발생 시 더 긴 지연 적용 (1초 추가 대기)
         await this.delay(1000);
       }
 
-      this.logger.error(`❌ Steam AppDetails 실패 - AppID ${appId}: ${error.message}`);
+      this.logger.error(
+        `❌ Steam AppDetails 실패 - AppID ${appId}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -100,9 +106,9 @@ export class SteamAppDetailsService {
       steam_appid: data.steam_appid,
       name: data.name,
       type: data.type,
-
+      fullgame: data.fullgame || {},
       // 출시 정보
-      release_date: this.parseReleaseDate(data.release_date),
+      release_date: data.release_date,
       coming_soon: data.release_date?.coming_soon || false,
 
       // 기본 정보
@@ -112,12 +118,12 @@ export class SteamAppDetailsService {
 
       // 미디어
       header_image: data.header_image,
-      screenshots: data.screenshots?.slice(0, 5).map(s => s.path_full) || [],
-      movies: data.movies?.slice(0, 1).map(m => m.mp4?.max) || [],
+      screenshots: data.screenshots?.slice(0, 5).map((s) => s.path_full) || [],
+      movies: data.movies?.slice(0, 1).map((m) => m.mp4?.max) || [],
 
       // 분류
-      genres: data.genres?.map(g => g.description) || [],
-      categories: data.categories?.map(c => c.description) || [],
+      genres: data.genres?.map((g) => g.description) || [],
+      categories: data.categories?.map((c) => c.description) || [],
 
       // 회사 정보
       developers: data.developers || [],
@@ -160,7 +166,6 @@ export class SteamAppDetailsService {
     if (!priceOverview) return null;
 
     return {
-      currency: priceOverview.currency,
       initial: priceOverview.initial,
       final: priceOverview.final,
       discount_percent: priceOverview.discount_percent,
@@ -186,12 +191,30 @@ export class SteamAppDetailsService {
   /**
    * 지원 언어 파싱
    */
-  private parseLanguages(languages: string): string[] {
+  private parseLanguages(languages?: string): string[] {
     if (!languages) return [];
 
-    // HTML 태그 제거하고 언어 목록 추출
-    const cleanLanguages = languages.replace(/<[^>]*>/g, '');
-    return cleanLanguages.split(',').map(lang => lang.trim()).slice(0, 10);
+    // 1) <br> 이후의 각주/설명은 잘라낸다
+    const beforeBreak = languages.split(/<br\s*\/?>/i)[0] ?? languages;
+
+    // 2) 남은 HTML 태그 제거
+    const plain = beforeBreak.replace(/<[^>]+>/g, '');
+
+    // 3) 콤마로 분리 후 공백 제거
+    const parts = plain
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    // 4) 언어 토큰 끝에 붙은 각주(*) 제거
+    const cleaned = parts.map((s) => s.replace(/\*+$/g, '').trim());
+
+    // 5) 중복 제거, 최대 10개 제한
+    const dedup: string[] = [];
+    for (const lang of cleaned) {
+      if (!dedup.includes(lang)) dedup.push(lang);
+    }
+    return dedup.slice(0, 10);
   }
 
   /**
@@ -206,7 +229,7 @@ export class SteamAppDetailsService {
    * 지연 함수 (Rate Limiting)
    */
   private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
@@ -214,12 +237,13 @@ export class SteamAppDetailsService {
  * Steam AppDetails 인터페이스
  */
 export interface SteamAppDetails {
+  fullgame: any;
   steam_appid: number;
   name: string;
   type: string;
 
   // 출시 정보
-  release_date: Date | null;
+  release_date: SteamReleaseDateRaw;
   coming_soon: boolean;
 
   // 기본 정보

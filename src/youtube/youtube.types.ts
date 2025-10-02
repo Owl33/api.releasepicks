@@ -1,59 +1,44 @@
-/** 공통 API 응답 형태 (컨트롤러에서 사용) */
-export interface ApiResponse<T = any> {
-  success: boolean;
-  message: string;
-  data: T;
-  timestamp: string; // ISO 8601
-}
+// src/youtube.types.ts
 
-/** YouTube 검색 결과(서비스 내부 전용 최소 필드) */
-export interface YouTubeSearchItem {
-  videoId: string;
-  title: string;
-  description: string;
-  thumbnailUrl: string;
-  publishedAt: string;   // ISO 8601
-  channelId: string;
-  channelTitle: string;
-  durationSec?: number;
-  url: string;
-}
-
-/** 검색 필터 */
-export interface YouTubeSearchFilters {
-  /** 최대 결과 수(쿼리당) */
-  maxResults?: number; // default 5
-  /** 언어(검색 쿼리 가중에만 사용) */
-  lang?: string;       // "en" | "ko" | ...
-  /** 지역 코드(유튜브 지역 결과 가중) */
-  region?: string;     // "US" | "KR" | ...
-  /** 공식 채널만 강제 여부 */
-  strictOfficial?: boolean; // default false
-}
-
-/** 휴리스틱 신뢰도 등급 */
 export type ConfidenceLevel = 'low' | 'medium' | 'high';
 
-/** 최종 트레일러 결과 */
+export interface YouTubeSearchItem {
+  /** 동영상 제목 */
+  title?: string;
+  /** https://www.youtube.com/watch?v=... */
+  url?: string;
+  /** 채널명 */
+  channelTitle?: string;
+  /** 게시 시각(YouTube 검색 페이지의 사람이 읽는 포맷) */
+  publishedAt?: string;
+  /** 조회수 텍스트 (예: "1,234,567 views") */
+  viewCountText?: string;
+  /** 길이 텍스트 (예: "2:31") */
+  durationText?: string;
+  /** 설명(검색 결과 카드에 노출되는 스니펫) */
+  description?: string;
+}
+
+export interface YouTubeSearchFilters {
+  /** 출시 연도(있으면 쿼리 프라이어리티 높임) */
+  releaseYear?: number;
+  /** 추가 키워드 (앞쪽 로우에 우선 배치) */
+  keywords?: string[];
+}
+
+export interface PickedTrailer {
+  url: string;
+  title: string;
+  channel: string;
+  publishedAt: string;
+  confidence: ConfidenceLevel;
+  score: number; // 0~1
+}
+
 export interface GameTrailerResult {
   slug: string;
-  queryTried: string[];  // 시도한 쿼리 목록
-  picked: {
-    videoId: string;
-    url: string;
-    title: string;
-    description: string;
-    thumbnailUrl: string;
-    publishedAt: string;   // ISO 8601
-    channelTitle: string;
-
-    /** 채널/키워드 기반으로 '공식 트레일러'로 판단되는지 */
-    isOfficialTrailer: boolean;
-
-    /** 휴리스틱 신뢰도 구간화 */
-    confidence: ConfidenceLevel;
-
-    /** 0.0 ~ 1.0 (가중합 스코어) */
-    score: number;
-  } | null;
+  /** 시도한 쿼리들 (로그/디버깅용) */
+  queryTried: string[];
+  /** 최종 채택 결과 (없으면 null) */
+  picked: PickedTrailer | null;
 }

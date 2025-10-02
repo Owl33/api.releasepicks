@@ -34,7 +34,7 @@ export interface ProcessedGameData {
   childDlcSteamIds?: number[]; // Steam 본편에서 수집한 DLC AppID 리스트 (백필용)
 
   // 출시 정보
-  releaseDate?: Date;
+  releaseDate?: Date | null;
   releaseDateRaw?: string;
   releaseStatus: ReleaseStatus;
   comingSoon: boolean;
@@ -83,12 +83,8 @@ export interface GameDetailsData {
   supportLanguages?: string[];
 
   // 평점 정보
-  metacriticScore?: number;
-  opencriticScore?: number;
-
-  // Steam 통계
-  steamPositiveRatio?: number;
-  steamReviewDesc?: string;
+  metacriticScore?: number | null;
+  opencriticScore?: number | null;
 
   // RAWG 통계
   rawgAdded?: number;
@@ -110,17 +106,15 @@ export interface GameReleaseData {
   storeUrl?: string;
 
   // 지역 정보
-  region?: string; // ISO 3166-1 alpha-2 (US, JP, KR, EU 등)
 
   // 출시 정보
-  releaseDateDate?: Date;
+  releaseDateDate?: Date | null;
   releaseDateRaw?: string;
   releaseStatus: ReleaseStatus;
   comingSoon: boolean;
 
   // 가격 정보
   currentPriceCents?: number;
-  currency?: string; // ISO 4217 (USD, JPY, KRW, EUR 등)
   isFree: boolean;
 
   // Steam 전용 메트릭

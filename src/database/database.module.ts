@@ -24,8 +24,8 @@ import { entities } from '../entities';
         username: configService.get<string>('DB_USER'),
         password: configService.get<string>('DB_PASSWORD'),
         entities: entities,
+        logging: ['error', 'warn', 'schema'],
         synchronize: false,
-        logging: configService.get<string>('NODE_ENV') === 'development',
         ssl: {
           rejectUnauthorized: false,
         },

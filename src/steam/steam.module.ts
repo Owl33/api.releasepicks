@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { SteamController } from './steam.controller';
 
 // 엔티티
 import { Game } from '../entities/game.entity';
@@ -18,7 +19,7 @@ import { SteamAppDetailsService } from './services/steam-appdetails.service';
 import { SteamCommunityService } from './services/steam-community.service';
 import { SteamDataPipelineService } from './services/steam-data-pipeline.service';
 import { SteamBatchStrategyService } from './services/steam-batch-strategy.service';
-
+import { SteamReviewService } from './services/steam-review.service';
 // YouTube 모듈 (Phase 4)
 import { YouTubeModule } from '../youtube/youtube.module';
 
@@ -57,14 +58,16 @@ import { YouTubeModule } from '../youtube/youtube.module';
     SteamCommunityService,
     SteamDataPipelineService,
     SteamBatchStrategyService,
+    SteamReviewService,
   ],
-  controllers: [],
+  controllers: [SteamController],
   exports: [
     SteamAppListService,
     SteamAppDetailsService,
     SteamCommunityService,
     SteamDataPipelineService,
     SteamBatchStrategyService,
+    SteamReviewService,
   ],
 })
 export class SteamModule {}

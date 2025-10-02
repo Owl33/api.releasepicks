@@ -1,3 +1,4 @@
+// src/youtube.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import {
   YouTubeSearchItem,
@@ -7,757 +8,580 @@ import {
 } from './youtube.types';
 import * as https from 'https';
 
-// ---------- 네트워크 안정화: IPv4 우선 + undici 글로벌 디스패처 ----------
+// ────────────────────────────────────────────────────────────────
+// Node 18+ 권장: IPv4 우선 (일부 환경에서 DNS 관련 지연/실패 방지)
+// ────────────────────────────────────────────────────────────────
 try {
-  // Node 18+: IPv4 우선
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const dns = require('node:dns');
   if (typeof dns.setDefaultResultOrder === 'function') {
     dns.setDefaultResultOrder('ipv4first');
   }
-} catch {}
-try {
-  // undici 글로벌 디스패처 (fetch 안정화)
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Agent, setGlobalDispatcher } = require('undici');
-  const dispatcher = new Agent({
-    keepAliveTimeout: 15_000,
-    keepAliveMaxTimeout: 7_500,
-    headersTimeout: 8_000,
-    bodyTimeout: 10_000,
-    connectTimeout: 3_000,
-    connections: 20,
-  });
-  setGlobalDispatcher(dispatcher);
-} catch {}
+} catch {
+  // ignore - 선택적 최적화
+}
 
-// youtube-sr (quota-free)
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const YouTube = require('youtube-sr').default;
+/** 토큰 버킷 레이트리미터 (429 방지 + 지터) */
+class TokenBucket {
+  private tokens: number;
+  private lastRefill = Date.now();
 
-type CacheEntry<T> = { data: T; at: number };
+  constructor(
+    private readonly capacity: number,
+    private readonly refillPerSec: number, // 초당 회복량
+  ) {
+    this.tokens = capacity;
+  }
+
+  private static async _sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /** 최소 지연/지터 적용 후 토큰 1개 차감 (없으면 대기) */
+  async take(minDelayMs = 0, jitterMs = 0): Promise<void> {
+    if (minDelayMs > 0) {
+      const jitter = jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0;
+      await TokenBucket._sleep(minDelayMs + jitter);
+    }
+
+    const now = Date.now();
+    const elapsedSec = (now - this.lastRefill) / 1000;
+    if (elapsedSec > 0) {
+      this.tokens = Math.min(
+        this.capacity,
+        this.tokens + elapsedSec * this.refillPerSec,
+      );
+      this.lastRefill = now;
+    }
+
+    if (this.tokens < 1) {
+      const need = 1 - this.tokens;
+      const waitSec = need / this.refillPerSec;
+      await TokenBucket._sleep(Math.ceil(waitSec * 1000));
+      this.tokens = 0; // 아래에서 1 소모
+    }
+    this.tokens -= 1;
+  }
+}
+
+/** 간단 LRU + TTL 캐시 */
+class LruCache<V> {
+  private map = new Map<string, { v: V; at: number }>();
+
+  constructor(private readonly max = 200, private readonly ttlMs = 20 * 60 * 1000) {}
+
+  get(key: string): V | undefined {
+    const e = this.map.get(key);
+    if (!e) return undefined;
+    if (Date.now() - e.at > this.ttlMs) {
+      this.map.delete(key);
+      return undefined;
+    }
+    // LRU 갱신
+    this.map.delete(key);
+    this.map.set(key, { v: e.v, at: Date.now() });
+    return e.v;
+  }
+
+  set(key: string, value: V) {
+    if (this.map.size >= this.max) {
+      const oldest = this.map.keys().next().value as string | undefined;
+      if (oldest) this.map.delete(oldest);
+    }
+    this.map.set(key, { v: value, at: Date.now() });
+  }
+}
+
+/** 서킷 브레이커 상태 */
 type BreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-
-const TTL_MS = 15 * 60 * 1000; // 성공/실패(실제 검색 시도 후)의 일반 캐시 TTL
-const MAX_CACHE_SIZE = 200;
 
 @Injectable()
 export class YouTubeService {
   private readonly logger = new Logger(YouTubeService.name);
 
-  /** 간단 TTL 캐시 (slug+filters → 결과/부재) */
-  private cache = new Map<string, CacheEntry<GameTrailerResult | null>>();
-
-  /** 재시도/실패 제어 (환경변수로 조절 가능) */
-  // ➜ 요청 1건당 타임아웃(기본 3초). 많은 게임을 빠르게 훑어야 하므로 공격적으로 짧게.
-  private readonly perRequestTimeoutMs = Number(
-    process.env.YT_TIMEOUT_MS ?? 4_000,
-  );
-  // ➜ 전체 지연을 줄이기 위해 재시도 2회(총 2~3회 시도)
-  private readonly maxRetries = Math.max(
+  // ── 튜닝 파라미터 (환경변수로 조정 가능) ─────────────────────────
+  private readonly perRequestTimeoutMs = Number(process.env.YT_TIMEOUT_MS ?? 3500);
+  private readonly maxRetries = Math.max(0, Number(process.env.YT_MAX_RETRIES ?? 2));
+  private readonly highConfidenceCutoff = Math.min(
     1,
-    Number(process.env.YT_MAX_RETRIES ?? 2),
+    Math.max(0, Number(process.env.YT_HIGH_CONFIDENCE ?? 0.85)),
   );
+  private readonly batchSize = Math.max(1, Number(process.env.YT_BATCH_SIZE ?? 3));
+  private readonly maxConcurrency = Math.max(1, Number(process.env.YT_MAX_CONCURRENCY ?? 6));
+  private readonly rps = Number(process.env.YT_RPS ?? 3);
+  private readonly burst = Number(process.env.YT_BURST ?? 6);
+  private readonly cacheMax = Number(process.env.YT_CACHE_MAX ?? 200);
+  private readonly cacheTtlMs = Number(process.env.YT_CACHE_TTL_MS ?? 20 * 60 * 1000);
+  private readonly cbThreshold = Number(process.env.YT_CB_THRESHOLD ?? 8);
+  private readonly cbCooldownMs = Number(process.env.YT_CB_COOLDOWN_MS ?? 60_000);
+
+  /** 레이트 리미터 */
+  private readonly limiter = new TokenBucket(this.burst, this.rps);
+
+  /** keep-alive 에이전트 (연결 재사용으로 지연 감소) */
+  private readonly agent = new https.Agent({ keepAlive: true, maxSockets: 32 });
+
+  /** 캐시 */
+  private readonly cache = new LruCache<GameTrailerResult | null>(this.cacheMax, this.cacheTtlMs);
 
   /** 서킷 브레이커 */
   private breakerState: BreakerState = 'CLOSED';
   private consecutiveFailures = 0;
-  private breakerOpenUntil = 0; // epoch ms
+  private breakerOpenUntil = 0;
 
-  /** 연결 관리 (연속 실패 시 keepAlive 끄고 소켓 종료) */
-  private agent: https.Agent = this.createAgent(true);
-  private agentKeepAlive = true;
-
-  /** 타이틀/행사/언어 키워드 (EN+KR) */
-  private trailerKeywords = [
-    // EN
-    'official trailer',
-    'trailer',
-    'gameplay trailer',
-    'launch trailer',
-    'announcement trailer',
-    'reveal trailer',
-    'story trailer',
-    'teaser',
-    // KR
-    '공식 트레일러',
-    '트레일러',
-    '게임플레이',
-    '런치 트레일러',
-    '발표 트레일러',
-    '티저',
-    // 이벤트/쇼케이스
-    'state of play',
-    'nintendo direct',
-    'xbox showcase',
-    'the game awards',
+  /** 신뢰 채널 및 트레일러 키워드 */
+  private readonly trustedChannels: string[] = [
+    'playstation', 'xbox', 'nintendo', 'capcom', 'ea', 'ubisoft', 'bandai',
+    'sega', 'square enix', 'bethesda', 'devolver', 'riot', 'blizzard',
+    'rockstar', 'cd projekt', 'ign', 'game spot', 'gamespot',
   ];
-
-  /** 리뷰/실황/가이드 등 제외 키워드 */
-  private excludeKeywords = [
-    'review',
-    'reaction',
-    'walkthrough',
-    'guide',
-    'tips',
-    'mod',
-    'fan made',
-    'speedrun',
-    "let's play",
-    'cutscene',
-    'ending',
-    'soundtrack',
-    'ost',
-    'analysis',
-    'breakdown',
-    'comparison',
-    'remix',
-    'meme',
-    'parody',
-    // 한국어
-    '리뷰',
-    '반응',
-    '공략',
-    '가이드',
-    '모드',
-    '실황',
-    '속공략',
-    '분석',
-    '해설',
-    '요약',
-  ];
-
-  /** 공식 채널 힌트 확장/정규화 */
-  private officialChannelHints = [
-    // 플랫폼/퍼스트파티
-    'playstation',
-    'ps',
-    'xbox',
-    'nintendo',
-    // 퍼블리셔/개발사
-    'bandai namco',
-    'capcom',
-    'ea',
-    'electronic arts',
-    'ubisoft',
-    'square enix',
-    'bethesda',
-    'sega',
-    'konami',
-    'warner bros',
-    'wb games',
-    '2k',
-    'take-two',
-    'riot games',
-    'blizzard',
-    'cd projekt',
-    'cd projekt red',
-    'rockstar',
-    'focus entertainment',
-    'paradox',
-    'koei tecmo',
-    '505 games',
-    'devolver',
-    'tinybuild',
-    'embracer',
-    'gearbox',
-    'thq nordic',
-    // 인디/약칭
-    'team cherry',
-    'supergiant',
-    'fromsoftware',
-    'arc system works',
+  private readonly trailerKeywords: string[] = [
+    'trailer', 'announcement', 'gameplay', 'reveal', 'launch', 'teaser',
   ];
 
   // ============== Public API ==============
 
-  /** 게임 슬러그(혹은 이름 비슷한 값)로 트레일러 1건 탐색 */
+  /**
+   * 게임 슬러그(또는 근접 이름)로 공식 트레일러 후보를 빠르게 찾는다.
+   * - 병렬 배치 + 레이트리미트 + 조기 종료 + 재시도 + 서킷브레이커 + 캐시
+   */
   async findOfficialTrailer(
     slug: string,
     filters: YouTubeSearchFilters = {},
   ): Promise<GameTrailerResult | null> {
-    const startTime = Date.now(); // ✅ 전체 시작 시간
+    const started = Date.now();
     const cacheKey = this.cacheKey(slug, filters);
-    const cached = this.fromCache(cacheKey);
+    const cached = this.cache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    // 브레이커 열려 있으면 즉시 스킵 (❗ 스킵 결과는 캐시하지 않음)
     if (this.isBreakerOpen()) {
       this.logger.warn(
-        `[CB:OPEN] skip YouTube for '${slug}' until ${new Date(
-          this.breakerOpenUntil,
-        ).toISOString()}`,
+        `[CB:OPEN] skip YouTube: '${slug}' until ${new Date(this.breakerOpenUntil).toISOString()}`,
       );
-      return { slug, queryTried: [], picked: null };
+      const res: GameTrailerResult = { slug, queryTried: [], picked: null };
+      this.cache.set(cacheKey, res);
+      return res;
     }
 
-    const normalized = this.normalizeSlug(slug);
-    const gameNames = this.buildNameVariants(normalized); // 쿼리 후보군
-
-    const maxPerQuery = filters.maxResults ?? 5;
-    const stopOnHighConfidence = true;
-    const HIGH_CUTOFF = 0.85;
-
-    // ✅ 추가: 호출 간 최소 지연 (기본 500ms, 필터로 오버라이드 가능)
-    const MIN_DELAY_MS = 700;
-    const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-
-    const seen = new Set<string>();
-    let best: { score: number; item: YouTubeSearchItem } | null = null;
+    const queries = this.planQueries(slug, filters);
+    this.logger.debug(
+      `🔍 [YouTube:${slug}] 총 ${queries.length}개 쿼리 생성 (배치 ${this.batchSize}, 동시 ${this.maxConcurrency})`,
+    );
 
     const tried: string[] = [];
-    try {
-      // ✅ 변경: 쿼리 variant를 배열로 고정해 인덱스를 알 수 있게 함
-      const queries = Array.from(this.buildQueryVariants(gameNames, filters));
+    let best: YouTubeSearchItem | null = null;
+    let bestScore = 0;
 
-      // ✅ 상세 로깅: 쿼리 개수 및 예상 시간
+    // 상신뢰도 발견 시 잔여 작업 취소
+    const globalAbort = new AbortController();
+
+    // 간단한 워커/큐 기반 동시성 제어
+    let running = 0;
+    const qQueue: Array<() => Promise<void>> = [];
+
+    const enqueue = (fn: () => Promise<void>) => qQueue.push(fn);
+    const runNext = async () => {
+      if (globalAbort.signal.aborted) return;
+      if (running >= this.maxConcurrency) return;
+      const fn = qQueue.shift();
+      if (!fn) return;
+      running++;
+      try {
+        await fn();
+      } finally {
+        running--;
+        if (!globalAbort.signal.aborted) runNext();
+      }
+    };
+    const waitQueueIdle = () =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (globalAbort.signal.aborted) return resolve();
+          if (qQueue.length === 0 && running === 0) return resolve();
+          setTimeout(check, 20);
+        };
+        check();
+      });
+
+    // 배치 단위로 작업 enqueue
+    for (let i = 0; i < queries.length; i += this.batchSize) {
+      const batch = queries.slice(i, i + this.batchSize);
       this.logger.debug(
-        `🔍 [YouTube:${slug}] 총 ${queries.length}개 쿼리 생성 (예상 시간: ${queries.length * 0.7}초)`,
+        `  ▶️ 배치 ${Math.ceil((i + 1) / this.batchSize)}/${Math.ceil(queries.length / this.batchSize)} 시작 (${batch.length}개)`,
       );
 
-      let totalQueryTime = 0;
-      let totalDelayTime = 0;
+      for (const q of batch) {
+        enqueue(async () => {
+          if (globalAbort.signal.aborted) return;
 
-      // ✅ 점수 개선 추적 (연속 N번 개선 없으면 조기 종료)
-      let lastBestScore = 0;
-      let noImprovementCount = 0;
-      const MAX_NO_IMPROVEMENT = 3; // 연속 3번 개선 없으면 종료
+          const qStart = Date.now();
+          tried.push(q);
+          this.logger.debug(`  ⏱️  쿼리: "${q.length > 80 ? q.slice(0, 77) + '...' : q}"`);
 
-      for (let i = 0; i < queries.length; i++) {
-        const q = queries[i];
-        tried.push(q);
+          try {
+            await this.limiter.take(60, 120); // RPS 제어 + 지터
+            const items = await this.searchOnceWithRetry(q, filters, globalAbort.signal);
 
-        // ✅ 쿼리 시작 시간
-        const queryStartTime = Date.now();
-        this.logger.debug(
-          `  ⏱️  [${i + 1}/${queries.length}] 쿼리: "${q.substring(0, 50)}${q.length > 50 ? '...' : ''}"`,
-        );
+            // 최고 점수 후보 갱신
+            const { top, score } = this.pickBest(items, slug, filters);
+            if (top) {
+              if (score > bestScore) {
+                best = top;
+                bestScore = score;
+                this.logger.debug(
+                  `    🎯 새로운 최고 점수: ${score.toFixed(3)} - "${(top.title ?? '').slice(0, 50)}..."`,
+                );
+                if (score >= this.highConfidenceCutoff) {
+                  this.logger.debug(
+                    `    ⚡ High confidence (${score.toFixed(3)} >= ${this.highConfidenceCutoff}) 발견! 조기 종료`,
+                  );
+                  globalAbort.abort(); // 잔여 작업 취소
+                }
+              }
+            }
 
-        const items = await this.searchYouTube(q, maxPerQuery);
-        const queryDuration = Date.now() - queryStartTime;
-        totalQueryTime += queryDuration;
-
-        // ✅ 쿼리 결과 로깅
-        this.logger.debug(
-          `  ✅ [${i + 1}/${queries.length}] 완료: ${items.length}개 결과 (소요: ${queryDuration}ms)`,
-        );
-
-        for (const raw of items) {
-          if (!raw.videoId || seen.has(raw.videoId)) continue;
-          seen.add(raw.videoId);
-
-          const score = this.scoreItemWithName(raw as any, normalized);
-          if (!best || score > best.score) {
-            best = { score, item: raw };
-            // ✅ 베스트 업데이트 로깅
-            this.logger.debug(
-              `    🎯 새로운 최고 점수: ${score.toFixed(3)} - "${raw.title.substring(0, 40)}..."`,
-            );
+            const spent = Date.now() - qStart;
+            this.logger.debug(`  ✅ 완료: ${items.length}개 결과 (소요: ${spent}ms)`);
+            this.noteSuccess();
+          } catch (err: unknown) {
+            if (globalAbort.signal.aborted) return; // 조용히 중단
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`  ⚠️ 쿼리 실패: ${msg}`);
+            this.noteFailure();
           }
-
-          // 충분히 신뢰 가능하면 즉시 종료(불필요한 추가 호출 방지)
-          if (stopOnHighConfidence && score >= HIGH_CUTOFF) {
-            // ✅ 하이컨피던스 조기 종료 로깅
-            this.logger.debug(
-              `    ⚡ High confidence (${score.toFixed(3)} >= ${HIGH_CUTOFF}) 발견! 조기 종료 (${i + 1}/${queries.length} 쿼리 시도)`,
-            );
-            i = queries.length; // 바깥 for 탈출 유도
-            break;
-          }
-        }
-
-        // ✅ 점수 개선 체크 (연속 N번 개선 없으면 조기 종료)
-        const currentBestScore = best?.score ?? 0;
-        if (currentBestScore > lastBestScore) {
-          // 점수 개선됨
-          lastBestScore = currentBestScore;
-          noImprovementCount = 0;
-        } else {
-          // 점수 개선 없음
-          noImprovementCount++;
-          if (noImprovementCount >= MAX_NO_IMPROVEMENT && best) {
-            this.logger.debug(
-              `    ⏹️  점수 개선 없음 (연속 ${noImprovementCount}번) - 조기 종료 (최고: ${best.score.toFixed(3)}, ${i + 1}/${queries.length} 쿼리 시도)`,
-            );
-            i = queries.length; // 바깥 for 탈출 유도
-            break;
-          }
-        }
-
-        // ✅ 다음 쿼리를 시도할 예정이면 호출 간 0.5초(기본) 대기
-        if (
-          i < queries.length - 1 &&
-          !(stopOnHighConfidence && best && best.score >= HIGH_CUTOFF)
-        ) {
-          const delayStartTime = Date.now();
-          await sleep(MIN_DELAY_MS);
-          const delayDuration = Date.now() - delayStartTime;
-          totalDelayTime += delayDuration;
-        }
+        });
       }
 
-      let picked = best ? this.toPicked(best.item, best.score) : null;
-      // 최소 1건 보장(루프 중간 실패로 빠져도 best가 있으면 픽)
-      if (!picked && best) picked = this.toPicked(best.item, best.score);
+      // 워커 가동
+      for (let k = 0; k < Math.min(this.maxConcurrency, batch.length); k++) runNext();
 
-      const totalDuration = Date.now() - startTime;
-
-      // ✅ 최종 요약 로깅
-      this.logger.debug(
-        `📊 [YouTube:${slug}] 완료 - 총 ${totalDuration}ms (쿼리: ${totalQueryTime}ms, 딜레이: ${totalDelayTime}ms, 기타: ${totalDuration - totalQueryTime - totalDelayTime}ms)`,
-      );
-
-      const result: GameTrailerResult = {
-        slug,
-        queryTried: tried,
-        picked,
-      };
-
-      // 실제 검색을 시도한 결과는 캐시에 저장
-      this.toCache(cacheKey, result);
-      return result;
-    } catch (e: any) {
-      this.logger.error(
-        `findOfficialTrailer failed for '${slug}': ${e?.message || e}`,
-      );
-      const result: GameTrailerResult = {
-        slug,
-        queryTried: tried,
-        picked: null,
-      };
-      // 에러도 시도 결과이므로 네거티브 캐시(짧게 하고 싶으면 TTL_MS를 분리)
-      this.toCache(cacheKey, result);
-      return result;
+      // 배치 종료 대기 (혹은 상신뢰도 조기 종료)
+      await waitQueueIdle();
+      if (globalAbort.signal.aborted) break;
     }
-  }
 
-  // ============== Internals ==============
+    const picked = best ? this.toResult(best, bestScore) : null;
+    const result: GameTrailerResult = { slug, queryTried: tried, picked };
 
-  private normalizeSlug(s: string): string {
-    let t = s.replace(/[-_]+/g, ' ').trim();
-    // edition, remaster 등의 잡음 제거 (과한 제거 방지 위해 일부만)
-    t = t
-      .replace(
-        /\b(remastered|definitive edition|ultimate edition|complete edition)\b/gi,
-        '',
-      )
-      .trim();
-    t = t.replace(/\s{2,}/g, ' ');
-    return t;
-  }
+    // 캐시 저장
+    this.cache.set(cacheKey, result);
 
-  private buildNameVariants(name: string): string[] {
-    const opts = new Set<string>([name]);
-    // ": Subtitle" → 공백으로
-    opts.add(name.replace(/:\s+/g, ' '));
-    // 괄호 제거/여백 정리
-    opts.add(
-      name
-        .replace(/\(.*?\)/g, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim(),
+    // 브레이커 회복/유지
+    if (picked) this.noteSuccess();
+
+    const totalMs = Date.now() - started;
+    this.logger.debug(
+      `📊 [YouTube:${slug}] 완료 - 총 ${totalMs}ms (쿼리:${tried.length}개, 최고점:${bestScore.toFixed(3)})`,
     );
-    return [...opts];
+    return result;
   }
 
-  /** 한국어/행사/연도/부제 대응 쿼리 빌드 (✅ 최대 20개 제한) */
-  private buildQueryVariants(
-    names: string[],
-    filters: YouTubeSearchFilters,
-  ): string[] {
-    const out: string[] = [];
-    const langs = [filters.lang?.toLowerCase()].filter(Boolean) as string[];
-    const regions = [filters.region?.toLowerCase()].filter(Boolean) as string[];
-    const strict = !!filters.strictOfficial;
+  // ============== 내부 구현 ==============
 
-    // 이름 변형과 연도 추출
-    const variants = new Set<string>();
-    for (const n of names) {
-      variants.add(n);
-      variants.add(n.replace(/:\s+.*/, '')); // "X: Subtitle" → "X"
-      variants.add(n.replace(/\(.*?\)/g, '').trim()); // 괄호 제거
-      variants.add(n.replace(/\s{2,}/g, ' '));
-    }
+  private cacheKey(slug: string, filters: YouTubeSearchFilters): string {
+    // filters 순서/공백에 영향 안 받도록 정규화
+    const norm: YouTubeSearchFilters = {
+      releaseYear: filters.releaseYear,
+      keywords: (filters.keywords ?? []).filter(Boolean),
+    };
+    return `${this.normalizeSlug(slug).toLowerCase()}::${JSON.stringify(norm)}`;
+  }
 
-    const yearSet = new Set<number>();
-    for (const v of variants) {
-      const m = v.match(/\b(20\d{2}|19\d{2})\b/);
-      if (m) yearSet.add(Number(m[1]));
-    }
+  private normalizeSlug(slug: string): string {
+    return slug.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
 
-    // ✅ 우선순위 기반 쿼리 생성 (가장 효과적인 조합 우선)
-    const EN_PRIORITY = [
+  private planQueries(slug: string, filters: YouTubeSearchFilters): string[] {
+    const name = this.normalizeSlug(slug);
+    const year = filters.releaseYear ? String(filters.releaseYear) : '';
+    const baseQuoted = `"${name}"`;
+    const baseLoose = name;
+
+    const trailerTerms = [
       'official trailer',
       'gameplay trailer',
+      'reveal trailer',
       'launch trailer',
       'announcement trailer',
+      'teaser',
     ];
-    const KR_PRIORITY = [
-      '공식 트레일러',
-      '트레일러',
-      '게임플레이',
-    ];
+    const brandTerms = ['official', 'ps5', 'xbox', 'nintendo', 'pc', 'steam'];
 
-    // ✅ Priority 1: 메인 이름 + 핵심 키워드만 (최대 8개)
-    const mainName = Array.from(variants)[0]; // 가장 원본에 가까운 이름
-    for (const kw of EN_PRIORITY) out.push(`${mainName} ${kw}`);
-    for (const kw of KR_PRIORITY) out.push(`${mainName} ${kw}`);
+    const set = new Set<string>();
 
-    // ✅ Priority 2: 행사/쇼케이스 (최대 4개)
-    out.push(`${mainName} state of play`);
-    out.push(`${mainName} nintendo direct`);
-    out.push(`${mainName} xbox showcase`);
-    out.push(`${mainName} the game awards`);
-
-    // ✅ Priority 3: 연도 조합 (최대 4개, 있을 때만)
-    if (yearSet.size > 0) {
-      const latestYear = Math.max(...Array.from(yearSet));
-      out.push(`${mainName} ${latestYear} official trailer`);
-      out.push(`${mainName} ${latestYear} 트레일러`);
+    // 가장 강한 조합: "이름" + trailer term (+연도)
+    for (const t of trailerTerms) {
+      set.add(`${baseQuoted} ${t}${year ? ' ' + year : ''}`);
     }
 
-    // ✅ Priority 4: 언어/지역 힌트 (최대 4개)
-    for (const L of langs) out.push(`${mainName} official trailer ${L}`);
-    for (const R of regions) out.push(`${mainName} official trailer ${R}`);
+    // 브랜드/플랫폼 + trailer
+    for (const b of brandTerms) {
+      set.add(`${baseLoose} ${b} trailer`);
+      if (year) set.add(`${baseLoose} ${b} trailer ${year}`);
+    }
 
-    if (strict) out.push(`${mainName} "official trailer"`);
+    // 일반 trailer
+    set.add(`${baseLoose} trailer`);
+    if (year) set.add(`${baseLoose} trailer ${year}`);
 
-    // ✅ 최대 20개로 제한 (딜레이 0.7s × 20 = 14초 최대)
-    return Array.from(new Set(out)).slice(0, 20);
+    // 추가 키워드가 있으면 최전방에 배치
+    const extra = (filters.keywords ?? [])
+      .filter(Boolean)
+      .map((k) => `${baseLoose} ${k}`);
+
+    // 최종 목록 (과도하게 길지 않게 상한)
+    const queries = [...extra, ...Array.from(set)];
+    const hardCap = Math.max(10, this.batchSize * 3);
+    return queries.slice(0, hardCap);
   }
 
-  /** youtube-sr 검색 + 재시도 + 타임아웃 + 브레이커 반영 */
-  private async searchYouTube(
-    query: string,
-    max: number,
+  /** 재시도 래퍼 (지수 백오프 + 지터) */
+  private async searchOnceWithRetry(
+    q: string,
+    filters: YouTubeSearchFilters,
+    signal?: AbortSignal,
   ): Promise<YouTubeSearchItem[]> {
-    if (this.isBreakerOpen()) {
-      this.logger.warn(`[CircuitBreaker:OPEN] skip query='${query}'`);
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= this.maxRetries) {
+      attempt++;
+      try {
+        const res = await this.searchOnce(q, filters, signal);
+        return res;
+      } catch (e: unknown) {
+        lastError = e;
+        // 이미 취소된 경우 즉시 전파
+        if (signal?.aborted) throw e;
+
+        const msg = e instanceof Error ? e.message : String(e);
+        const retryable = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|fetch failed|HTTP 429|HTTP 5\d\d|YT_TIMEOUT/i.test(
+          msg,
+        );
+        if (!retryable || attempt > this.maxRetries) break;
+
+        const backoff = 250 * attempt + Math.floor(Math.random() * 200);
+        this.logger.warn(`   ↻ 재시도 ${attempt}/${this.maxRetries} (대기 ${backoff}ms): ${msg}`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  /** 실제 검색 요청 (웹 결과 파싱 경량 버전) */
+  private async searchOnce(
+    q: string,
+    _filters: YouTubeSearchFilters,
+    outerSignal?: AbortSignal,
+  ): Promise<YouTubeSearchItem[]> {
+    // Node 18+ 전제: 글로벌 fetch/AbortController 사용 가능
+    const controller = new AbortController();
+    const combined = this.combineSignals(outerSignal, controller.signal);
+    const timeout = setTimeout(() => controller.abort(new Error('YT_TIMEOUT')), this.perRequestTimeoutMs);
+
+    try {
+      const url =
+        `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D`; // 동영상만
+      const res: any = await (globalThis.fetch as any)(url, {
+        // Node fetch는 undici 기반. 타입 충돌 방지 위해 any 사용.
+        agent: this.agent as any,
+        redirect: 'follow',
+        signal: combined,
+        headers: {
+          'user-agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+          'accept-language': 'en-US,en;q=0.9,ko-KR;q=0.8',
+        },
+      });
+
+      const status: number = typeof res?.status === 'number' ? res.status : 0;
+      if (!res || status < 200 || status >= 400) {
+        const bodyPreview =
+          (await res?.text?.().catch(() => ''))?.slice(0, 200) ?? '';
+        throw new Error(`HTTP ${status} ${res?.statusText ?? ''} :: ${bodyPreview}`);
+      }
+
+      const html: string = await res.text();
+      const items = this.parseYouTubeResults(html);
+      return items;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** ytInitialData 에서 동영상 카드들을 추출하는 경량 파서 */
+  private parseYouTubeResults(html: string): YouTubeSearchItem[] {
+    // ytInitialData JSON 추출
+    const m =
+      html.match(/ytInitialData"\]\s*=\s*(\{.*?\});/s) ||
+      html.match(/var\s+ytInitialData\s*=\s*(\{.*?\});/s);
+    if (!m) return [];
+
+    let data: any;
+    try {
+      data = JSON.parse(m[1]);
+    } catch {
       return [];
     }
 
-    let lastErr: any = null;
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      try {
-        // 제네릭 any로 명시해 '{}' 추론 방지
-        const raw: any = await this.runWithTimeout<any>(
-          YouTube.search(query, { type: 'video', limit: max * 2 }),
-          this.perRequestTimeoutMs,
-        );
+    const out: YouTubeSearchItem[] = [];
 
-        this.onBreakerSuccess();
+    // 안전 탐색
+    const primary =
+      data?.contents?.twoColumnSearchResultsRenderer?.primaryContents;
+    const sections =
+      primary?.sectionListRenderer?.contents ??
+      primary?.richGridRenderer?.contents ??
+      [];
 
-        // 배열 보장 (+ 버전에 따른 videos/results 경로도 점검)
-        let list: any[] = [];
-        if (Array.isArray(raw)) {
-          list = raw;
-        } else if (raw && typeof raw === 'object') {
-          if (Array.isArray(raw.videos)) list = raw.videos;
-          else if (Array.isArray(raw.results)) list = raw.results;
+    const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+
+      // videoRenderer
+      if (node.videoRenderer) {
+        const v = node.videoRenderer;
+        const title: string =
+          v?.title?.runs?.[0]?.text ??
+          v?.headline?.simpleText ??
+          '';
+        const videoId: string | undefined = v?.videoId;
+        const channel: string =
+          v?.ownerText?.runs?.[0]?.text ??
+          v?.longBylineText?.runs?.[0]?.text ??
+          '';
+        const published: string = v?.publishedTimeText?.simpleText ?? '';
+        const viewsText: string = v?.viewCountText?.simpleText ?? '';
+        const duration: string = v?.lengthText?.simpleText ?? '';
+        const desc: string =
+          (v?.detailedMetadataSnippets?.[0]?.snippetText?.runs ?? [])
+            .map((r: any) => r?.text ?? '')
+            .join('') || '';
+
+        out.push({
+          title,
+          url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
+          channelTitle: channel,
+          publishedAt: published,
+          viewCountText: viewsText,
+          durationText: duration,
+          description: desc,
+        });
+      }
+
+      // 하위 노드 순회
+      for (const k of Object.keys(node)) {
+        // 키의 값이 배열/객체일 때만 재귀
+        const child = (node as any)[k];
+        if (child && typeof child === 'object') {
+          if (Array.isArray(child)) {
+            for (const c of child) walk(c);
+          } else {
+            walk(child);
+          }
         }
+      }
+    };
 
-        const mapped: YouTubeSearchItem[] = list.map((v: any) => ({
-          videoId: v?.id,
-          title: String(v?.title ?? ''),
-          description: String(v?.description ?? ''),
-          thumbnailUrl: v?.thumbnails?.[0]?.url ?? '',
-          publishedAt: this.toIsoDate(v?.uploadedAt, v?.uploadedTimestamp),
-          channelId: v?.channel?.id ?? '',
-          channelTitle: v?.channel?.name ?? '',
-          durationSec:
-            typeof v?.duration === 'number'
-              ? v.duration
-              : typeof v?.duration?.seconds === 'number'
-                ? v.duration.seconds
-                : undefined,
-          // (옵션) 조회수 필드가 있으면 사용
-          // @ts-ignore
-          ...(typeof v?.views === 'number' ? { views: v.views } : {}),
-          url:
-            v?.url ?? (v?.id ? `https://www.youtube.com/watch?v=${v.id}` : ''),
-        }));
+    for (const s of sections) walk(s);
+    return out;
+  }
 
-        return mapped.slice(0, max);
-      } catch (e: any) {
-        lastErr = e;
-        this.onBreakerFailure(e);
+  /** 스코어링 최고 후보 선택 */
+  private pickBest(items: YouTubeSearchItem[], slug: string, filters: YouTubeSearchFilters) {
+    let top: YouTubeSearchItem | null = null;
+    let best = 0;
 
-        const msg = e?.message || String(e);
-        this.logger.warn(
-          `YouTube.search failed (attempt ${attempt}/${this.maxRetries}): ${msg}`,
-        );
-
-        if (attempt < this.maxRetries) {
-          const delay = this.backoffDelay(attempt);
-          await this.sleep(delay);
-        }
+    for (const it of items) {
+      const s = this.score(it, slug, filters);
+      if (s > best) {
+        best = s;
+        top = it;
       }
     }
-
-    throw lastErr ?? new Error('YouTube.search failed');
+    return { top, score: best };
   }
 
-  /** 간단한 정규화 */
-  private normalize(text: string): string {
-    return (text || '')
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
+  /** 점수 함수 (간결/안정) 0~1 */
+  private score(item: YouTubeSearchItem, slug: string, _filters: YouTubeSearchFilters): number {
+    const name = this.normalizeSlug(slug).toLowerCase();
+    const title = (item.title ?? '').toLowerCase();
+    const desc = (item.description ?? '').toLowerCase();
+    const channel = (item.channelTitle ?? '').toLowerCase();
+
+    let s = 0;
+
+    // 이름 매칭
+    if (title.includes(name)) s += 0.35;
+    if (desc.includes(name)) s += 0.10;
+
+    // 트레일러 키워드
+    if (this.trailerKeywords.some((kw) => title.includes(kw))) s += 0.25;
+
+    // 신뢰 채널 가산
+    if (this.trustedChannels.some((ch) => channel.includes(ch))) s += 0.20;
+
+    // Gameplay 약간 가산
+    if (title.includes('gameplay')) s += 0.05;
+
+    if (s > 1) s = 1;
+    return s;
   }
 
-  private jaccard(a: string, b: string): number {
-    const A = new Set(
-      this.normalize(a)
-        .split(' ')
-        .filter((w) => w.length > 1),
-    );
-    const B = new Set(
-      this.normalize(b)
-        .split(' ')
-        .filter((w) => w.length > 1),
-    );
-    if (A.size === 0 || B.size === 0) return 0;
-    let inter = 0;
-    for (const w of A) if (B.has(w)) inter++;
-    return inter / (A.size + B.size - inter);
-  }
-
-  /** 기본 스코어(키워드/채널/시점/길이/조회수/제외패널티) */
-  private scoreItem(
-    v: YouTubeSearchItem & { durationSec?: number; views?: number },
-  ): number {
-    let score = 0;
-
-    const title = this.normalize(v.title);
-    const channel = this.normalize(v.channelTitle);
-
-    // 1) 키워드 매칭 (EN/KR 모두)
-    for (const kw of this.trailerKeywords) {
-      if (title.includes(this.normalize(kw))) score += 0.25;
-    }
-    if (/\btrailer\b/.test(title)) score += 0.15;
-    if (title.includes('official') || title.includes('공식')) score += 0.15;
-
-    // 2) 제외 키워드 패널티(강함)
-    for (const bad of this.excludeKeywords) {
-      if (title.includes(this.normalize(bad))) {
-        score -= 0.5;
-        break;
-      }
-    }
-
-    // 3) 공식 채널 힌트
-    for (const hint of this.officialChannelHints) {
-      if (channel.includes(this.normalize(hint))) {
-        score += 0.25;
-        break;
-      }
-    }
-
-    // 4) 업로드 시점 (최근 가점/과거 감점)
-    const ts = Date.parse(v.publishedAt);
-    if (!isNaN(ts)) {
-      const ageDays = (Date.now() - ts) / 86_400_000;
-      if (ageDays < 365 * 3) score += 0.1;
-      if (ageDays > 365 * 8) score -= 0.1;
-    }
-
-    // 5) 길이/조회수 휴리스틱 (있을 때만)
-    if (typeof v.durationSec === 'number') {
-      if (v.durationSec >= 30 && v.durationSec <= 360)
-        score += 0.1; // 0:30~6:00
-      else score -= 0.05;
-    }
-    if (typeof (v as any).views === 'number') {
-      const views = (v as any).views as number;
-      if (views > 1_000_000) score += 0.1;
-      else if (views > 100_000) score += 0.05;
-    }
-
-    return Math.min(1, Math.max(0, score));
-  }
-
-  /** 게임명 유사도 가중까지 포함한 스코어 */
-  private scoreItemWithName(
-    v: YouTubeSearchItem & { durationSec?: number; views?: number },
-    gameName: string,
-  ): number {
-    const base = this.scoreItem(v);
-    const sim = this.jaccard(v.title, gameName); // 0~1
-    const bonus =
-      sim >= 0.6 ? 0.25 : sim >= 0.4 ? 0.15 : sim >= 0.25 ? 0.08 : 0;
-    return Math.min(1, Math.max(0, base + bonus));
-  }
-
-  private toPicked(
-    v: YouTubeSearchItem,
-    score: number,
-  ): GameTrailerResult['picked'] {
-    const isOfficial =
-      /official/.test((v.title || '').toLowerCase()) ||
-      (v.title || '').includes('공식') ||
-      this.officialChannelHints.some((h) =>
-        (v.channelTitle || '').toLowerCase().includes(h),
-      );
-
-    const confidence: ConfidenceLevel =
-      score >= 0.85 ? 'high' : score >= 0.6 ? 'medium' : 'low';
+  private toResult(item: YouTubeSearchItem, score: number): GameTrailerResult['picked'] {
+    let confidence: ConfidenceLevel = 'low';
+    if (score >= this.highConfidenceCutoff) confidence = 'high';
+    else if (score >= 0.6) confidence = 'medium';
 
     return {
-      videoId: v.videoId,
-      url: v.url,
-      title: v.title,
-      description: v.description,
-      thumbnailUrl: v.thumbnailUrl,
-      publishedAt: v.publishedAt,
-      channelTitle: v.channelTitle,
-      isOfficialTrailer: !!isOfficial,
+      url: item.url || '',
+      title: item.title || '',
+      channel: item.channelTitle || '',
+      publishedAt: item.publishedAt || '',
       confidence,
       score,
     };
   }
 
-  // ---------- Circuit breaker helpers ----------
-
+  // ── 서킷 브레이커 ─────────────────────────────────────────────
   private isBreakerOpen(): boolean {
     if (this.breakerState === 'OPEN') {
-      if (Date.now() >= this.breakerOpenUntil) {
-        // HALF_OPEN으로 전환 (시험 요청 1회 허용)
-        this.breakerState = 'HALF_OPEN';
-        this.logger.warn('[CircuitBreaker] transition OPEN -> HALF_OPEN');
-        return false;
-      }
-      return true;
+      if (Date.now() < this.breakerOpenUntil) return true;
+      // 쿨다운 종료 → HALF_OPEN으로 전환
+      this.breakerState = 'HALF_OPEN';
+      return false;
     }
     return false;
   }
 
-  private onBreakerFailure(err: any) {
-    this.consecutiveFailures += 1;
-
-    // 네트워크/타임아웃류만 브레이커 카운트
-    const msg = (err?.message || '').toLowerCase();
-    const isNetError =
-      msg.includes('fetch failed') ||
-      msg.includes('timeout') ||
-      msg.includes('network') ||
-      msg.includes('socket hang up') ||
-      msg.includes('getaddrinfo') ||
-      msg.includes('tls');
-
-    if (!isNetError) return;
-
-    if (this.consecutiveFailures >= 5 && this.breakerState !== 'OPEN') {
-      this.breakerState = 'OPEN';
-      this.breakerOpenUntil = Date.now() + 2 * 60 * 1000; // 2분
-      this.logger.error(
-        '[CircuitBreaker] OPEN (failures >= 5). Pausing YouTube calls for 2m.',
-      );
-
-      try {
-        this.agent.destroy();
-      } catch {}
-      // keepAlive 끈 에이전트로 교체
-      this.agentKeepAlive = false;
-      this.agent = this.createAgent(false);
-    }
-  }
-
-  private onBreakerSuccess() {
-    if (this.breakerState !== 'CLOSED') {
-      this.logger.log(`[CircuitBreaker] ${this.breakerState} -> CLOSED`);
-    }
-    this.breakerState = 'CLOSED';
+  private noteSuccess() {
     this.consecutiveFailures = 0;
-
-    // 정상화 → keepAlive 재활성
-    if (!this.agentKeepAlive) {
-      try {
-        this.agent.destroy();
-      } catch {}
-      this.agentKeepAlive = true;
-      this.agent = this.createAgent(true);
+    if (this.breakerState === 'HALF_OPEN') {
+      this.breakerState = 'CLOSED';
     }
   }
 
-  // ---------- Cache helpers ----------
-
-  private cacheKey(slug: string, filters: YouTubeSearchFilters): string {
-    return JSON.stringify({
-      slug: slug.toLowerCase(),
-      max: filters.maxResults ?? 5,
-      lang: filters.lang ?? '',
-      region: filters.region ?? '',
-      strict: !!filters.strictOfficial,
-    });
-  }
-
-  private fromCache(key: string): GameTrailerResult | null | undefined {
-    const entry = this.cache.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.at > TTL_MS) {
-      this.cache.delete(key);
-      return undefined;
+  private noteFailure() {
+    this.consecutiveFailures++;
+    if (this.breakerState === 'CLOSED' && this.consecutiveFailures >= this.cbThreshold) {
+      this.breakerState = 'OPEN';
+      this.breakerOpenUntil = Date.now() + this.cbCooldownMs;
+      this.logger.warn(`[CB:OPEN] YouTube 서킷 오픈 - ${this.cbCooldownMs}ms`);
+    } else if (this.breakerState === 'HALF_OPEN') {
+      this.breakerState = 'OPEN';
+      this.breakerOpenUntil = Date.now() + this.cbCooldownMs;
+      this.logger.warn(`[CB:OPEN] HALF_OPEN 실패로 재오픈 - ${this.cbCooldownMs}ms`);
     }
-    return entry.data; // null도 캐싱(negative caching)
   }
 
-  private toCache(key: string, data: GameTrailerResult | null): void {
-    if (this.cache.size > MAX_CACHE_SIZE) {
-      const first = this.cache.keys().next().value;
-      if (first) this.cache.delete(first);
-    }
-    this.cache.set(key, { data, at: Date.now() });
-  }
-
-  // ---------- Utils ----------
-
-  private toIsoDate(_uploadedAtText?: string, uploadedTs?: number): string {
-    if (
-      typeof uploadedTs === 'number' &&
-      Number.isFinite(uploadedTs) &&
-      uploadedTs > 0
-    ) {
-      return new Date(uploadedTs).toISOString();
-    }
-    // youtube-sr의 uploadedAt("2 years ago") 같은 상대값은 정확 파싱이 어려우므로 현재시각으로 대체
-    return new Date().toISOString();
-  }
-
-  private runWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-    let timer: NodeJS.Timeout;
-    return new Promise<T>((resolve, reject) => {
-      const onTimeout = () => reject(new Error(`timeout of ${ms}ms exceeded`));
-      timer = setTimeout(onTimeout, ms);
-      p.then(
-        (v) => {
-          clearTimeout(timer);
-          resolve(v);
-        },
-        (e) => {
-          clearTimeout(timer);
-          reject(e);
-        },
-      );
-    });
-  }
-
-  private backoffDelay(attempt: number): number {
-    // 짧은 전체 지연을 위해 소형 백오프: 0.3s, 0.6s, 1.2s
-    const base = 300 * Math.pow(2, attempt - 1);
-    const jitter = Math.floor(Math.random() * 200) - 100;
-    return Math.max(150, base + jitter);
-  }
-
-  private sleep(ms: number) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  private createAgent(keepAlive: boolean) {
-    return new https.Agent({
-      keepAlive,
-      maxSockets: 20,
-    });
+  // ── 유틸 ──────────────────────────────────────────────────────
+  /** 두 AbortSignal을 결합 (둘 중 하나라도 abort되면 abort) */
+  private combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+    if (!a && !b) return undefined;
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    a?.addEventListener('abort', onAbort);
+    b?.addEventListener('abort', onAbort);
+    if (a?.aborted || b?.aborted) controller.abort();
+    return controller.signal;
   }
 }

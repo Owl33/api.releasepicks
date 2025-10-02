@@ -10,6 +10,7 @@ import {
   Platform,
   Store,
   ReleaseStatus,
+  SteamReleaseDateRaw,
   CompanyRole,
 } from '../../entities/enums';
 
@@ -17,7 +18,7 @@ import {
 import { SteamAppListService } from './steam-applist.service';
 import { SteamAppDetailsService } from './steam-appdetails.service';
 import { SteamCommunityService } from './steam-community.service';
-
+import { SteamReviewService } from './steam-review.service';
 // 타입
 import {
   ProcessedGameData,
@@ -70,9 +71,9 @@ export class SteamDataPipelineService {
     private readonly steamAppListService: SteamAppListService,
     private readonly steamAppDetailsService: SteamAppDetailsService,
     private readonly steamCommunityService: SteamCommunityService,
+    private readonly steamReviewService: SteamReviewService,
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
     private readonly batchStrategyService: SteamBatchStrategyService, // Phase 5: Batch Strategy
-    private readonly configService: ConfigService, // 환경 변수 (Region/Currency 설정)
   ) {}
 
   /**
@@ -369,8 +370,12 @@ export class SteamDataPipelineService {
         this.logger.debug(`  ⚠️  Steam AppDetails 없음: ${app.name}`);
         return null;
       }
-
+      // 슬러그 생성
+      const slug = this.generateSlug(app.name);
       // 팔로워 정보 수집 (스크레이핑)
+
+      // 인기도 점수 계산 (PopularityCalculator 사용)
+
       timers.followersStart = Date.now();
       const followers = await this.steamCommunityService.scrapeFollowers(
         app.appid,
@@ -381,35 +386,38 @@ export class SteamDataPipelineService {
         `  ⏱️  Followers 스크레이핑: ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
       );
 
-      // 인기도 점수 계산 (PopularityCalculator 사용)
-      const popularityScore = PopularityCalculator.calculateSteamPopularity(
+      let totalReviews: number = 0;
+      let reviewScoreDesc: string = '';
+      let youtubeVideoUrl: string | undefined;
+      let popularityScore = PopularityCalculator.calculateSteamPopularity(
         followers || 0,
       );
+
+      const hasKorean =
+        Array.isArray(steamDetails.supported_languages) &&
+        steamDetails.supported_languages.includes('한국어');
+
+      // if (hasKorean || popularityScore >= 80) {
+      //   if (hasKorean) {
+      //   } else {
+      //     this.logger.debug('  ✅ 한국어 없음 — 인기도 예외 적용(>=80)');
+      //   }
       this.logger.debug(`  📊 인기도 점수: ${popularityScore}점`);
 
-      // 슬러그 생성
-      const slug = this.generateSlug(app.name);
-
-      // 출시 상태 파싱
-      const comingSoon =
-        (steamDetails.release_date as any)?.coming_soon || false;
-      const releaseStatus = comingSoon
-        ? ReleaseStatus.COMING_SOON
-        : ReleaseStatus.RELEASED;
-
-      // 출시일 파싱
-      let releaseDate: Date | undefined;
-      const releaseDateRaw = (steamDetails.release_date as any)?.date;
-      if (releaseDateRaw && releaseDateRaw !== 'Coming soon') {
+      if (popularityScore >= 40) {
         try {
-          releaseDate = new Date(releaseDateRaw);
-        } catch {
-          // 날짜 파싱 실패 시 무시
+          const result = await this.steamReviewService.fetchAppReview(
+            app.appid,
+          );
+
+          totalReviews = result?.total_reviews || 0;
+          reviewScoreDesc = result?.review_score_desc || '';
+        } catch (error) {
+          this.logger.warn(`  ⚠️  review 실패 ( ${error.message}`);
         }
       }
 
       // YouTube 트레일러 조회 (Phase 4: 인기도 40점 이상만)
-      let youtubeVideoUrl: string | undefined;
       if (popularityScore >= 40) {
         timers.youtubeStart = Date.now();
         try {
@@ -418,19 +426,13 @@ export class SteamDataPipelineService {
           );
           const picked = trailerResult?.picked;
 
-          if (picked?.videoId) {
+          if (picked?.url) {
             youtubeVideoUrl = picked.url; // 이미 완성 URL 있음
             timers.youtubeDuration = Date.now() - timers.youtubeStart;
             this.logger.debug(
               `  ⏱️  YouTube 트레일러: ${(app.name, (timers.youtubeDuration / 1000).toFixed(2))}초 - ${youtubeVideoUrl}`,
             );
           }
-          // if (trailerResult?.videoId) {
-          //   youtubeVideoUrl = `https://www.youtube.com/watch?v=${trailerResult.videoId}`;
-          //   this.logger.debug(
-          //     `  ⏱️  YouTube 트레일러: ${(timers.youtubeDuration / 1000).toFixed(2)}초 - ${youtubeVideoUrl}`,
-          //   );
-          // }
         } catch (error) {
           timers.youtubeDuration = Date.now() - timers.youtubeStart;
           this.logger.warn(
@@ -442,23 +444,27 @@ export class SteamDataPipelineService {
           `  ⏭️  YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
         );
       }
-
+      // } else {
+      //   // ⭐ 스킵 시에도 return/continue 없이 로그만
+      //   this.logger.debug(
+      //     `  ⏭️ 한국어 미지원 → 스킵 (인기도 ${popularityScore}점  80점 이하)`,
+      //   );
+      // }
       // ===== Phase 5.5: DLC 감지 및 부모 정보 추출 =====
       const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
 
       // ⚠️ fullgame.appid는 문자열로 올 수 있음 (예: "4013450") → 숫자로 변환 필요
       let parentSteamId: number | undefined;
-      if (isDlcType && (steamDetails as any).fullgame?.appid) {
-        const appidRaw = (steamDetails as any).fullgame.appid;
+      if (steamDetails.fullgame.appid) {
+        const appidRaw = steamDetails.fullgame.appid;
         const appidNum =
-          typeof appidRaw === 'string' ? parseInt(appidRaw, 10) : appidRaw;
+          typeof appidRaw === 'string' ? Number(appidRaw) : appidRaw;
         parentSteamId = !isNaN(appidNum) ? appidNum : undefined;
       }
 
       // DLC인데 부모 정보가 없으면 제약 조건 위반 방지 (본편으로 저장)
       const isDlc = isDlcType && !!parentSteamId;
       const gameType = isDlc ? GameType.DLC : GameType.GAME;
-
       if (isDlcType && !parentSteamId) {
         this.logger.warn(
           `  ⚠️ [DLC 부모 없음] ${app.name} - 본편으로 저장 (fullgame.appid 파싱 실패 또는 없음)`,
@@ -480,6 +486,12 @@ export class SteamDataPipelineService {
         );
       }
 
+      const parsed = parseSteamRelease(steamDetails?.release_date);
+
+      const releaseDate = parsed.releaseDate; // Date | null (정확 “일”만)
+      const releaseDateRaw = parsed.releaseDateRaw; // string | null (원문)
+      const releaseStatus = parsed.releaseStatus as ReleaseStatus;
+
       // ProcessedGameData 구조로 변환
       const processedGame: ProcessedGameData = {
         name: app.name,
@@ -499,7 +511,7 @@ export class SteamDataPipelineService {
         releaseDate: releaseDate,
         releaseDateRaw: releaseDateRaw,
         releaseStatus: releaseStatus,
-        comingSoon: comingSoon,
+        comingSoon: steamDetails.coming_soon,
         popularityScore: popularityScore,
         followersCache: followers ?? undefined,
         platformsSummary: ['pc'],
@@ -533,40 +545,38 @@ export class SteamDataPipelineService {
                 website: (steamDetails.website as string) || undefined,
                 genres: (steamDetails.genres as any[]) || [],
                 tags: steamDetails.categories || null, // Steam에서 태그 정보는 별도 API 필요
-                supportLanguages:
-                  typeof steamDetails.supported_languages === 'string'
-                    ? [steamDetails.supported_languages]
-                    : [],
-                metacriticScore: (steamDetails.metacritic as any)?.score,
-                steamPositiveRatio: undefined, // AppDetails에는 없음, 별도 API 필요
-                steamReviewDesc: undefined,
+                supportLanguages: steamDetails.supported_languages || [],
+                metacriticScore: steamDetails.metacritic || null,
                 platformType: 'pc',
+                totalReviews: totalReviews,
+                reviewScoreDesc: reviewScoreDesc,
               }
             : undefined,
 
         // 릴리스 정보
-        releases: [
-          {
-            platform: Platform.PC,
-            store: Store.STEAM,
-            storeAppId: app.appid.toString(),
-            storeUrl: `https://store.steampowered.com/app/${app.appid}`,
-            region: this.configService.get<string>('STEAM_REGION') || 'KR', // 환경 변수로 설정 가능 (기본값: KR)
-            releaseDateDate: releaseDate,
-            releaseDateRaw: releaseDateRaw,
-            releaseStatus: releaseStatus,
-            comingSoon: comingSoon,
-            currentPriceCents: (steamDetails.price_overview as any)?.initial,
-            currency: (steamDetails.price_overview as any)?.currency || 'KRW', // Steam API 응답 우선, 없으면 KRW 기본값
-            isFree: (steamDetails.is_free as boolean) || false,
-            followers: followers ?? undefined,
-            reviewsTotal: undefined,
-            reviewScoreDesc: undefined,
-            dataSource: 'steam',
-          },
-        ],
+        releases:
+          popularityScore >= 40
+            ? [
+                {
+                  platform: Platform.PC,
+                  store: Store.STEAM,
+                  storeAppId: app.appid.toString(),
+                  storeUrl: `https://store.steampowered.com/app/${app.appid}`,
+                  releaseDateDate: releaseDate,
+                  releaseDateRaw: releaseDateRaw,
+                  releaseStatus: releaseStatus,
+                  comingSoon: steamDetails.coming_soon,
+                  currentPriceCents: (steamDetails.price_overview as any)
+                    ?.initial,
+                  isFree: (steamDetails.is_free as boolean) || false,
+                  followers: followers,
+                  reviewsTotal: undefined,
+                  reviewScoreDesc: undefined,
+                  dataSource: 'steam',
+                },
+              ]
+            : [],
       };
-      console.log('스팀 디테일스', steamDetails.price_overview);
       return processedGame;
     } catch (error) {
       this.logger.error(
@@ -799,4 +809,194 @@ export class SteamDataPipelineService {
       .replace(/^-|-$/g, '') // 앞뒤 하이픈 제거
       .substring(0, 100); // 길이 제한
   }
+}
+// ✅ 지원 포맷
+// - "19 Aug, 2024", "Aug 19, 2024", "19 Aug 2024"
+// - "2013년 7월 9일"
+// - "2024-08-19", "2024/08/19", "2024.08.19"
+// - "Oct 2025" / "October 2025"  (월/년)
+// - "Q3 2025"                    (분기/년)
+// - "2026"                       (연도)
+
+// 필요 타입 가정
+// type SteamReleaseDateRaw = { coming_soon?: boolean; date?: string | null };
+// enum ReleaseStatus { RELEASED='released', COMING_SOON='coming_soon', TBA='tba', EARLY_ACCESS='early_access', CANCELLED='cancelled' }
+
+const M: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+const makeUTC = (y: number, m: number, d: number) =>
+  new Date(Date.UTC(y, m, d));
+const monthEnd = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0));
+const quarterEnd = (y: number, q: number) => monthEnd(y, [2, 5, 8, 11][q - 1]);
+const statusBy = (d: Date) =>
+  d.getTime() <= Date.now()
+    ? ReleaseStatus.RELEASED
+    : ReleaseStatus.COMING_SOON;
+
+// 여러 일자 포맷을 한 번에 처리
+function parseExactDay(s: string): Date | null {
+  const text = s.trim();
+
+  // 1) D Mon(,)? YYYY  e.g. "19 Aug, 2024" / "19 Aug 2024"
+  let m = text.match(/^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/);
+  if (m) {
+    const mon = M[m[2].toLowerCase()];
+    if (mon != null) return makeUTC(+m[3], mon, +m[1]);
+  }
+
+  // 2) Mon D(,)? YYYY  e.g. "Aug 19, 2024" / "August 19 2024"
+  m = text.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m) {
+    const mon = M[m[1].toLowerCase()];
+    if (mon != null) return makeUTC(+m[3], mon, +m[2]);
+  }
+
+  // 3) ISO 유사: YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD
+  m = text.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
+  if (m) return makeUTC(+m[1], +m[2] - 1, +m[3]);
+
+  // 4) 한국어: YYYY년 M월 D일
+  m = text.match(/^(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일$/);
+  if (m) return makeUTC(+m[1], +m[2] - 1, +m[3]);
+
+  // 5) D Month YYYY (콤마 없는 변형) e.g. "9 July 2013"
+  m = text.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  if (m) {
+    const mon = M[m[2].toLowerCase()];
+    if (mon != null) return makeUTC(+m[3], mon, +m[1]);
+  }
+
+  return null;
+}
+
+const qRe = /^q\s*([1-4])\s*(\d{4})$/i;
+const myRe = /^([A-Za-z]+)\s+(\d{4})$/i;
+const yRe = /^(\d{4})$/;
+
+export function parseSteamRelease(
+  steam: SteamReleaseDateRaw | null | undefined,
+): {
+  releaseDate: Date | null; // “일” 단위일 때만 Date, 아니면 null
+  releaseDateRaw: string; // 원문 보존
+  releaseStatus: ReleaseStatus;
+} {
+  const base = steam?.coming_soon
+    ? ReleaseStatus.COMING_SOON
+    : ReleaseStatus.RELEASED;
+  const raw = (steam?.date ?? '').trim();
+  if (!raw)
+    return { releaseDate: null, releaseDateRaw: '', releaseStatus: base };
+
+  // 접두어 제거 (예: "Planned Release Date: Q4 2025")
+  const text = (
+    raw.includes(':') ? raw.split(':').slice(1).join(':') : raw
+  ).trim();
+  const low = text.toLowerCase();
+
+  // 명시 키워드
+  if (low === 'tba' || low === 'to be announced')
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: ReleaseStatus.TBA,
+    };
+
+  if (low === 'coming soon')
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: ReleaseStatus.COMING_SOON,
+    };
+
+  if (low.includes('early access')) {
+    const d = parseExactDay(text); // 날짜가 같이 써있는 경우만 Date 보존
+    return {
+      releaseDate: d,
+      releaseDateRaw: raw,
+      releaseStatus: ReleaseStatus.EARLY_ACCESS,
+    };
+  }
+
+  if (low.includes('cancelled') || low.includes('canceled'))
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: ReleaseStatus.CANCELLED,
+    };
+
+  if (low.includes('available now'))
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: ReleaseStatus.RELEASED,
+    };
+
+  // 1) 정확한 일자
+  const d = parseExactDay(text);
+  if (d)
+    return { releaseDate: d, releaseDateRaw: raw, releaseStatus: statusBy(d) };
+
+  // 2) 분기 (Q1~Q4 YYYY)
+  const q = text.match(qRe);
+  if (q) {
+    const b = quarterEnd(+q[2], +q[1]);
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: statusBy(b),
+    };
+  }
+
+  // 3) 월/년 (Oct 2025 / October 2025)
+  const my = text.match(myRe);
+  if (my) {
+    const mon = M[my[1].toLowerCase()];
+    if (mon != null) {
+      const b = monthEnd(+my[2], mon);
+      return {
+        releaseDate: null,
+        releaseDateRaw: raw,
+        releaseStatus: statusBy(b),
+      };
+    }
+  }
+
+  // 4) 연도만 (2026)
+  const y = text.match(yRe);
+  if (y) {
+    const b = makeUTC(+y[1], 11, 31);
+    return {
+      releaseDate: null,
+      releaseDateRaw: raw,
+      releaseStatus: statusBy(b),
+    };
+  }
+
+  // 5) 그 외 → coming_soon 플래그만 사용, 원문 보존
+  return { releaseDate: null, releaseDateRaw: raw, releaseStatus: base };
 }

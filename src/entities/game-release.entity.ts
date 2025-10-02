@@ -7,7 +7,7 @@ import {
   Index,
   CreateDateColumn,
   UpdateDateColumn,
-  Unique
+  Unique,
 } from 'typeorm';
 import { Game } from './game.entity';
 import { Platform, Store, ReleaseStatus } from './enums';
@@ -20,12 +20,19 @@ import { Platform, Store, ReleaseStatus } from './enums';
  * 특징: 1:N 관계, 플랫폼별 세분화된 데이터 관리
  */
 @Entity('game_releases')
-@Index('ix_releases_calendar', ['release_date_date', 'platform', 'region', 'coming_soon'])
+@Index('ix_releases_calendar', ['release_date_date', 'platform', 'coming_soon'])
 @Index('ix_releases_followers', ['followers'])
-@Index('ix_releases_platform_store', ['platform', 'store', 'region'])
+@Index('ix_releases_platform_store', ['platform', 'store'])
 @Index('ix_releases_status', ['release_status', 'coming_soon'])
-@Index('ix_releases_price', ['platform', 'region', 'current_price_cents'], { where: 'current_price_cents IS NOT NULL' })
-@Unique('uq_game_platform_store_region_app', ['game_id', 'platform', 'store', 'region', 'store_app_id'])
+@Index('ix_releases_price', ['platform', 'current_price_cents'], {
+  where: 'current_price_cents IS NOT NULL',
+})
+@Unique('uq_game_platform_store_region_app', [
+  'game_id',
+  'platform',
+  'store',
+  'store_app_id',
+])
 export class GameRelease {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
@@ -36,13 +43,13 @@ export class GameRelease {
   // ===== 플랫폼/스토어 정보 =====
   @Column({
     type: 'enum',
-    enum: Platform
+    enum: Platform,
   })
   platform: Platform;
 
   @Column({
     type: 'enum',
-    enum: Store
+    enum: Store,
   })
   store: Store;
 
@@ -51,10 +58,6 @@ export class GameRelease {
 
   @Column({ type: 'text', nullable: true })
   store_url: string | null; // 스토어 링크
-
-  // ===== 지역 정보 (글로벌 출시 지원) =====
-  @Column({ type: 'char', length: 2, default: 'US' })
-  region: string; // ISO 3166-1 alpha-2 (US, JP, KR, EU 등)
 
   // ===== 출시 정보 (플랫폼별로 다를 수 있음) =====
   @Column({ type: 'date', nullable: true })
@@ -66,7 +69,7 @@ export class GameRelease {
   @Column({
     type: 'enum',
     enum: ReleaseStatus,
-    nullable: true
+    nullable: true,
   })
   release_status: ReleaseStatus | null;
 
@@ -77,8 +80,7 @@ export class GameRelease {
   @Column({ type: 'integer', nullable: true })
   current_price_cents: number | null; // 센트 단위 가격
 
-  @Column({ type: 'text', default: 'KRW' })
-  currency: string;
+
 
   @Column({ type: 'boolean', default: false })
   is_free: boolean;
@@ -86,12 +88,6 @@ export class GameRelease {
   // ===== Steam 전용 메트릭 (PC/Steam만, 스크레이핑으로 구함) =====
   @Column({ type: 'integer', nullable: true })
   followers: number | null; // 커뮤니티 팔로워
-
-  @Column({ type: 'integer', nullable: true })
-  reviews_total: number | null; // 총 리뷰 수
-
-  @Column({ type: 'text', nullable: true })
-  review_score_desc: string | null; // "Very Positive"
 
   // ===== 데이터 소스 추적 =====
   @Column({ type: 'text' })
@@ -105,7 +101,7 @@ export class GameRelease {
   updated_at: Date;
 
   // ===== 관계 설정 =====
-  @ManyToOne(() => Game, game => game.releases, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Game, (game) => game.releases, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'game_id' })
   game: Game;
 }

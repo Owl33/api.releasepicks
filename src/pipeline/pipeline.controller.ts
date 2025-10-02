@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager } from 'typeorm';
+import { Repository, DataSource, EntityManager, ILike } from 'typeorm';
 
 import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
@@ -210,15 +210,24 @@ export class PipelineController {
       this.logger.log(`💾 [수동 파이프라인] ${data.length}개 게임 저장 시작`);
       const saveResult = await this.saveIntegratedData(data, pipelineRun.id);
 
-      // ✅ strategy=batch일 때: 저장 성공한 개수로 배치 진행 상태 업데이트
+      // saveResult는 최소한 아래 형태라고 가정
+      // type SaveResult = { created: number; updated: number; failed: number; failedItems?: any[] };
+
       if (strategy === 'batch' && (phase === 'steam' || phase === 'full')) {
-        const successCount = saveResult.created + saveResult.updated;
-        await this.steamBatchStrategy.updateBatchProgress(successCount);
+        const createdCount = saveResult?.created ?? 0;
+        const updatedCount = saveResult?.updated ?? 0;
+        const failedCount = saveResult?.failed ?? 0;
+
+        // ✅ "시도한 개수"로 커서를 전진: 성공 + 실패 = 이번 라운드에서 소비한 입력 수
+        // const attemptedCount = createdCount + updatedCount + failedCount;
+        const attemptedCount = limit;
+
+        await this.steamBatchStrategy.updateBatchProgress(limit);
+
         this.logger.log(
-          `📊 [배치 진행 상태] ${successCount}개 저장 성공 → 배치 커서 전진 완료`,
+          `📊 [배치 진행 상태] attempted=${attemptedCount} (created:${createdCount}, updated:${updatedCount}, failed:${failedCount}) → 커서 +${attemptedCount}`,
         );
       }
-
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
 
@@ -274,10 +283,8 @@ export class PipelineController {
 
     // 진행 상황 로그 주기 (매 10개마다 또는 전체의 10%마다)
     const logInterval = Math.max(10, Math.floor(totalCount * 0.1));
-
     for (let i = 0; i < data.length; i++) {
       const gameData = data[i];
-
       try {
         // 각 게임은 독립적인 트랜잭션으로 처리
         await this.dataSource.transaction(async (manager) => {
@@ -372,7 +379,6 @@ export class PipelineController {
   ): Promise<Game> {
     // ===== Phase 5.5: DLC 분기 처리 =====
     const isDlc = gameData.isDlc ?? false;
-
     // 1. games 테이블 저장
     const game = manager.create(Game, {
       name: gameData.name,
@@ -406,7 +412,6 @@ export class PipelineController {
 
     // 2. game_details 저장 (본편만, 인기도 40점 이상만)
     if (gameData.popularityScore >= 40 && gameData.details) {
-      console.log(gameData.details);
       await this.saveGameDetails(savedGame.id, gameData.details, manager);
     }
 
@@ -486,24 +491,26 @@ export class PipelineController {
 
       if (existingDetails) {
         // ✅ camelCase → snake_case 매핑
-        await manager.update(GameDetail, { game_id: gameId }, {
-          screenshots: gameData.details.screenshots,
-          video_url: gameData.details.videoUrl,
-          description: gameData.details.description,
-          website: gameData.details.website,
-          genres: gameData.details.genres,
-          tags: gameData.details.tags,
-          support_languages: gameData.details.supportLanguages,
-          metacritic_score: gameData.details.metacriticScore ?? null,
-          opencritic_score: gameData.details.opencriticScore ?? null,
-          steam_positive_ratio: gameData.details.steamPositiveRatio ?? null,
-          steam_review_desc: gameData.details.steamReviewDesc,
-          rawg_added: gameData.details.rawgAdded ?? null,
-          total_reviews: gameData.details.totalReviews ?? null,
-          review_score_desc: gameData.details.reviewScoreDesc,
-          platform_type: gameData.details.platformType,
-          updated_at: new Date(),
-        });
+        await manager.update(
+          GameDetail,
+          { game_id: gameId },
+          {
+            screenshots: gameData.details.screenshots,
+            video_url: gameData.details.videoUrl,
+            description: gameData.details.description,
+            website: gameData.details.website,
+            genres: gameData.details.genres,
+            tags: gameData.details.tags,
+            support_languages: gameData.details.supportLanguages,
+            metacritic_score: gameData.details.metacriticScore ?? null,
+            opencritic_score: gameData.details.opencriticScore ?? null,
+            rawg_added: gameData.details.rawgAdded ?? null,
+            total_reviews: gameData.details.totalReviews ?? null,
+            review_score_desc: gameData.details.reviewScoreDesc,
+            platform_type: gameData.details.platformType,
+            updated_at: new Date(),
+          },
+        );
       } else {
         await this.saveGameDetails(gameId, gameData.details, manager);
       }
@@ -528,9 +535,6 @@ export class PipelineController {
     detailsData: GameDetailsData,
     manager: EntityManager,
   ): Promise<void> {
-    console.log('-----------------------------------');
-    console.log('디테일데이터', detailsData);
-    console.log('-----------------------------------');
     const details = manager.create(GameDetail, {
       game_id: Number(gameId),
       screenshots: detailsData.screenshots,
@@ -542,8 +546,6 @@ export class PipelineController {
       support_languages: detailsData.supportLanguages,
       metacritic_score: detailsData.metacriticScore ?? null,
       opencritic_score: detailsData.opencriticScore ?? null,
-      steam_positive_ratio: detailsData.steamPositiveRatio ?? null,
-      steam_review_desc: detailsData.steamReviewDesc,
       rawg_added: detailsData.rawgAdded ?? null,
       total_reviews: detailsData.totalReviews ?? null,
       review_score_desc: detailsData.reviewScoreDesc,
@@ -567,7 +569,6 @@ export class PipelineController {
         game_id: gameId,
         platform: releaseData.platform,
         store: releaseData.store,
-        region: releaseData.region || 'US',
       };
 
       if (releaseData.storeAppId) {
@@ -585,11 +586,8 @@ export class PipelineController {
           release_status: releaseData.releaseStatus,
           coming_soon: releaseData.comingSoon,
           current_price_cents: releaseData.currentPriceCents ?? null,
-          currency: releaseData.currency,
           is_free: releaseData.isFree,
           followers: releaseData.followers ?? null,
-          reviews_total: releaseData.reviewsTotal ?? null,
-          review_score_desc: releaseData.reviewScoreDesc,
           updated_at: new Date(),
         });
       } else {
@@ -600,17 +598,13 @@ export class PipelineController {
           store: releaseData.store,
           store_app_id: releaseData.storeAppId,
           store_url: releaseData.storeUrl,
-          region: releaseData.region || 'US',
           release_date_date: releaseData.releaseDateDate,
           release_date_raw: releaseData.releaseDateRaw,
           release_status: releaseData.releaseStatus,
           coming_soon: releaseData.comingSoon,
           current_price_cents: releaseData.currentPriceCents ?? null,
-          currency: releaseData.currency,
           is_free: releaseData.isFree,
           followers: releaseData.followers ?? null,
-          reviews_total: releaseData.reviewsTotal ?? null,
-          review_score_desc: releaseData.reviewScoreDesc,
           data_source: releaseData.dataSource,
         });
 
@@ -622,29 +616,70 @@ export class PipelineController {
   /**
    * companies 및 game_company_role 저장 (중복 체크 후 추가)
    */
+  // 필요: import { ILike } from 'typeorm';
+
   private async saveCompanies(
     gameId: number,
     companiesData: CompanyData[],
     manager: EntityManager,
   ): Promise<void> {
     for (const companyData of companiesData) {
-      // 1. slug 결정: RAWG는 기존 slug 사용, Steam은 생성
-      const slug = companyData.slug || this.generateCompanySlug(companyData.name);
+      const nameTrimmed = companyData.name.trim();
+      const baseSlug = (
+        companyData.slug || this.generateCompanySlug(companyData.name)
+      )
+        .trim()
+        .toLowerCase();
 
-      // 2. companies 테이블에서 회사 조회 또는 생성 (slug 기준)
+      // 1) slug로 먼저 조회
       let company = await manager.findOne(Company, {
-        where: { slug },
+        where: { slug: baseSlug },
       });
 
+      // 2) 없으면 name(대소문자 무시)으로 조회
       if (!company) {
-        company = manager.create(Company, {
-          name: companyData.name,
-          slug,
+        company = await manager.findOne(Company, {
+          where: { name: ILike(nameTrimmed) },
         });
-        await manager.save(Company, company);
       }
 
-      // 3. game_company_role 중복 체크 (game_id + company_id + role)
+      // 3) 둘 다 없으면 새로 생성 (slug 유일화)
+      if (!company) {
+        // slug 충돌 방지: baseSlug, baseSlug-2, baseSlug-3 ...
+        let candidateSlug = baseSlug;
+        let suffix = 2;
+        while (true) {
+          const exists = await manager.findOne(Company, {
+            where: { slug: candidateSlug },
+          });
+          if (!exists) break;
+          candidateSlug = `${baseSlug}-${suffix++}`;
+        }
+
+        try {
+          const created = manager.create(Company, {
+            name: nameTrimmed,
+            slug: candidateSlug,
+          });
+          company = await manager.save(Company, created);
+        } catch (e: any) {
+          // 4) 동시성에 의한 유니크(name) 위반 방어 (Postgres: 23505)
+          if (e?.code === '23505') {
+            const fallback = await manager.findOne(Company, {
+              where: { name: ILike(nameTrimmed) },
+            });
+            if (fallback) {
+              company = fallback;
+            } else {
+              throw e;
+            }
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      // 5) game_company_role 중복 체크 (game_id + company_id + role)
       const existingRole = await manager.findOne(GameCompanyRole, {
         where: {
           game_id: gameId,
@@ -654,7 +689,6 @@ export class PipelineController {
       });
 
       if (!existingRole) {
-        // 신규 생성
         const role = manager.create(GameCompanyRole, {
           game_id: gameId,
           company_id: company.id,
@@ -672,17 +706,21 @@ export class PipelineController {
   private generateCompanySlug(name: string): string {
     // ✅ 안전성 체크: name이 문자열이 아닐 경우 대응
     if (!name || typeof name !== 'string') {
-      this.logger.warn(`⚠️ generateCompanySlug: 잘못된 name 타입 - ${typeof name}, 값: ${JSON.stringify(name)}`);
+      this.logger.warn(
+        `⚠️ generateCompanySlug: 잘못된 name 타입 - ${typeof name}, 값: ${JSON.stringify(name)}`,
+      );
       return 'unknown-company';
     }
 
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9가-힣\s-]/g, '') // 알파벳, 숫자, 한글, 공백, 하이픈만 허용
-      .replace(/\s+/g, '-') // 공백 → 하이픈
-      .replace(/-+/g, '-') // 연속 하이픈 → 단일 하이픈
-      .replace(/^-|-$/g, '') // 앞뒤 하이픈 제거
-      .substring(0, 100) || 'unknown-company'; // 최대 100자 (빈 문자열 방지)
+    return (
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9가-힣\s-]/g, '') // 알파벳, 숫자, 한글, 공백, 하이픈만 허용
+        .replace(/\s+/g, '-') // 공백 → 하이픈
+        .replace(/-+/g, '-') // 연속 하이픈 → 단일 하이픈
+        .replace(/^-|-$/g, '') // 앞뒤 하이픈 제거
+        .substring(0, 100) || 'unknown-company'
+    ); // 최대 100자 (빈 문자열 방지)
   }
 
   /**

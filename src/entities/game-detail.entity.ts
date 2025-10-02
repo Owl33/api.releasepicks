@@ -19,10 +19,8 @@ import { Game } from './game.entity';
  * 특징: 인기도 40점 이상 게임만 저장, Steam+RAWG 통합 데이터
  */
 @Entity('game_details')
-@Index('ix_game_details_ratings', ['metacritic_score', 'steam_positive_ratio'])
 @Index('ix_game_details_platform_type', ['platform_type'])
 @Check('chk_screenshots_max5', 'array_length(screenshots, 1) <= 5')
-@Check('chk_positive_ratio', 'steam_positive_ratio IS NULL OR steam_positive_ratio BETWEEN 0 AND 100')
 export class GameDetail {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
@@ -64,11 +62,7 @@ export class GameDetail {
   // ===== Steam 통계 (AppDetails + AppReviews API) =====
   // ⚠️ steam_followers는 game_releases.followers로 통합 (단일 소스 원칙)
 
-  @Column({ type: 'integer', nullable: true })
-  steam_positive_ratio: number | null; // Steam 긍정 리뷰 비율 (0-100)
 
-  @Column({ type: 'text', nullable: true })
-  steam_review_desc: string | null; // "Very Positive", "Mixed" 등
 
   // ===== RAWG 통계 =====
   @Column({ type: 'integer', nullable: true })

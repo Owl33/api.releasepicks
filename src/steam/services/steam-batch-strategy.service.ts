@@ -28,40 +28,44 @@ export class SteamBatchStrategyService {
    * 다음 배치 정보 조회
    * @returns { startIndex, endIndex, batchSize, totalProcessed }
    */
-  async getNextBatch(): Promise<{
+  async getNextBatch(
+    limit?: number, // ⬅️ 추가 (선택 인자)
+  ): Promise<{
     startIndex: number;
     endIndex: number;
     batchSize: number;
     totalProcessed: number;
     isComplete: boolean;
   }> {
-    // 1. 현재 진행 상태 조회
-    const syncStatus = await this.getSyncStatus();
-    const totalProcessed = syncStatus?.totalProcessed ?? 0;
+    // 1. 진행 상태 조회 (기존 메서드 그대로 사용)
+    const progress = await this.getSyncStatus();
+    const totalProcessed = progress?.totalProcessed ?? 0;
 
-    // 2. 배치 크기 결정
-    const batchSize = this.calculateBatchSize(totalProcessed);
+    // 2. 배치 크기 결정 (limit 우선, 없으면 기존 자동 계산)
+    const batchSize =
+      limit && limit > 0 ? limit : this.calculateBatchSize(totalProcessed);
 
-    // 3. 시작/종료 인덱스 계산
+    // 3. 시작/종료 인덱스 + 실제 슬라이스 개수 계산
     const startIndex = totalProcessed;
     const endIndex = Math.min(startIndex + batchSize, 150000);
+    const sliceCount = Math.max(0, endIndex - startIndex); // ← 로그에 이 값 사용
 
     // 4. 완료 여부 확인
     const isComplete = totalProcessed >= 150000;
 
+    // 5. 로그: 괄호 안은 batchSize가 아니라 실제 슬라이스 개수로
     this.logger.log(
-      `📊 [Batch Strategy] 다음 배치: ${startIndex}-${endIndex} (${batchSize}개, 총 진행: ${totalProcessed}/150,000)`
+      `📊 [Batch Strategy] 다음 배치: [${startIndex}, ${endIndex}) = ${sliceCount}개 (총 진행: ${totalProcessed}/150,000)`,
     );
 
     return {
       startIndex,
       endIndex,
-      batchSize,
+      batchSize, // 반환 타입은 기존 그대로 유지
       totalProcessed,
       isComplete,
     };
   }
-
   /**
    * 배치 크기 자동 계산
    * @param totalProcessed 현재까지 처리된 개수
@@ -88,14 +92,22 @@ export class SteamBatchStrategyService {
    * @param processedCount 이번 배치에서 처리된 개수
    */
   async updateBatchProgress(processedCount: number): Promise<void> {
-    const syncStatus = await this.getSyncStatus();
-    const currentTotal = syncStatus?.totalProcessed ?? 0;
-    const newTotal = currentTotal + processedCount;
+    const inc = Math.max(0, Math.floor(Number(processedCount) || 0));
+    if (inc === 0) {
+      this.logger.debug(`  ↪️ [Batch Strategy] attempted=0 → cursor 유지`);
+      return;
+    }
 
+    // 현재 진행상태 읽기
+    const syncStatus = await this.getSyncStatus();
+    const prevTotal = Number(syncStatus?.totalProcessed) || 0;
+    const nextTotal = prevTotal + inc;
+
+    // DB에 누적 커서 저장
     const syncData = {
-      totalProcessed: newTotal,
-      lastBatchSize: processedCount,
-      lastBatchAt: new Date().toISOString(),
+      totalProcessed: nextTotal, // ← 커서(누적 시도 수)
+      lastBatchSize: inc, // 이번에 소비한 입력 수(=attempted)
+      lastBatchAt: new Date().toISOString(), // 최근 배치 시각
       batchVersion: 1,
     };
 
@@ -104,11 +116,12 @@ export class SteamBatchStrategyService {
         sync_name: 'steam_batch_progress',
         sync_data: syncData as any,
       },
-      ['sync_name']
+      ['sync_name'],
     );
+    const TOTAL_TARGET = 150_000;
 
     this.logger.log(
-      `✅ [Batch Strategy] 진행 상태 업데이트: ${newTotal}/150,000 (${((newTotal / 150000) * 100).toFixed(1)}%)`
+      `✅ [Batch Strategy] 진행 상태 업데이트: ${nextTotal}/${TOTAL_TARGET.toLocaleString()} (+${inc}, ${((nextTotal / TOTAL_TARGET) * 100).toFixed(1)}%)`,
     );
   }
 
@@ -116,7 +129,9 @@ export class SteamBatchStrategyService {
    * 진행 상태 초기화 (재시작 시)
    */
   async resetProgress(): Promise<void> {
-    await this.dataSyncStatusRepository.delete({ sync_name: 'steam_batch_progress' });
+    await this.dataSyncStatusRepository.delete({
+      sync_name: 'steam_batch_progress',
+    });
     this.logger.warn('🔄 [Batch Strategy] 진행 상태 초기화 완료');
   }
 

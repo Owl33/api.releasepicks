@@ -168,6 +168,7 @@ export class RawgDataPipelineService {
   private async mapToProcessedGameData(raw: {
     rawgId: number;
     slug: string;
+    screenshots: any;
     name: string;
     released: string | null;
     platformFamilies: ('playstation' | 'xbox' | 'nintendo')[];
@@ -214,7 +215,7 @@ export class RawgDataPipelineService {
           );
           const picked = trailerResult?.picked;
 
-          if (picked?.videoId) {
+          if (picked?.url) {
             youtubeVideoUrl = picked.url;
             this.logger.debug(
               `✨ [YouTube] 트레일러 발견 - ${raw.name}: ${youtubeVideoUrl}`,
@@ -236,6 +237,7 @@ export class RawgDataPipelineService {
     const details =
       !raw.isDlc && popularityScore >= 40 && rawgDetails
         ? {
+            screenshots: raw.screenshots,
             videoUrl: youtubeVideoUrl, // YouTube 우선 (RAWG는 비디오 URL 제공 안 함)
             description: rawgDetails.description_raw || rawgDetails.description,
             website: rawgDetails.website || undefined,
@@ -278,13 +280,11 @@ export class RawgDataPipelineService {
             store,
             storeAppId: raw.rawgId.toString(), // RAWG ID 사용
             storeUrl: `https://rawg.io/games/${raw.slug}`,
-            region: 'US', // RAWG는 글로벌 (기본 US)
             releaseDateDate: releaseDate,
             releaseDateRaw: raw.released ?? undefined,
             releaseStatus,
             comingSoon,
             currentPriceCents: undefined, // RAWG는 가격 정보 제공 안 함
-            currency: 'USD',
             isFree: false,
             followers: undefined, // RAWG는 팔로워 정보 제공 안 함
             reviewsTotal: rawgDetails?.reviews_count || undefined,
