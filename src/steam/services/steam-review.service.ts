@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
 
 /**
  * Steam Review 서비스
@@ -13,7 +14,7 @@ import { firstValueFrom } from 'rxjs';
 export class SteamReviewService {
   private readonly logger = new Logger(SteamReviewService.name);
   private readonly steamReviewUrl = 'https://store.steampowered.com/appreviews';
-  private readonly requestDelay: number;
+  private readonly globalLimiter = getGlobalRateLimiter();
 
   constructor(
     private readonly httpService: HttpService,
@@ -22,10 +23,6 @@ export class SteamReviewService {
     // Steam AppDetails API Rate Limit (안전 기준)
     // 공식 권장: 초당 200 요청 → 5ms 간격
     // 안전 마진 적용: 300ms (초당 3.3 요청, IP 밴 방지)
-    this.requestDelay = parseInt(
-      this.configService.get<string>('STEAM_APPDETAILS_DELAY') || '300',
-      10,
-    );
   }
 
   /**
@@ -40,11 +37,6 @@ export class SteamReviewService {
       const startTime = Date.now();
 
       // Rate Limiting
-      if (this.requestDelay > 0) {
-        this.logger.debug(`    ⏳ Rate Limit 지연: ${this.requestDelay}ms`);
-        await this.delay(this.requestDelay);
-      }
-
       const url = `${this.steamReviewUrl}/${appId}?json=1`;
       const requestStart = Date.now();
       const response = await firstValueFrom(
@@ -73,7 +65,8 @@ export class SteamReviewService {
           `🚨 AppRevies Rate Limit 초과 (429) - AppID ${appId}`,
         );
         // 429 발생 시 더 긴 지연 적용 (1초 추가 대기)
-        await this.delay(1000);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        this.globalLimiter.backoff('steam:reviews', 0.5, 30_000);
       }
 
       this.logger.error(
@@ -86,9 +79,6 @@ export class SteamReviewService {
   /**
    * 지연 함수 (Rate Limiting)
    */
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
 }
 
 /**

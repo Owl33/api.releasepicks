@@ -85,6 +85,7 @@ export interface GameDetailsData {
   // 평점 정보
   metacriticScore?: number | null;
   opencriticScore?: number | null;
+  steamReviewDesc?: string;
 
   // RAWG 통계
   rawgAdded?: number;
@@ -104,9 +105,6 @@ export interface GameReleaseData {
   store: Store;
   storeAppId?: string;
   storeUrl?: string;
-
-  // 지역 정보
-
   // 출시 정보
   releaseDateDate?: Date | null;
   releaseDateRaw?: string;

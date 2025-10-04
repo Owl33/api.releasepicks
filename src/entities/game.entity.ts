@@ -38,6 +38,8 @@ import { GameType, ReleaseStatus } from './enums';
 @Index('ix_games_parent_rawg', ['parent_rawg_id'])
 @Index('ix_games_is_dlc', ['is_dlc'])
 @Index('ix_games_platform_type', ['platform_type'])
+@Index('ix_games_steam_last_refresh', ['steam_last_refresh_at'])
+@Index('ix_games_rawg_last_refresh', ['rawg_last_refresh_at'])
 export class Game {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id: number;
@@ -105,6 +107,12 @@ export class Game {
 
   @Column({ type: 'integer', nullable: true })
   followers_cache: number | null; // 대표 Steam 릴리스 팔로워 캐시
+
+  @Column({ type: 'timestamptz', nullable: true })
+  steam_last_refresh_at: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  rawg_last_refresh_at: Date | null;
 
   // ===== 타임스탬프 =====
   @CreateDateColumn({ type: 'timestamptz' })

@@ -2,7 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import { SteamReleaseDateRaw } from 'src/entities/enums';
+import { setTimeout as sleep } from 'timers/promises';
+import { SteamReleaseDateRaw } from '../../entities/enums';
+import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
+import {
+  rateLimitMonitor,
+  RateLimitExceededError,
+} from '../../common/concurrency/rate-limit-monitor';
+import { RollingRateLimiter } from '../../common/concurrency/rolling-rate-limiter';
 
 /**
  * Steam AppDetails 서비스
@@ -15,18 +22,26 @@ import { SteamReleaseDateRaw } from 'src/entities/enums';
 export class SteamAppDetailsService {
   private readonly logger = new Logger(SteamAppDetailsService.name);
   private readonly steamStoreUrl = 'https://store.steampowered.com/api';
-  private readonly requestDelay: number;
+  private readonly globalLimiter = getGlobalRateLimiter();
+  private readonly spacingMs: number;
+  private readonly rollingLimiter: RollingRateLimiter;
 
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    // Steam AppDetails API Rate Limit (안전 기준)
-    // 공식 권장: 초당 200 요청 → 5ms 간격
-    // 안전 마진 적용: 300ms (초당 3.3 요청, IP 밴 방지)
-    this.requestDelay = parseInt(
-      this.configService.get<string>('STEAM_APPDETAILS_DELAY') || '300',
-      10,
+    this.spacingMs = Number(
+      this.configService.get<string>('STEAM_APPDETAILS_SPACING_MS') ?? '150',
+    );
+    const maxPerWindow = Number(
+      this.configService.get<string>('STEAM_APPDETAILS_WINDOW_MAX') ?? '200',
+    );
+    const windowSeconds = Number(
+      this.configService.get<string>('STEAM_APPDETAILS_WINDOW_SECONDS') ?? '310',
+    );
+    this.rollingLimiter = new RollingRateLimiter(
+      maxPerWindow,
+      windowSeconds * 1000,
     );
   }
 
@@ -42,42 +57,17 @@ export class SteamAppDetailsService {
       const startTime = Date.now();
 
       // Rate Limiting
-      if (this.requestDelay > 0) {
-        this.logger.debug(`    ⏳ Rate Limit 지연: ${this.requestDelay}ms`);
-        await this.delay(this.requestDelay);
+      const primary = await this.requestAppDetails(appId, {
+        cc: 'kr',
+        lang: 'korean',
+      });
+
+      if (primary) {
+        rateLimitMonitor.reportSuccess('steam:details');
+        return primary;
       }
 
-      const url = `${this.steamStoreUrl}/appdetails`;
-      const requestStart = Date.now();
-      const response = await firstValueFrom(
-        this.httpService.get(url, {
-          params: {
-            appids: appId,
-            cc: 'kr', // 한국 지역
-            l: 'korean', // 한국어
-          },
-          timeout: 10000,
-        }),
-      );
-
-      const requestDuration = Date.now() - requestStart;
-      this.logger.debug(`    ⏱️  HTTP 요청: ${requestDuration}ms`);
-
-      const appData = response.data?.[appId];
-
-      if (!appData?.success || !appData?.data) {
-        this.logger.warn(`⚠️ Steam AppDetails 없음: AppID ${appId}`);
-        return null;
-      }
-
-      const data = appData.data;
-
-      // 게임이 아닌 경우 제외 (DLC, Software 등)
-      if (!this.isGameType(data)) {
-        this.logger.debug(`📋 게임이 아님: AppID ${appId} (${data.type})`);
-        return null;
-      }
-      return this.parseAppDetails(data);
+      return null;
     } catch (error) {
       // 429 에러 (Rate Limit) 특별 처리
       if (error.response?.status === 429) {
@@ -85,7 +75,40 @@ export class SteamAppDetailsService {
           `🚨 AppDetails Rate Limit 초과 (429) - AppID ${appId}`,
         );
         // 429 발생 시 더 긴 지연 적용 (1초 추가 대기)
-        await this.delay(1000);
+        await sleep(1000);
+        this.globalLimiter.backoff('steam:details', 0.5, 30_000);
+
+        const { pauseMs, exceeded } = rateLimitMonitor.report429(
+          'steam:details',
+          30_000,
+        );
+        this.logger.warn(`⏸️ AppDetails 429 → ${pauseMs}ms 대기`);
+        await sleep(pauseMs);
+
+        if (exceeded) {
+          throw new RateLimitExceededError('steam:details');
+        }
+        return null;
+      }
+
+      if (error.response?.status === 403) {
+        this.logger.warn(
+          `🚧 AppDetails 403 (Access Denied) - AppID ${appId} → fallback en-US`,
+        );
+        try {
+          const fallback = await this.requestAppDetails(appId, {
+            cc: 'us',
+            lang: 'english',
+          });
+          if (fallback) {
+            rateLimitMonitor.reportSuccess('steam:details');
+            return fallback;
+          }
+        } catch (fallbackError: any) {
+          this.logger.error(
+            `❌ AppDetails fallback 실패 - AppID ${appId}: ${fallbackError?.message ?? fallbackError}`,
+          );
+        }
       }
 
       this.logger.error(
@@ -93,6 +116,62 @@ export class SteamAppDetailsService {
       );
       return null;
     }
+  }
+
+  private async requestAppDetails(
+    appId: number,
+    opts: { cc: string; lang: string },
+  ): Promise<SteamAppDetails | null> {
+    await rateLimitMonitor.waitIfPaused('steam:details');
+    await this.rollingLimiter.take();
+    if (this.spacingMs > 0) {
+      const jitter = Math.floor(Math.random() * Math.max(1, this.spacingMs / 2));
+      await sleep(this.spacingMs + jitter);
+    }
+    const url = `${this.steamStoreUrl}/appdetails`;
+    const requestStart = Date.now();
+    const response = await firstValueFrom(
+      this.httpService.get(url, {
+        params: {
+          appids: appId,
+          cc: opts.cc,
+          l: opts.lang,
+        },
+        timeout: 10000,
+        headers: this.buildRequestHeaders(opts.lang),
+      }),
+    );
+
+    const requestDuration = Date.now() - requestStart;
+    this.logger.debug(
+      `    ⏱️  HTTP 요청(${opts.cc}/${opts.lang}): ${requestDuration}ms`,
+    );
+
+    const appData = response.data?.[appId];
+
+    if (!appData?.success || !appData?.data) {
+      this.logger.warn(`⚠️ Steam AppDetails 없음: AppID ${appId}`);
+      return null;
+    }
+
+    const data = appData.data;
+
+    if (!this.isGameType(data)) {
+      this.logger.debug(`📋 게임이 아님: AppID ${appId} (${data.type})`);
+      return null;
+    }
+
+    return this.parseAppDetails(data);
+  }
+
+  private buildRequestHeaders(lang: string) {
+    const language = lang === 'korean' ? 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7' : 'en-US,en;q=0.9';
+    return {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+      'Accept-Language': language,
+      Accept: 'application/json, */*;q=0.8',
+    };
   }
 
   /**
@@ -228,9 +307,6 @@ export class SteamAppDetailsService {
   /**
    * 지연 함수 (Rate Limiting)
    */
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
 }
 
 /**

@@ -1,7 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ConfigService } from '@nestjs/config';
 
 // 엔티티
 import { Game, GameDetail, GameRelease, DataSyncStatus } from '../../entities';
@@ -36,6 +35,9 @@ import { YouTubeService } from '../../youtube/youtube.service';
 
 // Batch Strategy 서비스 추가 (Phase 5 성능 최적화)
 import { SteamBatchStrategyService } from './steam-batch-strategy.service';
+import { runWithConcurrency } from '../../common/concurrency/promise-pool.util';
+import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
+import { RateLimitExceededError } from '../../common/concurrency/rate-limit-monitor';
 
 /**
  * Steam 데이터 파이프라인 서비스
@@ -47,6 +49,11 @@ import { SteamBatchStrategyService } from './steam-batch-strategy.service';
 @Injectable()
 export class SteamDataPipelineService {
   private readonly logger = new Logger(SteamDataPipelineService.name);
+  private readonly globalLimiter = getGlobalRateLimiter();
+  private readonly processingConcurrency = Math.max(
+    1,
+    Number(process.env.STEAM_PIPELINE_CONCURRENCY ?? '4'),
+  );
 
   // AppList 캐시 (Phase 3 선행 구현)
   private appListCache: {
@@ -75,6 +82,230 @@ export class SteamDataPipelineService {
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
     private readonly batchStrategyService: SteamBatchStrategyService, // Phase 5: Batch Strategy
   ) {}
+
+  private async buildProcessedGameDataFromApp(
+    app: SteamApp,
+    context?: { index: number; total: number },
+  ): Promise<ProcessedGameData | null> {
+    const prefix = context ? `[${context.index + 1}/${context.total}] ` : '';
+    try {
+      const timers: { [key: string]: number } = {};
+
+      timers.appDetailsStart = Date.now();
+      await this.globalLimiter.take('steam:details');
+      const steamDetails = await this.steamAppDetailsService.fetchAppDetails(
+        app.appid,
+      );
+      timers.appDetailsDuration = Date.now() - timers.appDetailsStart;
+      this.logger.debug(
+        `${prefix}⏱️ AppDetails ${(timers.appDetailsDuration / 1000).toFixed(2)}초`,
+      );
+
+      if (!steamDetails) {
+        this.logger.debug(`${prefix}⚠️ AppDetails 없음 → 스킵: ${app.name}`);
+        return null;
+      }
+
+      const slug = this.generateSlug(app.name);
+
+      timers.followersStart = Date.now();
+      await this.globalLimiter.take('steam:followers', {
+        minDelayMs: 120,
+        jitterMs: 80,
+      });
+      const followers = await this.steamCommunityService.scrapeFollowers(
+        app.appid,
+        app.name,
+      );
+      timers.followersDuration = Date.now() - timers.followersStart;
+      this.logger.debug(
+        `${prefix}⏱️ Followers ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
+      );
+
+      let totalReviews = 0;
+      let reviewScoreDesc = '';
+      let youtubeVideoUrl: string | undefined;
+      const popularityScore = PopularityCalculator.calculateSteamPopularity(
+        followers || 0,
+      );
+
+      const hasKorean =
+        Array.isArray(steamDetails.supported_languages) &&
+        steamDetails.supported_languages.includes('한국어');
+      if (hasKorean) {
+        this.logger.debug(
+          `${prefix}📊 인기도 점수: ${popularityScore}점 (한국어 지원)`,
+        );
+
+        if (popularityScore >= 40) {
+          try {
+            await this.globalLimiter.take('steam:reviews', {
+              minDelayMs: 100,
+              jitterMs: 50,
+            });
+            const result = await this.steamReviewService.fetchAppReview(
+              app.appid,
+            );
+            totalReviews = result?.total_reviews || 0;
+            reviewScoreDesc = result?.review_score_desc || '';
+          } catch (error) {
+            this.logger.warn(
+              `${prefix}⚠️ Review 수집 실패: ${error?.message ?? error}`,
+            );
+          }
+        }
+
+        if (popularityScore >= 40) {
+          timers.youtubeStart = Date.now();
+          try {
+            await this.globalLimiter.take('steam:youtube', {
+              minDelayMs: 80,
+              jitterMs: 40,
+            });
+            const trailerResult = await this.youtubeService.findOfficialTrailer(
+              app.name,
+            );
+            const picked = trailerResult?.picked;
+            if (picked?.url) {
+              youtubeVideoUrl = picked.url;
+            }
+            timers.youtubeDuration = Date.now() - timers.youtubeStart;
+            this.logger.debug(
+              `${prefix}⏱️ YouTube ${(timers.youtubeDuration / 1000).toFixed(2)}초`,
+            );
+          } catch (error) {
+            timers.youtubeDuration = Date.now() - timers.youtubeStart;
+            this.logger.warn(
+              `${prefix}⚠️ YouTube 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error?.message ?? error}`,
+            );
+          }
+        } else {
+          this.logger.debug(
+            `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
+          );
+        }
+      }
+
+      const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
+      let parentSteamId: number | undefined;
+      if (steamDetails.fullgame.appid) {
+        const appidRaw = steamDetails.fullgame.appid;
+        const appidNum =
+          typeof appidRaw === 'string' ? Number(appidRaw) : appidRaw;
+        parentSteamId = !Number.isNaN(appidNum) ? appidNum : undefined;
+      }
+
+      const isDlc = isDlcType && !!parentSteamId;
+      const gameType = isDlc ? GameType.DLC : GameType.GAME;
+      if (isDlcType && !parentSteamId) {
+        this.logger.warn(
+          `${prefix}⚠️ [DLC 부모 없음] ${app.name} - 본편으로 저장`,
+        );
+      }
+
+      const childDlcSteamIds = !isDlc
+        ? ((steamDetails as any).dlc as number[]) || undefined
+        : undefined;
+
+      if (isDlc) {
+        this.logger.debug(
+          `${prefix}🎯 [DLC 감지] ${app.name} → 부모 Steam ID: ${parentSteamId}`,
+        );
+      } else if (childDlcSteamIds && childDlcSteamIds.length > 0) {
+        this.logger.debug(
+          `${prefix}📦 [본편] ${app.name} → DLC ${childDlcSteamIds.length}개 발견`,
+        );
+      }
+
+      const parsed = parseSteamRelease(steamDetails?.release_date);
+
+      const releaseDate = parsed.releaseDate;
+      const releaseDateRaw = parsed.releaseDateRaw;
+      const releaseStatus = parsed.releaseStatus as ReleaseStatus;
+
+      const processedGame: ProcessedGameData = {
+        name: app.name,
+        slug,
+        steamId: app.appid,
+        rawgId: undefined,
+        gameType,
+        parentSteamId,
+        parentRawgId: undefined,
+        parentReferenceType: undefined,
+        isDlc,
+        platformType: 'pc',
+        childDlcSteamIds,
+        releaseDate,
+        releaseDateRaw,
+        releaseStatus,
+        comingSoon: steamDetails.coming_soon,
+        popularityScore,
+        followersCache: followers ?? undefined,
+        platformsSummary: ['pc'],
+        companies: [
+          ...(steamDetails.developers || []).map((dev: any) => ({
+            name: typeof dev === 'string' ? dev : dev?.name || 'Unknown',
+            role: CompanyRole.DEVELOPER,
+          })),
+          ...(steamDetails.publishers || []).map((pub: any) => ({
+            name: typeof pub === 'string' ? pub : pub?.name || 'Unknown',
+            role: CompanyRole.PUBLISHER,
+          })),
+        ],
+        details:
+          hasKorean && popularityScore >= 40
+            ? {
+                screenshots:
+                  (steamDetails.screenshots as any[])?.slice(0, 5) || [],
+                videoUrl:
+                  youtubeVideoUrl ||
+                  (steamDetails.movies as any[])?.[0]?.mp4?.max,
+                description:
+                  (steamDetails.detailed_description as string) || undefined,
+                website: (steamDetails.website as string) || undefined,
+                genres: (steamDetails.genres as any[]) || [],
+                tags: steamDetails.categories || null,
+                supportLanguages: steamDetails.supported_languages || [],
+                metacriticScore: steamDetails.metacritic || null,
+                platformType: 'pc',
+                totalReviews,
+                reviewScoreDesc,
+                steamReviewDesc: reviewScoreDesc,
+              }
+            : undefined,
+        releases:
+          hasKorean && popularityScore >= 40
+            ? [
+                {
+                  platform: Platform.PC,
+                  store: Store.STEAM,
+                  storeAppId: app.appid.toString(),
+                  storeUrl: `https://store.steampowered.com/app/${app.appid}`,
+                  releaseDateDate: releaseDate,
+                  releaseDateRaw,
+                  releaseStatus,
+                  comingSoon: steamDetails.coming_soon,
+                  currentPriceCents: (steamDetails.price_overview as any)?.initial,
+                  isFree: Boolean(steamDetails.is_free),
+                  followers,
+                  reviewsTotal: totalReviews || undefined,
+                  reviewScoreDesc: reviewScoreDesc || undefined,
+                  dataSource: 'steam',
+                },
+              ]
+            : [],
+      };
+      return processedGame;
+    } catch (error: any) {
+      if (error instanceof RateLimitExceededError) {
+        throw error;
+      }
+      this.logger.error(
+        `❌ ${prefix}게임 데이터 빌드 실패 - ${app.name}: ${error?.message ?? error}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * AppList 체크섬 계산 (변경 감지용)
@@ -132,22 +363,23 @@ export class SteamDataPipelineService {
     this.logger.log(
       `🚀 [Steam Pipeline] 데이터 수집 시작 - mode: ${options.mode}, limit: ${options.limit}, strategy: ${options.strategy || 'latest'}`,
     );
-
-    const processedData: ProcessedGameData[] = [];
-
     try {
       // ① AppList 캐싱 사용 (Phase 3 선행 구현)
       const allApps = await this.getOrCacheAppList();
       this.logger.log(`📥 [Steam Pipeline] AppList 조회: ${allApps.length}개`);
 
+      const appIndex = new Map<number, SteamApp>();
+      allApps.forEach((app) => appIndex.set(app.appid, app));
+
       // ② 전략별 후보군 선정 (리뷰 반영 개선)
       let selectedApps: SteamApp[] = [];
+      let existingGames: ExistingGamesMap | undefined;
 
       if (options.mode === 'operational' && options.strategy === 'priority') {
         // priority 전략 (DB 조회 필요)
         this.logger.log('[Steam Pipeline] 전략: priority (복합 우선순위)');
-        const appIds = allApps.map((app) => app.appid);
-        const existingGames = await this.loadExistingGamesMap(appIds);
+        const bucketSizes = this.computePriorityBucketSizes(options.limit);
+        existingGames = await this.loadExistingGamesMap(bucketSizes, appIndex);
         this.logger.log(
           `📊 [Steam Pipeline] 기존 게임 정보 로드: ${existingGames.size}개`,
         );
@@ -172,43 +404,61 @@ export class SteamDataPipelineService {
         `🎯 [Steam Pipeline] 후보 게임 선별: ${selectedApps.length}개`,
       );
 
+      this.logger.log(
+        `⚙️ [Steam Pipeline] 처리 동시성: ${this.processingConcurrency}개 워커`,
+      );
+
+      if (selectedApps.length === 0) {
+        this.logger.warn('⚠️ [Steam Pipeline] 처리할 후보가 없습니다.');
+        return [];
+      }
+
       // ③ 각 게임의 상세정보 + 팔로워 + 인기도 계산
       this.logger.log(
         `🔄 [Steam Pipeline] 게임 데이터 가공 시작 (총 ${selectedApps.length}개)`,
       );
+      const total = selectedApps.length;
+      const results = await runWithConcurrency(
+        selectedApps,
+        this.processingConcurrency,
+        async (app, index) => {
+          const prefix = `[${index + 1}/${total}]`;
+          const start = Date.now();
 
-      for (let i = 0; i < selectedApps.length; i++) {
-        const app = selectedApps[i];
-        const startTime = Date.now();
-
-        try {
-          this.logger.log(
-            `[${i + 1}/${selectedApps.length}] 처리 중: ${app.name} (AppID: ${app.appid})`,
-          );
-
-          const gameData = await this.buildProcessedGameDataFromApp(app);
-
-          const duration = Date.now() - startTime;
-          const durationSeconds = (duration / 1000).toFixed(2);
-
-          if (gameData) {
-            processedData.push(gameData);
-            this.logger.log(
-              `✅ [${i + 1}/${selectedApps.length}] 완료: ${app.name} (${durationSeconds}초)`,
+          try {
+            this.logger.debug(
+              `${prefix} 처리 시작: ${app.name} (AppID: ${app.appid})`,
             );
-          } else {
+            const gameData = await this.buildProcessedGameDataFromApp(app, {
+              index,
+              total,
+            });
+            const durationMs = Date.now() - start;
+
+            if (gameData) {
+              this.logger.debug(
+                `${prefix} 완료: ${app.name} (${durationMs}ms)`,
+              );
+              return gameData;
+            }
+
             this.logger.warn(
-              `⚠️ [${i + 1}/${selectedApps.length}] 스킵: ${app.name} (${durationSeconds}초)`,
+              `${prefix} 스킵: ${app.name} (${durationMs}ms)`,
             );
+            return null;
+          } catch (error) {
+            const durationMs = Date.now() - start;
+            this.logger.error(
+              `${prefix} 실패: ${app.name} (${durationMs}ms) - ${error.message}`,
+            );
+            return null;
           }
-        } catch (error) {
-          const duration = Date.now() - startTime;
-          const durationSeconds = (duration / 1000).toFixed(2);
-          this.logger.error(
-            `❌ [${i + 1}/${selectedApps.length}] 실패: ${app.name} (${durationSeconds}초) - ${error.message}`,
-          );
-        }
-      }
+        },
+      );
+
+      const processedData = results.filter(
+        (result): result is ProcessedGameData => result !== null,
+      );
 
       this.logger.log(
         `✨ [Steam Pipeline] 데이터 가공 완료: ${processedData.length}/${selectedApps.length}개`,
@@ -248,9 +498,8 @@ export class SteamDataPipelineService {
     }
 
     // Operational 모드: 복합 우선순위 (40% 최신 / 20% 출시 임박 / 40% 인기)
-    const nLatest = Math.floor(options.limit * 0.4);
-    const nSoon = Math.floor(options.limit * 0.2);
-    const nPop = Math.floor(options.limit * 0.4);
+    const { latest: nLatest, soon: nSoon, popular: nPop } =
+      this.computePriorityBucketSizes(options.limit);
 
     // 40% 최신 (AppID 내림차순)
     const latestApps = filtered
@@ -305,6 +554,23 @@ export class SteamDataPipelineService {
     return Array.from(merged.values()).slice(0, options.limit);
   }
 
+  private computePriorityBucketSizes(limit: number): {
+    latest: number;
+    soon: number;
+    popular: number;
+  } {
+    const safeLimit = Math.max(1, limit);
+    const latest = Math.floor(safeLimit * 0.4);
+    const soon = Math.floor(safeLimit * 0.2);
+    const popular = Math.floor(safeLimit * 0.4);
+    const remainder = safeLimit - (latest + soon + popular);
+    return {
+      latest: latest + remainder,
+      soon,
+      popular,
+    };
+  }
+
   /**
    * 기존 게임 정보 로드 (Operational 모드 전용)
    * TECHNICAL-DESIGN.md Section 5.1 구현
@@ -313,32 +579,72 @@ export class SteamDataPipelineService {
    * @returns 기존 게임 정보 맵
    */
   private async loadExistingGamesMap(
-    appIds: number[],
+    bucketSizes: { latest: number; soon: number; popular: number },
+    appIndex: Map<number, SteamApp>,
   ): Promise<ExistingGamesMap> {
-    const games = await this.gameRepository
-      .createQueryBuilder('g')
-      .select([
-        'g.steam_id',
-        'g.coming_soon',
-        'g.release_date_date',
-        'g.followers_cache',
-        'g.popularity_score',
-      ])
-      .where('g.steam_id IN (:...appIds)', { appIds })
-      .getMany();
+    const buffer = Math.max(50, Number(process.env.STEAM_EXISTING_BUFFER ?? '150'));
+    const selectColumns: (keyof Game)[] = [
+      'steam_id',
+      'coming_soon',
+      'release_date_date',
+      'followers_cache',
+      'popularity_score',
+    ];
 
-    const map = new Map();
-    games.forEach((game) => {
-      if (game.steam_id) {
-        map.set(game.steam_id, {
-          steam_id: game.steam_id,
-          coming_soon: game.coming_soon,
-          release_date_date: game.release_date_date,
-          followers_cache: Math.round(Number(game.followers_cache)),
-          popularity_score: game.popularity_score,
-        });
+    const attach = (game: Game, map: ExistingGamesMap): void => {
+      if (!game.steam_id) return;
+      if (!appIndex.has(game.steam_id)) return;
+
+      map.set(game.steam_id, {
+        steam_id: game.steam_id,
+        coming_soon: game.coming_soon,
+        release_date_date: game.release_date_date ?? undefined,
+        followers_cache: Math.round(Number(game.followers_cache ?? 0)),
+        popularity_score: game.popularity_score,
+      });
+    };
+
+    const map: ExistingGamesMap = new Map<
+      number,
+      {
+        steam_id: number;
+        coming_soon?: boolean | null;
+        release_date_date?: Date | null;
+        followers_cache?: number | null;
+        popularity_score?: number | null;
       }
-    });
+    >();
+
+    const latestRows = await this.gameRepository
+      .createQueryBuilder('g')
+      .select(selectColumns.map((col) => `g.${String(col)}`))
+      .where('g.steam_id IS NOT NULL')
+      .orderBy('g.steam_id', 'DESC')
+      .limit(bucketSizes.latest + buffer)
+      .getMany();
+    latestRows.forEach((row) => attach(row, map));
+
+    const comingSoonRows = await this.gameRepository
+      .createQueryBuilder('g')
+      .select(selectColumns.map((col) => `g.${String(col)}`))
+      .where('g.steam_id IS NOT NULL')
+      .andWhere('g.coming_soon = :comingSoon', { comingSoon: true })
+      .orderBy('g.release_date_date', 'ASC')
+      .limit(bucketSizes.soon + buffer)
+      .getMany();
+    comingSoonRows.forEach((row) => attach(row, map));
+
+    const popularRows = await this.gameRepository
+      .createQueryBuilder('g')
+      .select(selectColumns.map((col) => `g.${String(col)}`))
+      .where('g.steam_id IS NOT NULL')
+      .andWhere('COALESCE(g.followers_cache, 0) > :threshold', {
+        threshold: Number(process.env.STEAM_POPULAR_FOLLOWERS_THRESHOLD ?? '1000'),
+      })
+      .orderBy('g.followers_cache', 'DESC')
+      .limit(bucketSizes.popular + buffer)
+      .getMany();
+    popularRows.forEach((row) => attach(row, map));
 
     return map;
   }
@@ -350,241 +656,6 @@ export class SteamDataPipelineService {
    * @param app Steam 앱 정보
    * @returns 가공된 게임 데이터
    */
-  private async buildProcessedGameDataFromApp(
-    app: SteamApp,
-  ): Promise<ProcessedGameData | null> {
-    try {
-      const timers: { [key: string]: number } = {};
-
-      // Steam AppDetails 호출
-      timers.appDetailsStart = Date.now();
-      const steamDetails = await this.steamAppDetailsService.fetchAppDetails(
-        app.appid,
-      );
-      timers.appDetailsDuration = Date.now() - timers.appDetailsStart;
-      this.logger.debug(
-        `  ⏱️  AppDetails: ${(timers.appDetailsDuration / 1000).toFixed(2)}초`,
-      );
-
-      if (!steamDetails) {
-        this.logger.debug(`  ⚠️  Steam AppDetails 없음: ${app.name}`);
-        return null;
-      }
-      // 슬러그 생성
-      const slug = this.generateSlug(app.name);
-      // 팔로워 정보 수집 (스크레이핑)
-
-      // 인기도 점수 계산 (PopularityCalculator 사용)
-
-      timers.followersStart = Date.now();
-      const followers = await this.steamCommunityService.scrapeFollowers(
-        app.appid,
-        app.name,
-      );
-      timers.followersDuration = Date.now() - timers.followersStart;
-      this.logger.debug(
-        `  ⏱️  Followers 스크레이핑: ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
-      );
-
-      let totalReviews: number = 0;
-      let reviewScoreDesc: string = '';
-      let youtubeVideoUrl: string | undefined;
-      let popularityScore = PopularityCalculator.calculateSteamPopularity(
-        followers || 0,
-      );
-
-      const hasKorean =
-        Array.isArray(steamDetails.supported_languages) &&
-        steamDetails.supported_languages.includes('한국어');
-
-      // if (hasKorean || popularityScore >= 80) {
-      //   if (hasKorean) {
-      //   } else {
-      //     this.logger.debug('  ✅ 한국어 없음 — 인기도 예외 적용(>=80)');
-      //   }
-      this.logger.debug(`  📊 인기도 점수: ${popularityScore}점`);
-
-      if (popularityScore >= 40) {
-        try {
-          const result = await this.steamReviewService.fetchAppReview(
-            app.appid,
-          );
-
-          totalReviews = result?.total_reviews || 0;
-          reviewScoreDesc = result?.review_score_desc || '';
-        } catch (error) {
-          this.logger.warn(`  ⚠️  review 실패 ( ${error.message}`);
-        }
-      }
-
-      // YouTube 트레일러 조회 (Phase 4: 인기도 40점 이상만)
-      if (popularityScore >= 40) {
-        timers.youtubeStart = Date.now();
-        try {
-          const trailerResult = await this.youtubeService.findOfficialTrailer(
-            app.name,
-          );
-          const picked = trailerResult?.picked;
-
-          if (picked?.url) {
-            youtubeVideoUrl = picked.url; // 이미 완성 URL 있음
-            timers.youtubeDuration = Date.now() - timers.youtubeStart;
-            this.logger.debug(
-              `  ⏱️  YouTube 트레일러: ${(app.name, (timers.youtubeDuration / 1000).toFixed(2))}초 - ${youtubeVideoUrl}`,
-            );
-          }
-        } catch (error) {
-          timers.youtubeDuration = Date.now() - timers.youtubeStart;
-          this.logger.warn(
-            `  ⚠️  YouTube 조회 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error.message}`,
-          );
-        }
-      } else {
-        this.logger.debug(
-          `  ⏭️  YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
-        );
-      }
-      // } else {
-      //   // ⭐ 스킵 시에도 return/continue 없이 로그만
-      //   this.logger.debug(
-      //     `  ⏭️ 한국어 미지원 → 스킵 (인기도 ${popularityScore}점  80점 이하)`,
-      //   );
-      // }
-      // ===== Phase 5.5: DLC 감지 및 부모 정보 추출 =====
-      const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
-
-      // ⚠️ fullgame.appid는 문자열로 올 수 있음 (예: "4013450") → 숫자로 변환 필요
-      let parentSteamId: number | undefined;
-      if (steamDetails.fullgame.appid) {
-        const appidRaw = steamDetails.fullgame.appid;
-        const appidNum =
-          typeof appidRaw === 'string' ? Number(appidRaw) : appidRaw;
-        parentSteamId = !isNaN(appidNum) ? appidNum : undefined;
-      }
-
-      // DLC인데 부모 정보가 없으면 제약 조건 위반 방지 (본편으로 저장)
-      const isDlc = isDlcType && !!parentSteamId;
-      const gameType = isDlc ? GameType.DLC : GameType.GAME;
-      if (isDlcType && !parentSteamId) {
-        this.logger.warn(
-          `  ⚠️ [DLC 부모 없음] ${app.name} - 본편으로 저장 (fullgame.appid 파싱 실패 또는 없음)`,
-        );
-      }
-
-      // 본편일 경우 DLC 리스트 추출 (백필용)
-      const childDlcSteamIds = !isDlc
-        ? ((steamDetails as any).dlc as number[]) || undefined
-        : undefined;
-
-      if (isDlc) {
-        this.logger.debug(
-          `  🎯 [DLC 감지] ${app.name} → 부모 Steam ID: ${parentSteamId}`,
-        );
-      } else if (childDlcSteamIds && childDlcSteamIds.length > 0) {
-        this.logger.debug(
-          `  📦 [본편] ${app.name} → DLC ${childDlcSteamIds.length}개 발견`,
-        );
-      }
-
-      const parsed = parseSteamRelease(steamDetails?.release_date);
-
-      const releaseDate = parsed.releaseDate; // Date | null (정확 “일”만)
-      const releaseDateRaw = parsed.releaseDateRaw; // string | null (원문)
-      const releaseStatus = parsed.releaseStatus as ReleaseStatus;
-
-      // ProcessedGameData 구조로 변환
-      const processedGame: ProcessedGameData = {
-        name: app.name,
-        slug: slug,
-        steamId: app.appid,
-        rawgId: undefined,
-        gameType: gameType,
-        parentSteamId: parentSteamId,
-        parentRawgId: undefined,
-        parentReferenceType: undefined,
-
-        // ===== Phase 5.5: DLC 메타데이터 =====
-        isDlc: isDlc,
-        platformType: 'pc',
-        childDlcSteamIds: childDlcSteamIds,
-
-        releaseDate: releaseDate,
-        releaseDateRaw: releaseDateRaw,
-        releaseStatus: releaseStatus,
-        comingSoon: steamDetails.coming_soon,
-        popularityScore: popularityScore,
-        followersCache: followers ?? undefined,
-        platformsSummary: ['pc'],
-
-        // 회사 정보 (개발사/퍼블리셔)
-        // ✅ Steam: ['ubisoft'] 문자열 배열
-        // ✅ RAWG: [{ id: 123, name: "ubisoft", slug: "..." }] 객체 배열
-        // 두 형식 모두 지원
-        companies: [
-          ...(steamDetails.developers || []).map((dev: any) => ({
-            name: typeof dev === 'string' ? dev : dev?.name || 'Unknown',
-            role: CompanyRole.DEVELOPER,
-          })),
-          ...(steamDetails.publishers || []).map((pub: any) => ({
-            name: typeof pub === 'string' ? pub : pub?.name || 'Unknown',
-            role: CompanyRole.PUBLISHER,
-          })),
-        ],
-
-        // 상세 정보 (인기도 40점 이상, B등급부터)
-        details:
-          popularityScore >= 40
-            ? {
-                screenshots:
-                  (steamDetails.screenshots as any[])?.slice(0, 5) || [],
-                videoUrl:
-                  youtubeVideoUrl ||
-                  (steamDetails.movies as any[])?.[0]?.mp4?.max, // Phase 4: YouTube 우선, fallback Steam
-                description:
-                  (steamDetails.detailed_description as string) || undefined,
-                website: (steamDetails.website as string) || undefined,
-                genres: (steamDetails.genres as any[]) || [],
-                tags: steamDetails.categories || null, // Steam에서 태그 정보는 별도 API 필요
-                supportLanguages: steamDetails.supported_languages || [],
-                metacriticScore: steamDetails.metacritic || null,
-                platformType: 'pc',
-                totalReviews: totalReviews,
-                reviewScoreDesc: reviewScoreDesc,
-              }
-            : undefined,
-
-        // 릴리스 정보
-        releases:
-          popularityScore >= 40
-            ? [
-                {
-                  platform: Platform.PC,
-                  store: Store.STEAM,
-                  storeAppId: app.appid.toString(),
-                  storeUrl: `https://store.steampowered.com/app/${app.appid}`,
-                  releaseDateDate: releaseDate,
-                  releaseDateRaw: releaseDateRaw,
-                  releaseStatus: releaseStatus,
-                  comingSoon: steamDetails.coming_soon,
-                  currentPriceCents: (steamDetails.price_overview as any)
-                    ?.initial,
-                  isFree: (steamDetails.is_free as boolean) || false,
-                  followers: followers,
-                  reviewsTotal: undefined,
-                  reviewScoreDesc: undefined,
-                  dataSource: 'steam',
-                },
-              ]
-            : [],
-      };
-      return processedGame;
-    } catch (error) {
-      this.logger.error(
-        `❌ [Steam Pipeline] 게임 데이터 빌드 실패 - ${app.name}: ${error.message}`,
-      );
-      return null;
-    }
-  }
 
   /**
    * 증분 업데이트용 동기화 상태 조회
@@ -723,53 +794,60 @@ export class SteamDataPipelineService {
     );
 
     // 3. 배치 데이터 수집
-    const processedData: ProcessedGameData[] = [];
+    const total = batchApps.length;
+    const results = await runWithConcurrency(
+      batchApps,
+      this.processingConcurrency,
+      async (app, index) => {
+        const globalIndex = batch.startIndex + index;
+        const prefix = `[${globalIndex + 1}/150,000]`;
+        const startedAt = Date.now();
 
-    for (let i = 0; i < batchApps.length; i++) {
-      const app = batchApps[i];
-      const globalIndex = batch.startIndex + i;
-      const startTime = Date.now();
-
-      try {
-        this.logger.log(
-          `[${globalIndex + 1}/150,000] 처리 중: ${app.name} (AppID: ${app.appid})`,
-        );
-
-        const gameData = await this.buildProcessedGameDataFromApp(app);
-
-        const duration = Date.now() - startTime;
-        const durationSeconds = (duration / 1000).toFixed(2);
-
-        if (gameData) {
-          processedData.push(gameData);
+        try {
           this.logger.log(
-            `✅ [${globalIndex + 1}/150,000] 완료: ${app.name} (${durationSeconds}초)`,
+            `${prefix} 처리 중: ${app.name} (AppID: ${app.appid})`,
           );
-        } else {
+
+          const gameData = await this.buildProcessedGameDataFromApp(app, {
+            index: globalIndex,
+            total: 150000,
+          });
+
+          const durationMs = Date.now() - startedAt;
+          if (gameData) {
+            this.logger.log(
+              `✅ ${prefix} 완료: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
+            );
+            return gameData;
+          }
+
           this.logger.warn(
-            `⚠️ [${globalIndex + 1}/150,000] 스킵: ${app.name} (${durationSeconds}초)`,
+            `⚠️ ${prefix} 스킵: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
           );
+          return null;
+        } catch (error: any) {
+          const durationMs = Date.now() - startedAt;
+          this.logger.error(
+            `❌ ${prefix} 실패: ${app.name} (${(durationMs / 1000).toFixed(2)}초) - ${
+              error?.message ?? error
+            }`,
+          );
+          return null;
         }
-      } catch (error) {
-        const duration = Date.now() - startTime;
-        const durationSeconds = (duration / 1000).toFixed(2);
-        this.logger.error(
-          `❌ [${globalIndex + 1}/150,000] 실패: ${app.name} (${durationSeconds}초) - ${error.message}`,
-        );
-      }
+      },
+    );
 
-      // 진행 상황 로그 (매 100개마다)
-      if ((i + 1) % 100 === 0) {
-        const progress = ((batch.startIndex + i + 1) / 150000) * 100;
-        this.logger.log(
-          `📊 [Batch Strategy] 전체 진행률: ${batch.startIndex + i + 1}/150,000 (${progress.toFixed(2)}%)`,
-        );
-      }
-    }
+    const processedData = results.filter(
+      (item): item is ProcessedGameData => item !== null,
+    );
 
-    // ✅ 배치 진행 상태 업데이트는 Controller에서 저장 성공 후 수행 (저장 실패분 제외)
+    const progress = ((batch.startIndex + total) / 150000) * 100;
     this.logger.log(
-      `✨ [Batch Strategy] 배치 수집 완료: ${processedData.length}/${batch.batchSize}개`,
+      `📊 [Batch Strategy] 전체 진행률: ${batch.startIndex + total}/150,000 (${progress.toFixed(2)}%)`,
+    );
+
+    this.logger.log(
+      `✨ [Batch Strategy] 배치 수집 완료: ${processedData.length}/${total}개`,
     );
 
     return processedData;
@@ -810,6 +888,7 @@ export class SteamDataPipelineService {
       .substring(0, 100); // 길이 제한
   }
 }
+
 // ✅ 지원 포맷
 // - "19 Aug, 2024", "Aug 19, 2024", "19 Aug 2024"
 // - "2013년 7월 9일"

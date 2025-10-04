@@ -59,6 +59,9 @@ export class GameDetail {
   @Column({ type: 'integer', nullable: true })
   opencritic_score: number | null; // 오픈크리틱 점수
 
+  @Column({ type: 'text', nullable: true })
+  steam_review_desc: string | null; // Steam 리뷰 요약 설명
+
   // ===== Steam 통계 (AppDetails + AppReviews API) =====
   // ⚠️ steam_followers는 game_releases.followers로 통합 (단일 소스 원칙)
 
@@ -77,6 +80,9 @@ export class GameDetail {
   // ===== 플랫폼 타입 요약 (캐시) =====
   @Column({ type: 'text', nullable: true })
   platform_type: string | null; // 'pc' | 'console' | 'mixed'
+
+  @Column({ type: 'text', default: '' })
+  search_text: string; // PGroonga 검색용 텍스트 캐시
 
   // ===== 타임스탬프 =====
   @CreateDateColumn({ type: 'timestamptz' })

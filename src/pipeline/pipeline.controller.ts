@@ -1,4 +1,5 @@
-import {
+﻿import {
+  Body,
   Controller,
   Post,
   Query,
@@ -6,9 +7,19 @@ import {
   ValidationPipe,
   UsePipes,
 } from '@nestjs/common';
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { setTimeout as sleep } from 'timers/promises';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager, ILike } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  EntityManager,
+  ILike,
+  QueryFailedError,
+  FindOptionsWhere,
+} from 'typeorm';
 
 import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
@@ -32,6 +43,23 @@ import {
 } from './types/pipeline.types';
 
 import { ManualPipelineDto } from './dto/manual-pipeline.dto';
+import { SegmentedBatchDto } from './dto/segmented-batch.dto';
+import { RateLimitExceededError } from '../common/concurrency/rate-limit-monitor';
+import { buildSearchText } from './utils/search-text.util';
+
+type SaveMetricsSummary = {
+  totalItems: number;
+  successRate: number;
+  avgLatencyMs: number;
+  p95LatencyMs: number;
+  created: number;
+  updated: number;
+  failed: number;
+  retries: Record<string, number>;
+  failureReasons: { code: string; count: number }[];
+  concurrency: number;
+  maxAttempts: number;
+};
 
 /**
  * Pipeline Controller
@@ -268,86 +296,434 @@ export class PipelineController {
     }
   }
 
+  @Post('batch/segmented')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async executeSegmentedBatch(
+    @Body() params: SegmentedBatchDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const totalLimit = Math.min(params.totalLimit ?? 150_000, 150_000);
+    const chunkSize = Math.max(1, Math.min(params.chunkSize ?? 3_000, 10_000));
+    const pauseMs = (params.pauseSeconds ?? 0) * 1000;
+
+    const pipelineRun = await this.createPipelineRun('manual', 'steam');
+    const startedAt = Date.now();
+
+    let attempted = 0;
+    let created = 0;
+    let updated = 0;
+    let failed = 0;
+
+    try {
+      while (attempted < totalLimit) {
+        const remaining = totalLimit - attempted;
+        const requestSize = Math.min(chunkSize, remaining);
+
+        const batchData = await this.steamDataPipeline.collectBatchData(
+          requestSize,
+        );
+
+        if (!batchData.length) {
+          this.logger.log(
+            `⏹️ [세그먼트 배치] 추가로 수집할 데이터가 없어 종료합니다. (${attempted}/${totalLimit})`,
+          );
+          break;
+        }
+
+        this.logger.log(
+          `📦 [세그먼트 배치] ${batchData.length}건 수집, 저장 시작 (${attempted + batchData.length}/${totalLimit})`,
+        );
+
+        const result = await this.saveIntegratedData(batchData, pipelineRun.id);
+
+        created += result.created;
+        updated += result.updated;
+        failed += result.failed;
+        attempted += batchData.length;
+
+        await this.steamBatchStrategy.updateBatchProgress(batchData.length);
+
+        if (pauseMs > 0 && attempted < totalLimit) {
+          this.logger.log(
+            `⏳ [세그먼트 배치] 다음 세그먼트 전 ${pauseMs}ms 대기`,
+          );
+          await sleep(pauseMs);
+        }
+      }
+
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'completed',
+        undefined,
+        attempted,
+        created + updated,
+        failed,
+      );
+
+      return {
+        statusCode: 200,
+        message: '세그먼트 배치 실행 완료',
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'steam',
+          totalProcessed: attempted,
+          finishedAt: new Date(),
+        },
+      };
+    } catch (error) {
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+
+      if (error instanceof RateLimitExceededError) {
+        const message =
+          'Steam AppDetails 레이트 리밋에 도달했습니다. 잠시 후 다시 시도해주세요.';
+        this.logger.error(
+          `❌ [세그먼트 배치] Rate Limit 초과로 중단 (${durationSeconds}초)`,
+        );
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'failed',
+          message,
+          attempted,
+          created + updated,
+          failed,
+        );
+        return {
+          statusCode: 429,
+          message,
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'steam',
+            totalProcessed: attempted,
+            finishedAt: new Date(),
+          },
+        };
+      }
+
+      this.logger.error(
+        `❌ [세그먼트 배치] 실패: ${(error as Error).message}`,
+      );
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'failed',
+        (error as Error).message,
+        attempted,
+        created + updated,
+        failed,
+      );
+      throw error;
+    }
+  }
+
   /**
    * POST + PATCH 자동 판별 저장
    * 각 게임은 독립적인 트랜잭션으로 처리
    */
+
   private async saveIntegratedData(
     data: ProcessedGameData[],
     pipelineRunId: number,
   ): Promise<{ created: number; updated: number; failed: number }> {
+    const concurrency = Math.max(
+      1,
+      Number(process.env.PIPELINE_SAVE_CONCURRENCY ?? '5'),
+    );
+    const maxAttempts = Math.max(
+      1,
+      Number(process.env.PIPELINE_SAVE_MAX_ATTEMPTS ?? '3'),
+    );
+    const retryBaseDelay = Math.max(
+      100,
+      Number(process.env.PIPELINE_SAVE_RETRY_BASE_MS ?? '320'),
+    );
+    const retryMaxDelay = Math.max(
+      retryBaseDelay,
+      Number(process.env.PIPELINE_SAVE_RETRY_MAX_MS ?? '1280'),
+    );
+    const retryJitter = Math.max(
+      0,
+      Number(process.env.PIPELINE_SAVE_RETRY_JITTER_MS ?? '96'),
+    );
+
+    type QueueItem = {
+      index: number;
+      data: ProcessedGameData;
+      attempt: number;
+    };
+
+    const queue: QueueItem[] = data.map((gameData, index) => ({
+      index,
+      data: gameData,
+      attempt: 1,
+    }));
+
     let createdCount = 0;
     let updatedCount = 0;
     let failedCount = 0;
+    let processedCount = 0;
+
     const totalCount = data.length;
-
-    // 진행 상황 로그 주기 (매 10개마다 또는 전체의 10%마다)
     const logInterval = Math.max(10, Math.floor(totalCount * 0.1));
-    for (let i = 0; i < data.length; i++) {
-      const gameData = data[i];
-      try {
-        // 각 게임은 독립적인 트랜잭션으로 처리
-        await this.dataSource.transaction(async (manager) => {
-          const existingGame = await this.findExistingGame(gameData, manager);
 
-          if (existingGame) {
-            // PATCH: 기존 게임 업데이트
-            await this.updateGame(existingGame.id, gameData, manager);
-            await this.createPipelineItem(
-              pipelineRunId,
-              'game',
-              existingGame.id,
-              'updated',
-              manager,
-            );
-            updatedCount++;
-          } else {
-            // POST: 신규 게임 생성
-            const newGame = await this.createGame(gameData, manager);
-            for (const [k, v] of Object.entries(newGame)) {
-              if (typeof v === 'number' && Number.isNaN(v)) {
-                console.error(
-                  `❌ ${k} is NaN`,
-                  gameData[k as keyof typeof gameData],
-                );
-              }
-            }
-            await this.createPipelineItem(
-              pipelineRunId,
-              'game',
-              newGame.id,
-              'created',
-              manager,
-            );
-            createdCount++;
-          }
-        });
-      } catch (error) {
-        this.logger.error(
-          `❌ [통합 저장] 게임 저장 실패 (${gameData.name}): ${error.message} ${gameData.details}, `,
-        );
-        failedCount++;
-      }
+    const latencies: number[] = [];
+    const retryHistogram = new Map<number, number>();
+    const failureReasons = new Map<string, number>();
 
-      // 진행 상황 로그 (주기적으로 출력)
-      if ((i + 1) % logInterval === 0 || i + 1 === totalCount) {
-        const processed = i + 1;
-        const percentage = ((processed / totalCount) * 100).toFixed(1);
+    let activeWorkers = 0;
+
+    const calculateBackoff = (attempt: number): number => {
+      const base = retryBaseDelay * Math.pow(2, attempt - 1);
+      const jitter = retryJitter > 0 ? Math.floor(Math.random() * retryJitter) : 0;
+      return Math.min(retryMaxDelay, base + jitter);
+    };
+
+    const emitProgress = () => {
+      if (totalCount === 0) return;
+      if (processedCount === totalCount || processedCount % logInterval === 0) {
+        const successTotal = createdCount + updatedCount;
         this.logger.log(
-          `📊 [통합 저장] 진행 중: ${processed}/${totalCount} (${percentage}%) - 생성: ${createdCount}, 업데이트: ${updatedCount}, 실패: ${failedCount}`,
+          `📊 [통합 저장] 진행 중: ${processedCount}/${totalCount} (성공: ${successTotal}, 실패: ${failedCount})`,
         );
       }
-    }
+    };
 
-    this.logger.log(
-      `✅ [통합 저장] 완료 - 생성: ${createdCount}, 업데이트: ${updatedCount}, 실패: ${failedCount}`,
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const item = queue.shift();
+        if (!item) {
+          if (queue.length === 0 && activeWorkers === 0) {
+            break;
+          }
+          await sleep(25);
+          continue;
+        }
+
+        activeWorkers++;
+        const start = Date.now();
+
+        try {
+          let operation: 'created' | 'updated' | null = null;
+          await this.dataSource.transaction(async (manager) => {
+            const existingGame = await this.findExistingGame(
+              item.data,
+              manager,
+            );
+
+            if (existingGame) {
+              await this.updateGame(existingGame.id, item.data, manager);
+              await this.createPipelineItem(
+                pipelineRunId,
+                'game',
+                existingGame.id,
+                'updated',
+                manager,
+              );
+              operation = 'updated';
+            } else {
+              const newGame = await this.createGame(item.data, manager);
+              await this.createPipelineItem(
+                pipelineRunId,
+                'game',
+                newGame.id,
+                'created',
+                manager,
+              );
+              operation = 'created';
+            }
+          });
+
+          const durationMs = Date.now() - start;
+          latencies.push(durationMs);
+          retryHistogram.set(
+            item.attempt,
+            (retryHistogram.get(item.attempt) ?? 0) + 1,
+          );
+
+          if (operation === 'created') {
+            createdCount++;
+          } else if (operation === 'updated') {
+            updatedCount++;
+          }
+
+          processedCount++;
+          emitProgress();
+        } catch (error: any) {
+          const { type, code } = this.classifySaveError(error);
+          const reasonKey =
+            code ??
+            error?.code ??
+            error?.name ??
+            (error?.message ? error.message.split(' ')[0] : 'unknown');
+          const canRetry =
+            (type === 'transient' && item.attempt < maxAttempts) ||
+            (type === 'unknown' && item.attempt < Math.min(maxAttempts, 2));
+
+          if (canRetry) {
+            const wait = calculateBackoff(item.attempt);
+            this.logger.warn(
+              `⏳ [통합 저장] 재시도 준비 (${wait}ms) - ${item.data.name} (attempt ${
+                item.attempt + 1
+              })`,
+            );
+            await sleep(wait);
+            queue.push({
+              index: item.index,
+              data: item.data,
+              attempt: item.attempt + 1,
+            });
+          } else {
+            failureReasons.set(
+              reasonKey,
+              (failureReasons.get(reasonKey) ?? 0) + 1,
+            );
+            failedCount++;
+            processedCount++;
+            retryHistogram.set(
+              item.attempt,
+              (retryHistogram.get(item.attempt) ?? 0) + 1,
+            );
+            this.logger.error(
+              `❌ [통합 저장] 게임 저장 실패 (attempt ${item.attempt}): ${
+                item.data.name
+              } - ${error?.message ?? error}`,
+            );
+            emitProgress();
+          }
+        } finally {
+          activeWorkers--;
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(concurrency, Math.max(1, totalCount)) },
+        () => worker(),
+      ),
     );
+
+    const successTotal = createdCount + updatedCount;
+    const successRate = totalCount
+      ? Number((successTotal / totalCount).toFixed(4))
+      : 0;
+    const avgLatencyMs = latencies.length
+      ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length)
+      : 0;
+    const p95LatencyMs = latencies.length
+      ? this.calculatePercentile(latencies, 0.95)
+      : 0;
+
+    const metrics: SaveMetricsSummary = {
+      totalItems: totalCount,
+      successRate,
+      avgLatencyMs,
+      p95LatencyMs,
+      created: createdCount,
+      updated: updatedCount,
+      failed: failedCount,
+      retries: Object.fromEntries(
+        Array.from(retryHistogram.entries()).sort(
+          ([a], [b]) => Number(a) - Number(b),
+        ),
+      ),
+      failureReasons: Array.from(failureReasons.entries()).map(
+        ([reason, count]) => ({ code: reason, count }),
+      ),
+      concurrency,
+      maxAttempts,
+    };
+
+    await this.persistSaveMetrics(pipelineRunId, metrics);
 
     return {
       created: createdCount,
       updated: updatedCount,
       failed: failedCount,
     };
+  }
+
+  private calculatePercentile(values: number[], percentile: number): number {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const rank = Math.min(
+      sorted.length - 1,
+      Math.max(0, Math.ceil(percentile * sorted.length) - 1),
+    );
+    return Math.round(sorted[rank]);
+  }
+
+  private classifySaveError(
+    error: unknown,
+  ): { type: 'permanent' | 'transient' | 'unknown'; code?: string } {
+    if (error instanceof QueryFailedError) {
+      const code = (error as any)?.code as string | undefined;
+      if (code && ['23505', '23502', '23514', '22P02'].includes(code)) {
+        return { type: 'permanent', code };
+      }
+      if (code && ['40001', '40P01', '57014'].includes(code)) {
+        return { type: 'transient', code };
+      }
+      return { type: 'unknown', code };
+    }
+
+    const message = (error as any)?.message ?? '';
+
+    if (/timeout|deadlock|connection/i.test(message)) {
+      return { type: 'transient' };
+    }
+
+    if (/duplicate|unique|not null|validation/i.test(message)) {
+      return { type: 'permanent' };
+    }
+
+    return { type: 'unknown' };
+  }
+
+  private async persistSaveMetrics(
+    pipelineRunId: number,
+    metrics: SaveMetricsSummary,
+  ): Promise<void> {
+    try {
+      await this.pipelineRunsRepository.update(pipelineRunId, {
+        summary_message: JSON.stringify({ saveMetrics: metrics }),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ [통합 저장] 메트릭 DB 저장 실패: ${error?.message ?? error}`,
+      );
+    }
+
+    await this.writePerformanceLog(pipelineRunId, metrics);
+  }
+
+  private async writePerformanceLog(
+    pipelineRunId: number,
+    metrics: SaveMetricsSummary,
+  ): Promise<void> {
+    try {
+      const dir = join(process.cwd(), 'logs', 'perf');
+      await fs.mkdir(dir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = join(dir, `pipeline-${pipelineRunId}-${timestamp}.json`);
+      await fs.writeFile(
+        filePath,
+        JSON.stringify(
+          {
+            pipelineRunId,
+            generatedAt: new Date().toISOString(),
+            metrics,
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ [통합 저장] 성능 로그 기록 실패: ${error?.message ?? error}`,
+      );
+    }
   }
 
   /**
@@ -367,6 +743,11 @@ export class PipelineController {
         where: { rawg_id: gameData.rawgId },
       });
     }
+    if (gameData.slug) {
+      return manager.findOne(Game, {
+        where: { slug: ILike(gameData.slug) },
+      });
+    }
     return null;
   }
 
@@ -377,6 +758,25 @@ export class PipelineController {
     gameData: ProcessedGameData,
     manager: EntityManager,
   ): Promise<Game> {
+    const whereClauses: FindOptionsWhere<Game>[] = [];
+    if (gameData.slug) {
+      whereClauses.push({ slug: gameData.slug });
+    }
+    if (gameData.steamId) {
+      whereClauses.push({ steam_id: gameData.steamId });
+    }
+    if (gameData.rawgId) {
+      whereClauses.push({ rawg_id: gameData.rawgId });
+    }
+
+    if (whereClauses.length > 0) {
+      const existing = await manager.findOne(Game, { where: whereClauses });
+      if (existing) {
+        await this.updateGame(existing.id, gameData, manager);
+        return existing;
+      }
+    }
+
     // ===== Phase 5.5: DLC 분기 처리 =====
     const isDlc = gameData.isDlc ?? false;
     // 1. games 테이블 저장
@@ -400,7 +800,30 @@ export class PipelineController {
       followers_cache: gameData.followersCache ?? null,
     });
 
-    const savedGame = await manager.save(Game, game);
+    let savedGame: Game;
+    try {
+      savedGame = await manager.save(Game, game);
+    } catch (error: any) {
+      if (error?.code === '23505') {
+        const whereClauses: FindOptionsWhere<Game>[] = [{ slug: game.slug }];
+        if (typeof game.steam_id === 'number') {
+          whereClauses.push({ steam_id: game.steam_id });
+        }
+        if (typeof gameData.rawgId === 'number') {
+          whereClauses.push({ rawg_id: gameData.rawgId });
+        }
+
+        const fallback = await manager.findOne(Game, {
+          where: whereClauses,
+        });
+
+        if (fallback) {
+          await this.updateGame(fallback.id, gameData, manager);
+          return fallback;
+        }
+      }
+      throw error;
+    }
 
     // ===== Phase 5.5: DLC는 details/releases 미생성 =====
     if (isDlc) {
@@ -410,9 +833,16 @@ export class PipelineController {
       return savedGame; // DLC는 여기서 종료
     }
 
+    const searchText = buildSearchText(gameData.name, gameData.companies);
+
     // 2. game_details 저장 (본편만, 인기도 40점 이상만)
     if (gameData.popularityScore >= 40 && gameData.details) {
-      await this.saveGameDetails(savedGame.id, gameData.details, manager);
+      await this.saveGameDetails(
+        savedGame.id,
+        gameData.details,
+        manager,
+        searchText,
+      );
     }
 
     // 3. game_releases 저장 (본편만)
@@ -443,6 +873,7 @@ export class PipelineController {
     }
 
     const isDlc = gameData.isDlc ?? existingGame.is_dlc ?? false;
+    const searchText = buildSearchText(gameData.name, gameData.companies);
 
     // ===== Phase 5.5 패치 세맨틱: 필드별 갱신 정책 =====
     const updateData: Partial<Game> = {
@@ -504,15 +935,22 @@ export class PipelineController {
             support_languages: gameData.details.supportLanguages,
             metacritic_score: gameData.details.metacriticScore ?? null,
             opencritic_score: gameData.details.opencriticScore ?? null,
+            steam_review_desc: gameData.details.steamReviewDesc ?? null,
             rawg_added: gameData.details.rawgAdded ?? null,
             total_reviews: gameData.details.totalReviews ?? null,
             review_score_desc: gameData.details.reviewScoreDesc,
             platform_type: gameData.details.platformType,
+            search_text: searchText,
             updated_at: new Date(),
           },
         );
       } else {
-        await this.saveGameDetails(gameId, gameData.details, manager);
+        await this.saveGameDetails(
+          gameId,
+          gameData.details,
+          manager,
+          searchText,
+        );
       }
     }
 
@@ -534,6 +972,7 @@ export class PipelineController {
     gameId: number,
     detailsData: GameDetailsData,
     manager: EntityManager,
+    searchText: string,
   ): Promise<void> {
     const details = manager.create(GameDetail, {
       game_id: Number(gameId),
@@ -546,10 +985,12 @@ export class PipelineController {
       support_languages: detailsData.supportLanguages,
       metacritic_score: detailsData.metacriticScore ?? null,
       opencritic_score: detailsData.opencriticScore ?? null,
+      steam_review_desc: detailsData.steamReviewDesc ?? null,
       rawg_added: detailsData.rawgAdded ?? null,
       total_reviews: detailsData.totalReviews ?? null,
       review_score_desc: detailsData.reviewScoreDesc,
       platform_type: detailsData.platformType,
+      search_text: searchText,
     });
 
     await manager.save(GameDetail, details);
@@ -564,16 +1005,14 @@ export class PipelineController {
     manager: EntityManager,
   ): Promise<void> {
     for (const releaseData of releasesData) {
-      // 중복 체크 (platform + store + region + store_app_id)
+      const storeAppId = this.normalizeStoreAppId(releaseData.storeAppId);
+      // 중복 체크 (platform + store + store_app_id)
       const where: any = {
         game_id: gameId,
         platform: releaseData.platform,
         store: releaseData.store,
+        store_app_id: storeAppId,
       };
-
-      if (releaseData.storeAppId) {
-        where.store_app_id = releaseData.storeAppId;
-      }
 
       const existingRelease = await manager.findOne(GameRelease, { where });
 
@@ -588,6 +1027,9 @@ export class PipelineController {
           current_price_cents: releaseData.currentPriceCents ?? null,
           is_free: releaseData.isFree,
           followers: releaseData.followers ?? null,
+          reviews_total: releaseData.reviewsTotal ?? null,
+          review_score_desc: releaseData.reviewScoreDesc ?? null,
+          store_app_id: storeAppId,
           updated_at: new Date(),
         });
       } else {
@@ -596,7 +1038,7 @@ export class PipelineController {
           game_id: gameId,
           platform: releaseData.platform,
           store: releaseData.store,
-          store_app_id: releaseData.storeAppId,
+          store_app_id: storeAppId,
           store_url: releaseData.storeUrl,
           release_date_date: releaseData.releaseDateDate,
           release_date_raw: releaseData.releaseDateRaw,
@@ -605,6 +1047,8 @@ export class PipelineController {
           current_price_cents: releaseData.currentPriceCents ?? null,
           is_free: releaseData.isFree,
           followers: releaseData.followers ?? null,
+          reviews_total: releaseData.reviewsTotal ?? null,
+          review_score_desc: releaseData.reviewScoreDesc ?? null,
           data_source: releaseData.dataSource,
         });
 
@@ -656,27 +1100,32 @@ export class PipelineController {
           candidateSlug = `${baseSlug}-${suffix++}`;
         }
 
-        try {
-          const created = manager.create(Company, {
+        const insertResult = await manager
+          .createQueryBuilder()
+          .insert()
+          .into(Company)
+          .values({
             name: nameTrimmed,
             slug: candidateSlug,
+          })
+          .onConflict('DO NOTHING')
+          .returning(['id', 'name', 'slug', 'created_at', 'updated_at'])
+          .execute();
+
+        if (insertResult.raw?.length) {
+          company = manager.create(Company, insertResult.raw[0]);
+        } else {
+          company = await manager.findOne(Company, {
+            where: [{ name: ILike(nameTrimmed) }, { slug: candidateSlug }],
           });
-          company = await manager.save(Company, created);
-        } catch (e: any) {
-          // 4) 동시성에 의한 유니크(name) 위반 방어 (Postgres: 23505)
-          if (e?.code === '23505') {
-            const fallback = await manager.findOne(Company, {
-              where: { name: ILike(nameTrimmed) },
-            });
-            if (fallback) {
-              company = fallback;
-            } else {
-              throw e;
-            }
-          } else {
-            throw e;
-          }
         }
+      }
+
+      if (!company) {
+        this.logger.warn(
+          `⚠️ 회사 저장 실패 - name=${nameTrimmed}, slug=${baseSlug}`,
+        );
+        continue;
       }
 
       // 5) game_company_role 중복 체크 (game_id + company_id + role)
@@ -750,14 +1199,19 @@ export class PipelineController {
     completedItems?: number,
     failedItems?: number,
   ): Promise<void> {
-    await this.pipelineRunsRepository.update(runId, {
+    const updatePayload: Partial<PipelineRun> = {
       status,
-      summary_message: message,
       total_items: totalItems,
       completed_items: completedItems,
       failed_items: failedItems,
       finished_at: new Date(),
-    });
+    };
+
+    if (typeof message !== 'undefined') {
+      updatePayload.summary_message = message;
+    }
+
+    await this.pipelineRunsRepository.update(runId, updatePayload);
   }
 
   /**
@@ -780,4 +1234,17 @@ export class PipelineController {
 
     await manager.save(PipelineItem, item);
   }
+
+  /**
+   * 스토어 앱 ID를 문자열로 정규화하여 빈 값일 때는 빈 문자열을 반환한다.
+   */
+  private normalizeStoreAppId(storeAppId?: string | number | null): string {
+    if (storeAppId === undefined || storeAppId === null) {
+      return '';
+    }
+
+    const normalized = String(storeAppId).trim();
+    return normalized || '';
+  }
+
 }

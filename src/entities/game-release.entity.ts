@@ -27,7 +27,7 @@ import { Platform, Store, ReleaseStatus } from './enums';
 @Index('ix_releases_price', ['platform', 'current_price_cents'], {
   where: 'current_price_cents IS NOT NULL',
 })
-@Unique('uq_game_platform_store_region_app', [
+@Unique('uq_game_platform_store_app', [
   'game_id',
   'platform',
   'store',
@@ -53,8 +53,8 @@ export class GameRelease {
   })
   store: Store;
 
-  @Column({ type: 'text', nullable: true })
-  store_app_id: string | null; // Steam AppID, PSN ID 등
+  @Column({ type: 'text', default: '' })
+  store_app_id: string; // Steam AppID, PSN ID 등 (미제공 시 빈 문자열)
 
   @Column({ type: 'text', nullable: true })
   store_url: string | null; // 스토어 링크
@@ -80,14 +80,18 @@ export class GameRelease {
   @Column({ type: 'integer', nullable: true })
   current_price_cents: number | null; // 센트 단위 가격
 
-
-
   @Column({ type: 'boolean', default: false })
   is_free: boolean;
 
   // ===== Steam 전용 메트릭 (PC/Steam만, 스크레이핑으로 구함) =====
   @Column({ type: 'integer', nullable: true })
   followers: number | null; // 커뮤니티 팔로워
+
+  @Column({ type: 'integer', nullable: true })
+  reviews_total: number | null; // 총 리뷰 수
+
+  @Column({ type: 'text', nullable: true })
+  review_score_desc: string | null; // 리뷰 요약 설명
 
   // ===== 데이터 소스 추적 =====
   @Column({ type: 'text' })
