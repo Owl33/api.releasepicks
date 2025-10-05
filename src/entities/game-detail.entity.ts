@@ -7,7 +7,7 @@ import {
   Index,
   CreateDateColumn,
   UpdateDateColumn,
-  Check
+  Check,
 } from 'typeorm';
 import { Game } from './game.entity';
 
@@ -65,8 +65,6 @@ export class GameDetail {
   // ===== Steam 통계 (AppDetails + AppReviews API) =====
   // ⚠️ steam_followers는 game_releases.followers로 통합 (단일 소스 원칙)
 
-
-
   // ===== RAWG 통계 =====
   @Column({ type: 'integer', nullable: true })
   rawg_added: number | null; // RAWG added 수
@@ -92,7 +90,7 @@ export class GameDetail {
   updated_at: Date;
 
   // ===== 관계 설정 =====
-  @OneToOne(() => Game, game => game.details, { onDelete: 'CASCADE' })
+  @OneToOne(() => Game, (game) => game.details, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'game_id' })
   game: Game;
 }

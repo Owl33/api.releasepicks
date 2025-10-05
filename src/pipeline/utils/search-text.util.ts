@@ -34,6 +34,8 @@ export function buildSearchText(
   }
 
   // 중복 제거 및 소문자 통일, 다중 공백 제거
-  const normalized = Array.from(new Set(tokens.map((token) => token.toLowerCase())));
+  const normalized = Array.from(
+    new Set(tokens.map((token) => token.toLowerCase())),
+  );
   return normalized.join(' ').replace(/\s+/g, ' ').trim();
 }

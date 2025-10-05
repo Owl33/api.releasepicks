@@ -59,7 +59,10 @@ class RateLimitMonitor {
 }
 
 export class RateLimitExceededError extends Error {
-  constructor(readonly key: string, message?: string) {
+  constructor(
+    readonly key: string,
+    message?: string,
+  ) {
     super(message ?? `Rate limit exceeded for ${key}`);
     this.name = 'RateLimitExceededError';
   }

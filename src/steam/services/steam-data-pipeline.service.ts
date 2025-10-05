@@ -1,6 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 
 // 엔티티
 import { Game, GameDetail, GameRelease, DataSyncStatus } from '../../entities';
@@ -24,6 +24,7 @@ import {
   SteamCollectOptions,
   PrioritySelectionOptions,
   ExistingGamesMap,
+  SteamRefreshCandidate,
 } from '../../pipeline/types/pipeline.types';
 import { SteamApp } from './steam-applist.service';
 
@@ -87,7 +88,9 @@ export class SteamDataPipelineService {
     app: SteamApp,
     context?: { index: number; total: number },
   ): Promise<ProcessedGameData | null> {
-    const prefix = context ? `[${context.index + 1}/${context.total}] ` : '';
+    const prefix = context
+      ? `[${(context.index + 1).toLocaleString()}/${context.total.toLocaleString()}] `
+      : '';
     try {
       const timers: { [key: string]: number } = {};
 
@@ -132,11 +135,10 @@ export class SteamDataPipelineService {
       const hasKorean =
         Array.isArray(steamDetails.supported_languages) &&
         steamDetails.supported_languages.includes('한국어');
+      this.logger.debug(
+        `${prefix}📊 인기도 점수: ${popularityScore}점 (한국어 지원)`,
+      );
       if (hasKorean) {
-        this.logger.debug(
-          `${prefix}📊 인기도 점수: ${popularityScore}점 (한국어 지원)`,
-        );
-
         if (popularityScore >= 40) {
           try {
             await this.globalLimiter.take('steam:reviews', {
@@ -221,7 +223,7 @@ export class SteamDataPipelineService {
 
       const releaseDate = parsed.releaseDate;
       const releaseDateRaw = parsed.releaseDateRaw;
-      const releaseStatus = parsed.releaseStatus as ReleaseStatus;
+      const releaseStatus = parsed.releaseStatus;
 
       const processedGame: ProcessedGameData = {
         name: app.name,
@@ -285,7 +287,7 @@ export class SteamDataPipelineService {
                   releaseDateRaw,
                   releaseStatus,
                   comingSoon: steamDetails.coming_soon,
-                  currentPriceCents: (steamDetails.price_overview as any)?.initial,
+                  currentPriceCents: steamDetails.price_overview?.initial,
                   isFree: Boolean(steamDetails.is_free),
                   followers,
                   reviewsTotal: totalReviews || undefined,
@@ -442,9 +444,7 @@ export class SteamDataPipelineService {
               return gameData;
             }
 
-            this.logger.warn(
-              `${prefix} 스킵: ${app.name} (${durationMs}ms)`,
-            );
+            this.logger.warn(`${prefix} 스킵: ${app.name} (${durationMs}ms)`);
             return null;
           } catch (error) {
             const durationMs = Date.now() - start;
@@ -498,8 +498,11 @@ export class SteamDataPipelineService {
     }
 
     // Operational 모드: 복합 우선순위 (40% 최신 / 20% 출시 임박 / 40% 인기)
-    const { latest: nLatest, soon: nSoon, popular: nPop } =
-      this.computePriorityBucketSizes(options.limit);
+    const {
+      latest: nLatest,
+      soon: nSoon,
+      popular: nPop,
+    } = this.computePriorityBucketSizes(options.limit);
 
     // 40% 최신 (AppID 내림차순)
     const latestApps = filtered
@@ -582,7 +585,10 @@ export class SteamDataPipelineService {
     bucketSizes: { latest: number; soon: number; popular: number },
     appIndex: Map<number, SteamApp>,
   ): Promise<ExistingGamesMap> {
-    const buffer = Math.max(50, Number(process.env.STEAM_EXISTING_BUFFER ?? '150'));
+    const buffer = Math.max(
+      50,
+      Number(process.env.STEAM_EXISTING_BUFFER ?? '150'),
+    );
     const selectColumns: (keyof Game)[] = [
       'steam_id',
       'coming_soon',
@@ -639,7 +645,9 @@ export class SteamDataPipelineService {
       .select(selectColumns.map((col) => `g.${String(col)}`))
       .where('g.steam_id IS NOT NULL')
       .andWhere('COALESCE(g.followers_cache, 0) > :threshold', {
-        threshold: Number(process.env.STEAM_POPULAR_FOLLOWERS_THRESHOLD ?? '1000'),
+        threshold: Number(
+          process.env.STEAM_POPULAR_FOLLOWERS_THRESHOLD ?? '1000',
+        ),
       })
       .orderBy('g.followers_cache', 'DESC')
       .limit(bucketSizes.popular + buffer)
@@ -769,66 +777,67 @@ export class SteamDataPipelineService {
    * @returns 이번 배치에서 수집된 게임 데이터
    */
   async collectBatchData(limit?: number): Promise<ProcessedGameData[]> {
-    // 1. 다음 배치 정보 조회
-    const batch = await this.batchStrategyService.getNextBatch();
+    // 1. AppList 조회 및 전체 길이 파악
+    const allApps = await this.getOrCacheAppList();
+    const totalApps = allApps.length;
+
+    // 2. 다음 배치 정보 조회 (AppList 길이 기반)
+    const batch = await this.batchStrategyService.getNextBatch(totalApps, limit);
 
     if (batch.isComplete) {
-      this.logger.log('🎉 [Batch Strategy] 전체 수집 완료! (150,000개)');
+      this.logger.log(
+        `🎉 [Batch Strategy] 전체 수집 완료! (${batch.totalTarget.toLocaleString()}개)`,
+      );
       return [];
     }
 
-    // ✅ 사용자 지정 limit이 있으면 배치 크기 오버라이드
-    const actualBatchSize = limit ?? batch.batchSize;
-    const actualEndIndex = batch.startIndex + actualBatchSize;
-
     this.logger.log(
-      `🚀 [Batch Strategy] 배치 수집 시작: ${batch.startIndex}-${actualEndIndex} (${actualBatchSize}개)${limit ? ' [사용자 지정]' : ' [자동]'}`,
+      `🚀 [Batch Strategy] 배치 수집 시작: ${batch.startIndex}-${batch.endIndex} (${batch.batchSize}개)${limit ? ' [사용자 지정]' : ' [자동]'}`,
     );
 
-    // 2. AppList 조회 및 슬라이싱
-    const allApps = await this.getOrCacheAppList();
-    const batchApps = allApps.slice(batch.startIndex, actualEndIndex);
+    // 3. AppList 슬라이싱
+    const batchApps = allApps.slice(batch.startIndex, batch.endIndex);
 
     this.logger.log(
       `📥 [Batch Strategy] AppList 슬라이스: ${batchApps.length}개`,
     );
 
-    // 3. 배치 데이터 수집
+    // 4. 배치 데이터 수집
     const total = batchApps.length;
+    const totalTarget = batch.totalTarget;
     const results = await runWithConcurrency(
       batchApps,
       this.processingConcurrency,
       async (app, index) => {
         const globalIndex = batch.startIndex + index;
-        const prefix = `[${globalIndex + 1}/150,000]`;
         const startedAt = Date.now();
 
         try {
           this.logger.log(
-            `${prefix} 처리 중: ${app.name} (AppID: ${app.appid})`,
+            `[${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 처리 중: ${app.name} (AppID: ${app.appid})`,
           );
 
           const gameData = await this.buildProcessedGameDataFromApp(app, {
             index: globalIndex,
-            total: 150000,
+            total: totalTarget,
           });
 
           const durationMs = Date.now() - startedAt;
           if (gameData) {
             this.logger.log(
-              `✅ ${prefix} 완료: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
+              `✅ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 완료: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
             );
             return gameData;
           }
 
           this.logger.warn(
-            `⚠️ ${prefix} 스킵: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
+            `⚠️ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 스킵: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
           );
           return null;
         } catch (error: any) {
           const durationMs = Date.now() - startedAt;
           this.logger.error(
-            `❌ ${prefix} 실패: ${app.name} (${(durationMs / 1000).toFixed(2)}초) - ${
+            `❌ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 실패: ${app.name} (${(durationMs / 1000).toFixed(2)}초) - ${
               error?.message ?? error
             }`,
           );
@@ -841,9 +850,9 @@ export class SteamDataPipelineService {
       (item): item is ProcessedGameData => item !== null,
     );
 
-    const progress = ((batch.startIndex + total) / 150000) * 100;
+    const progress = ((batch.startIndex + total) / totalTarget) * 100;
     this.logger.log(
-      `📊 [Batch Strategy] 전체 진행률: ${batch.startIndex + total}/150,000 (${progress.toFixed(2)}%)`,
+      `📊 [Batch Strategy] 전체 진행률: ${(batch.startIndex + total).toLocaleString()}/${totalTarget.toLocaleString()} (${progress.toFixed(2)}%)`,
     );
 
     this.logger.log(
@@ -851,6 +860,85 @@ export class SteamDataPipelineService {
     );
 
     return processedData;
+  }
+
+  /**
+   * 출시 윈도우(S 티어) 갱신 대상 수집 및 가공
+   */
+  async collectReleaseWindowRefreshData(limit: number): Promise<{
+    candidates: SteamRefreshCandidate[];
+    processed: ProcessedGameData[];
+  }> {
+    this.logger.log(
+      `🚀 [Steam Refresh] 출시 윈도우 갱신 시작 (limit: ${limit})`,
+    );
+
+    const games = await this.findReleaseWindowCandidates(limit);
+    if (games.length === 0) {
+      this.logger.warn('⚠️ [Steam Refresh] 조건을 만족하는 후보가 없습니다.');
+      return { candidates: [], processed: [] };
+    }
+
+    const candidates: SteamRefreshCandidate[] = games.map((game) => ({
+      gameId: Number(game.id),
+      steamId: Number(game.steam_id),
+      name: game.name,
+      slug: game.slug,
+    }));
+
+    this.logger.log(
+      `🎯 [Steam Refresh] 후보 선정 완료: ${candidates.length}개`,
+    );
+
+    const apps = candidates.map((candidate) => ({
+      appid: candidate.steamId,
+      name: candidate.name,
+    }));
+
+    const total = apps.length;
+    this.logger.log(
+      `🔄 [Steam Refresh] 후보 가공 시작 (총 ${total}개, 동시성 ${this.processingConcurrency})`,
+    );
+
+    const results = await runWithConcurrency(
+      apps,
+      this.processingConcurrency,
+      async (app, index) => {
+        const prefix = `[Refresh ${index + 1}/${total}]`;
+        const startedAt = Date.now();
+        try {
+          const processed = await this.buildProcessedGameDataFromApp(app, {
+            index,
+            total,
+          });
+          const durationMs = Date.now() - startedAt;
+          if (processed) {
+            this.logger.debug(`${prefix} 완료: ${app.name} (${durationMs}ms)`);
+            return processed;
+          }
+          this.logger.warn(`${prefix} 스킵: ${app.name} (${durationMs}ms)`);
+          return null;
+        } catch (error) {
+          const durationMs = Date.now() - startedAt;
+          this.logger.error(
+            `${prefix} 실패: ${app.name} (${durationMs}ms) - ${
+              (error as Error).message
+            }`,
+          );
+          return null;
+        }
+      },
+    );
+
+    const processed = results.filter(
+      (item): item is ProcessedGameData => item !== null,
+    );
+
+    this.logger.log(
+      `✨ [Steam Refresh] 가공 완료: ${processed.length}/${total}개`,
+    );
+
+    return { candidates, processed };
   }
 
   /**
@@ -871,6 +959,60 @@ export class SteamDataPipelineService {
    */
   async resetBatchProgress(): Promise<void> {
     await this.batchStrategyService.resetProgress();
+  }
+
+  private async findReleaseWindowCandidates(limit: number): Promise<Game[]> {
+    const now = new Date();
+    const startDate = this.formatDateString(this.addDays(now, -30));
+    const endDate = this.formatDateString(this.addDays(now, 60));
+    const refreshThreshold = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    return this.gameRepository
+      .createQueryBuilder('game')
+      .where('game.steam_id IS NOT NULL')
+      .andWhere('game.is_dlc = false')
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('game.popularity_score >= :popularity', {
+            popularity: 40,
+          }).orWhere('game.followers_cache >= :followers', { followers: 5000 });
+        }),
+      )
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('game.coming_soon = true')
+            .orWhere('game.release_status IN (:...statuses)', {
+              statuses: [ReleaseStatus.COMING_SOON, ReleaseStatus.EARLY_ACCESS],
+            })
+            .orWhere('game.release_date_date BETWEEN :startDate AND :endDate', {
+              startDate,
+              endDate,
+            });
+        }),
+      )
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('game.steam_last_refresh_at IS NULL').orWhere(
+            'game.steam_last_refresh_at <= :threshold',
+            { threshold: refreshThreshold },
+          );
+        }),
+      )
+      .orderBy('game.steam_last_refresh_at', 'ASC', 'NULLS FIRST')
+      .addOrderBy('game.release_date_date', 'ASC')
+      .addOrderBy('game.popularity_score', 'DESC')
+      .limit(limit)
+      .getMany();
+  }
+
+  private addDays(base: Date, days: number): Date {
+    const copy = new Date(base.getTime());
+    copy.setUTCDate(copy.getUTCDate() + days);
+    return copy;
+  }
+
+  private formatDateString(date: Date): string {
+    return date.toISOString().slice(0, 10);
   }
 
   /**

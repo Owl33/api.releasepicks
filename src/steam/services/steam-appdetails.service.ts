@@ -9,7 +9,7 @@ import {
   rateLimitMonitor,
   RateLimitExceededError,
 } from '../../common/concurrency/rate-limit-monitor';
-import { RollingRateLimiter } from '../../common/concurrency/rolling-rate-limiter';
+import { FixedWindowRateLimiter } from '../../common/concurrency/fixed-window-rate-limiter';
 
 /**
  * Steam AppDetails 서비스
@@ -24,7 +24,7 @@ export class SteamAppDetailsService {
   private readonly steamStoreUrl = 'https://store.steampowered.com/api';
   private readonly globalLimiter = getGlobalRateLimiter();
   private readonly spacingMs: number;
-  private readonly rollingLimiter: RollingRateLimiter;
+  private readonly rateLimiter: FixedWindowRateLimiter;
 
   constructor(
     private readonly httpService: HttpService,
@@ -37,9 +37,10 @@ export class SteamAppDetailsService {
       this.configService.get<string>('STEAM_APPDETAILS_WINDOW_MAX') ?? '200',
     );
     const windowSeconds = Number(
-      this.configService.get<string>('STEAM_APPDETAILS_WINDOW_SECONDS') ?? '310',
+      this.configService.get<string>('STEAM_APPDETAILS_WINDOW_SECONDS') ??
+        '310',
     );
-    this.rollingLimiter = new RollingRateLimiter(
+    this.rateLimiter = new FixedWindowRateLimiter(
       maxPerWindow,
       windowSeconds * 1000,
     );
@@ -123,9 +124,11 @@ export class SteamAppDetailsService {
     opts: { cc: string; lang: string },
   ): Promise<SteamAppDetails | null> {
     await rateLimitMonitor.waitIfPaused('steam:details');
-    await this.rollingLimiter.take();
+    await this.rateLimiter.take();
     if (this.spacingMs > 0) {
-      const jitter = Math.floor(Math.random() * Math.max(1, this.spacingMs / 2));
+      const jitter = Math.floor(
+        Math.random() * Math.max(1, this.spacingMs / 2),
+      );
       await sleep(this.spacingMs + jitter);
     }
     const url = `${this.steamStoreUrl}/appdetails`;
@@ -165,7 +168,10 @@ export class SteamAppDetailsService {
   }
 
   private buildRequestHeaders(lang: string) {
-    const language = lang === 'korean' ? 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7' : 'en-US,en;q=0.9';
+    const language =
+      lang === 'korean'
+        ? 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+        : 'en-US,en;q=0.9';
     return {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',

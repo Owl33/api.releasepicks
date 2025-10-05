@@ -1,4 +1,14 @@
-const SENSITIVE_KEYS = ['password','pw','token','authorization','auth','apiKey','secret','cookie','set-cookie'];
+const SENSITIVE_KEYS = [
+  'password',
+  'pw',
+  'token',
+  'authorization',
+  'auth',
+  'apiKey',
+  'secret',
+  'cookie',
+  'set-cookie',
+];
 
 export function maskSensitive(obj: any, depth = 0): any {
   if (obj == null) return obj;

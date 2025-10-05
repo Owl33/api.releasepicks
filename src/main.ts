@@ -19,15 +19,12 @@ async function bootstrap() {
   );
 
   // 전역 예외 필터: HTTP → 나머지
-  app.useGlobalFilters(
-    new HttpExceptionFilter(),
-    new AllExceptionsFilter(),
-  );
+  app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
 
   // CORS/프리픽스 등 필요 시 추가
   // app.enableCors();
   // app.setGlobalPrefix('api');
 
-  await app.listen(8080);
+  await app.listen(8081);
 }
 bootstrap();

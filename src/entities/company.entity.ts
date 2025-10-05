@@ -4,7 +4,7 @@ import {
   Column,
   OneToMany,
   CreateDateColumn,
-  UpdateDateColumn
+  UpdateDateColumn,
 } from 'typeorm';
 import { GameCompanyRole } from './game-company-role.entity';
 
@@ -33,6 +33,6 @@ export class Company {
   updated_at: Date;
 
   // ===== 관계 설정 =====
-  @OneToMany(() => GameCompanyRole, role => role.company)
+  @OneToMany(() => GameCompanyRole, (role) => role.company)
   game_roles: GameCompanyRole[];
 }

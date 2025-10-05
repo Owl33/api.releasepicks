@@ -5,7 +5,7 @@ import {
   OneToMany,
   Index,
   CreateDateColumn,
-  UpdateDateColumn
+  UpdateDateColumn,
 } from 'typeorm';
 import { PipelineItem } from './pipeline-item.entity';
 
@@ -53,6 +53,6 @@ export class PipelineRun {
   updated_at: Date;
 
   // ===== 관계 설정 =====
-  @OneToMany(() => PipelineItem, item => item.pipeline_run)
+  @OneToMany(() => PipelineItem, (item) => item.pipeline_run)
   items: PipelineItem[];
 }

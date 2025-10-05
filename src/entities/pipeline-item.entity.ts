@@ -5,7 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
-  CreateDateColumn
+  CreateDateColumn,
 } from 'typeorm';
 import { PipelineRun } from './pipeline-run.entity';
 
@@ -48,7 +48,7 @@ export class PipelineItem {
   created_at: Date;
 
   // ===== 관계 설정 =====
-  @ManyToOne(() => PipelineRun, run => run.items, { onDelete: 'CASCADE' })
+  @ManyToOne(() => PipelineRun, (run) => run.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'pipeline_run_id' })
   pipeline_run: PipelineRun;
 }

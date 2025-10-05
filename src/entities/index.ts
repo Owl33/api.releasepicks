@@ -25,7 +25,7 @@ export {
   Platform,
   Store,
   CompanyRole,
-  EnumDefinitions
+  EnumDefinitions,
 } from './enums';
 
 // ===== 엔티티 배열 (TypeORM 설정용) =====
@@ -53,5 +53,5 @@ export const entities = [
   DataSyncStatus,
   PipelineRun,
   PipelineItem,
-  SystemEvent
+  SystemEvent,
 ];

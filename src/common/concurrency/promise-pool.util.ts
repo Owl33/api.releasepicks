@@ -8,7 +8,10 @@ export async function runWithConcurrency<TInput, TResult>(
   worker: (input: TInput, index: number) => Promise<TResult>,
 ): Promise<TResult[]> {
   if (inputs.length === 0) return [];
-  const effectiveConcurrency = Math.max(1, Math.min(concurrency, inputs.length));
+  const effectiveConcurrency = Math.max(
+    1,
+    Math.min(concurrency, inputs.length),
+  );
   const results = new Array<TResult>(inputs.length);
   let cursor = 0;
 

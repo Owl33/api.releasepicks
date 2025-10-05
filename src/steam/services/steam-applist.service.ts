@@ -34,21 +34,20 @@ export class SteamAppListService {
       const response = await firstValueFrom(
         this.httpService.get(url, {
           timeout: 30000, // 30초 타임아웃 (대용량 데이터)
-        })
+        }),
       );
 
       const apps = response.data?.applist?.apps || [];
       this.logger.log(`📥 Steam AppList 수집 완료: ${apps.length}개`);
 
       // 유효한 게임만 필터링
-      const validApps = apps.filter(app => this.isValidGameApp(app));
+      const validApps = apps.filter((app) => this.isValidGameApp(app));
       this.logger.log(`✅ 유효한 게임 필터링: ${validApps.length}개`);
 
-      return validApps.map(app => ({
+      return validApps.map((app) => ({
         appid: app.appid,
         name: app.name?.trim() || '',
       }));
-
     } catch (error) {
       this.logger.error(`❌ Steam AppList 수집 실패: ${error.message}`);
       throw new Error(`Steam AppList API 호출 실패: ${error.message}`);
@@ -72,15 +71,23 @@ export class SteamAppListService {
 
     // 제외할 키워드
     const excludeKeywords = [
-      'soundtrack', 'ost', 'original sound track',
-      'wallpaper', 'screensaver',
-      'sdk', 'development kit', 'server',
-      'benchmark', 'test', 'sample',
-      'trailer', 'video'
+      'soundtrack',
+      'ost',
+      'original sound track',
+      'wallpaper',
+      'screensaver',
+      'sdk',
+      'development kit',
+      'server',
+      'benchmark',
+      'test',
+      'sample',
+      'trailer',
+      'video',
     ];
 
     // 제외 키워드 포함시 false
-    if (excludeKeywords.some(keyword => name.includes(keyword))) {
+    if (excludeKeywords.some((keyword) => name.includes(keyword))) {
       return false;
     }
 
@@ -102,7 +109,7 @@ export class SteamAppListService {
     const allApps = await this.fetchFullAppList();
 
     // sinceAppId 이후의 앱들만 반환
-    return allApps.filter(app => app.appid > sinceAppId);
+    return allApps.filter((app) => app.appid > sinceAppId);
   }
 
   /**

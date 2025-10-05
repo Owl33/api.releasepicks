@@ -4,7 +4,7 @@ import { RAWG_COLLECTION, RAWG_PLATFORM_IDS } from '../config/rawg.config';
 
 export function generateMonthRange(
   pastMonths = RAWG_COLLECTION.pastMonths,
-  futureMonths = RAWG_COLLECTION.futureMonths
+  futureMonths = RAWG_COLLECTION.futureMonths,
 ): Array<[number, number]> {
   const now = dayjs();
   const start = now.subtract(pastMonths, 'month').startOf('month');
@@ -22,10 +22,14 @@ export function generateMonthRange(
 export function buildMonthlyParams(
   year: number,
   month: number,
-  opts?: { ordering?: '-released' | '-added'; metacritic?: string }
+  opts?: { ordering?: '-released' | '-added'; metacritic?: string },
 ) {
-  const start = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).startOf('month').format('YYYY-MM-DD');
-  const end   = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).endOf('month').format('YYYY-MM-DD');
+  const start = dayjs(`${year}-${String(month).padStart(2, '0')}-01`)
+    .startOf('month')
+    .format('YYYY-MM-DD');
+  const end = dayjs(`${year}-${String(month).padStart(2, '0')}-01`)
+    .endOf('month')
+    .format('YYYY-MM-DD');
 
   const platforms = [
     ...RAWG_PLATFORM_IDS.playstation,

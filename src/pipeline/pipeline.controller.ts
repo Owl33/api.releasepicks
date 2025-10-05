@@ -10,7 +10,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { setTimeout as sleep } from 'timers/promises';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Repository,
@@ -19,6 +19,7 @@ import {
   ILike,
   QueryFailedError,
   FindOptionsWhere,
+  In,
 } from 'typeorm';
 
 import { Game } from '../entities/game.entity';
@@ -44,6 +45,7 @@ import {
 
 import { ManualPipelineDto } from './dto/manual-pipeline.dto';
 import { SegmentedBatchDto } from './dto/segmented-batch.dto';
+import { SteamRefreshDto } from './dto/steam-refresh.dto';
 import { RateLimitExceededError } from '../common/concurrency/rate-limit-monitor';
 import { buildSearchText } from './utils/search-text.util';
 
@@ -152,12 +154,13 @@ export class PipelineController {
     } catch (error) {
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
+      const err = this.normalizeError(error);
 
       this.logger.error(`❌ [자동 파이프라인] 실패 (${durationSeconds}초)`);
-      this.logger.error(`   - 오류: ${error.message}`, error.stack);
+      this.logger.error(`   - 오류: ${err.message}`, err.stack);
 
-      await this.completePipelineRun(pipelineRun.id, 'failed', error.message);
-      throw error;
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
     }
   }
 
@@ -191,14 +194,13 @@ export class PipelineController {
 
     try {
       let data: ProcessedGameData[] = [];
-      let steamCount = 0;
       let rawgCount = 0;
 
       // Steam 데이터 수집
       if (phase === 'steam' || phase === 'full') {
         this.logger.log('📥 [수동 파이프라인] Steam 데이터 수집 시작');
 
-        let steamData: any[];
+        let steamData: ProcessedGameData[];
 
         // ✅ strategy=batch: 점진적 배치 수집 (사용자 지정 limit 또는 자동 커서 전진)
         if (strategy === 'batch') {
@@ -222,7 +224,6 @@ export class PipelineController {
         }
 
         data = [...data, ...steamData];
-        steamCount = steamData.length;
       }
 
       // RAWG 데이터 수집
@@ -259,6 +260,9 @@ export class PipelineController {
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
 
+      const rawgReport =
+        rawgCount > 0 ? this.rawgDataPipeline.getLatestReport() : null;
+
       await this.completePipelineRun(
         pipelineRun.id,
         'completed',
@@ -282,17 +286,147 @@ export class PipelineController {
           phase,
           totalProcessed: data.length,
           finishedAt: new Date(),
+          rawgReport: rawgReport ?? undefined,
         },
       };
     } catch (error) {
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
+      const err = this.normalizeError(error);
 
       this.logger.error(`❌ [수동 파이프라인] 실패 (${durationSeconds}초)`);
-      this.logger.error(`   - 오류: ${error.message}`);
+      this.logger.error(`   - 오류: ${err.message}`);
 
-      await this.completePipelineRun(pipelineRun.id, 'failed', error.message);
-      throw error;
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
+    }
+  }
+
+  @Post('refresh/steam')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async executeSteamRefresh(
+    @Body() params: SteamRefreshDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const limit = params.limit ?? 40;
+    const dryRun = params.dryRun ?? false;
+    const startedAt = Date.now();
+
+    this.logger.log('🚀 [Steam Refresh] 출시 윈도우 갱신 시작');
+    this.logger.log(`   - limit: ${limit}`);
+    this.logger.log(`   - dryRun: ${dryRun}`);
+
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'steam',
+      'refresh_steam_pipeline_manual',
+    );
+
+    try {
+      const { candidates, processed } =
+        await this.steamDataPipeline.collectReleaseWindowRefreshData(limit);
+      if (dryRun) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'dry-run',
+          candidates.length,
+          0,
+          0,
+        );
+
+        return {
+          statusCode: 200,
+          message: 'Steam 출시 윈도우 갱신 드라이런 완료',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'steam',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            refreshSummary: {
+              totalCandidates: candidates.length,
+              processed: 0,
+              saved: 0,
+              failed: 0,
+              dryRun: true,
+              candidates,
+            },
+          },
+        };
+      }
+
+      let saveResult = { created: 0, updated: 0, failed: 0 };
+
+      if (processed.length > 0) {
+        this.logger.log(
+          `💾 [Steam Refresh] ${processed.length}/${candidates.length}건 저장 시작`,
+        );
+        saveResult = await this.saveIntegratedData(processed, pipelineRun.id);
+
+        const items = await this.pipelineItemsRepository.find({
+          where: {
+            pipeline_run_id: pipelineRun.id,
+            target_type: 'game',
+            status: 'success',
+          },
+        });
+
+        const candidateSet = new Set(candidates.map((item) => item.gameId));
+        const successGameIds = items
+          .map((item) => (item.target_id ? Number(item.target_id) : null))
+          .filter((id): id is number => id !== null && candidateSet.has(id));
+
+        if (successGameIds.length > 0) {
+          const now = new Date();
+          await this.gamesRepository.update(
+            { id: In(successGameIds) },
+            { steam_last_refresh_at: now },
+          );
+          this.logger.log(
+            `🕒 [Steam Refresh] steam_last_refresh_at 업데이트: ${successGameIds.length}건`,
+          );
+        }
+      } else {
+        this.logger.warn('⚠️ [Steam Refresh] 처리된 데이터가 없습니다.');
+      }
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'completed',
+        undefined,
+        candidates.length,
+        saveResult.created + saveResult.updated,
+        saveResult.failed,
+      );
+
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+
+      return {
+        statusCode: 200,
+        message: `Steam 출시 윈도우 갱신 완료 (${durationSeconds}s)`,
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'steam',
+          totalProcessed: processed.length,
+          finishedAt: new Date(),
+          refreshSummary: {
+            totalCandidates: candidates.length,
+            processed: processed.length,
+            saved: saveResult.created + saveResult.updated,
+            failed: saveResult.failed,
+            dryRun: false,
+            candidates,
+          },
+        },
+      };
+    } catch (error) {
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      const err = this.normalizeError(error);
+      this.logger.error(
+        `❌ [Steam Refresh] 실패 (${durationSeconds}s) - ${err.message}`,
+      );
+
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
     }
   }
 
@@ -318,9 +452,8 @@ export class PipelineController {
         const remaining = totalLimit - attempted;
         const requestSize = Math.min(chunkSize, remaining);
 
-        const batchData = await this.steamDataPipeline.collectBatchData(
-          requestSize,
-        );
+        const batchData =
+          await this.steamDataPipeline.collectBatchData(requestSize);
 
         if (!batchData.length) {
           this.logger.log(
@@ -352,6 +485,10 @@ export class PipelineController {
 
       const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
 
+      this.logger.log(
+        `✅ [세그먼트 배치] 완료 (${durationSeconds}s) — attempted:${attempted}, created:${created}, updated:${updated}, failed:${failed}`,
+      );
+
       await this.completePipelineRun(
         pipelineRun.id,
         'completed',
@@ -373,6 +510,7 @@ export class PipelineController {
       };
     } catch (error) {
       const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      const err = this.normalizeError(error);
 
       if (error instanceof RateLimitExceededError) {
         const message =
@@ -400,19 +538,17 @@ export class PipelineController {
         };
       }
 
-      this.logger.error(
-        `❌ [세그먼트 배치] 실패: ${(error as Error).message}`,
-      );
+      this.logger.error(`❌ [세그먼트 배치] 실패: ${err.message}`);
 
       await this.completePipelineRun(
         pipelineRun.id,
         'failed',
-        (error as Error).message,
+        err.message,
         attempted,
         created + updated,
         failed,
       );
-      throw error;
+      throw err;
     }
   }
 
@@ -474,7 +610,8 @@ export class PipelineController {
 
     const calculateBackoff = (attempt: number): number => {
       const base = retryBaseDelay * Math.pow(2, attempt - 1);
-      const jitter = retryJitter > 0 ? Math.floor(Math.random() * retryJitter) : 0;
+      const jitter =
+        retryJitter > 0 ? Math.floor(Math.random() * retryJitter) : 0;
       return Math.min(retryMaxDelay, base + jitter);
     };
 
@@ -548,13 +685,13 @@ export class PipelineController {
 
           processedCount++;
           emitProgress();
-        } catch (error: any) {
+        } catch (error) {
           const { type, code } = this.classifySaveError(error);
+          const normalized = this.normalizeError(error);
           const reasonKey =
             code ??
-            error?.code ??
-            error?.name ??
-            (error?.message ? error.message.split(' ')[0] : 'unknown');
+            normalized.name ??
+            (normalized.message ? normalized.message.split(' ')[0] : 'unknown');
           const canRetry =
             (type === 'transient' && item.attempt < maxAttempts) ||
             (type === 'unknown' && item.attempt < Math.min(maxAttempts, 2));
@@ -586,7 +723,7 @@ export class PipelineController {
             this.logger.error(
               `❌ [통합 저장] 게임 저장 실패 (attempt ${item.attempt}): ${
                 item.data.name
-              } - ${error?.message ?? error}`,
+              } - ${normalized.message}`,
             );
             emitProgress();
           }
@@ -653,11 +790,49 @@ export class PipelineController {
     return Math.round(sorted[rank]);
   }
 
-  private classifySaveError(
-    error: unknown,
-  ): { type: 'permanent' | 'transient' | 'unknown'; code?: string } {
+  private normalizeError(error: unknown): Error & { code?: string } {
+    if (error instanceof Error) {
+      return error as Error & { code?: string };
+    }
+
+    if (typeof error === 'object' && error !== null) {
+      const details = error as {
+        message?: unknown;
+        code?: unknown;
+        name?: unknown;
+      };
+      const message =
+        typeof details.message === 'string'
+          ? details.message
+          : this.stringifyUnknown(details);
+      const normalized = new Error(message) as Error & { code?: string };
+      if (typeof details.code === 'string') {
+        normalized.code = details.code;
+      }
+      if (typeof details.name === 'string') {
+        normalized.name = details.name;
+      }
+      return normalized;
+    }
+
+    return new Error(this.stringifyUnknown(error)) as Error & { code?: string };
+  }
+
+  private stringifyUnknown(value: unknown): string {
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private classifySaveError(error: unknown): {
+    type: 'permanent' | 'transient' | 'unknown';
+    code?: string;
+  } {
     if (error instanceof QueryFailedError) {
-      const code = (error as any)?.code as string | undefined;
+      const code = (error as QueryFailedError & { code?: string }).code;
       if (code && ['23505', '23502', '23514', '22P02'].includes(code)) {
         return { type: 'permanent', code };
       }
@@ -667,7 +842,7 @@ export class PipelineController {
       return { type: 'unknown', code };
     }
 
-    const message = (error as any)?.message ?? '';
+    const message = this.normalizeError(error).message;
 
     if (/timeout|deadlock|connection/i.test(message)) {
       return { type: 'transient' };
@@ -689,8 +864,10 @@ export class PipelineController {
         summary_message: JSON.stringify({ saveMetrics: metrics }),
       });
     } catch (error) {
+      const err = this.normalizeError(error);
       this.logger.warn(
-        `⚠️ [통합 저장] 메트릭 DB 저장 실패: ${error?.message ?? error}`,
+        `⚠️ [통합 저장] 메트릭 DB 저장 실패: ${err.message}`,
+        err.stack,
       );
     }
 
@@ -720,8 +897,10 @@ export class PipelineController {
         'utf-8',
       );
     } catch (error) {
+      const err = this.normalizeError(error);
       this.logger.warn(
-        `⚠️ [통합 저장] 성능 로그 기록 실패: ${error?.message ?? error}`,
+        `⚠️ [통합 저장] 성능 로그 기록 실패: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -803,8 +982,11 @@ export class PipelineController {
     let savedGame: Game;
     try {
       savedGame = await manager.save(Game, game);
-    } catch (error: any) {
-      if (error?.code === '23505') {
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        (error as QueryFailedError & { code?: string }).code === '23505'
+      ) {
         const whereClauses: FindOptionsWhere<Game>[] = [{ slug: game.slug }];
         if (typeof game.steam_id === 'number') {
           whereClauses.push({ steam_id: game.steam_id });
@@ -822,7 +1004,7 @@ export class PipelineController {
           return fallback;
         }
       }
-      throw error;
+      throw this.normalizeError(error);
     }
 
     // ===== Phase 5.5: DLC는 details/releases 미생성 =====
@@ -1007,7 +1189,7 @@ export class PipelineController {
     for (const releaseData of releasesData) {
       const storeAppId = this.normalizeStoreAppId(releaseData.storeAppId);
       // 중복 체크 (platform + store + store_app_id)
-      const where: any = {
+      const where: FindOptionsWhere<GameRelease> = {
         game_id: gameId,
         platform: releaseData.platform,
         store: releaseData.store,
@@ -1112,8 +1294,11 @@ export class PipelineController {
           .returning(['id', 'name', 'slug', 'created_at', 'updated_at'])
           .execute();
 
-        if (insertResult.raw?.length) {
-          company = manager.create(Company, insertResult.raw[0]);
+        const rawRows = Array.isArray(insertResult.raw)
+          ? (insertResult.raw as Array<Partial<Company>>)
+          : [];
+        if (rawRows.length > 0) {
+          company = manager.create(Company, rawRows[0]);
         } else {
           company = await manager.findOne(Company, {
             where: [{ name: ILike(nameTrimmed) }, { slug: candidateSlug }],
@@ -1178,9 +1363,10 @@ export class PipelineController {
   private async createPipelineRun(
     triggerType: 'automatic' | 'manual',
     phase: 'steam' | 'rawg' | 'full',
+    pipelineTypeOverride?: string,
   ): Promise<PipelineRun> {
     const run = this.pipelineRunsRepository.create({
-      pipeline_type: `${phase}_pipeline_${triggerType}`,
+      pipeline_type: pipelineTypeOverride ?? `${phase}_pipeline_${triggerType}`,
       status: 'running',
       started_at: new Date(),
     });
@@ -1246,5 +1432,4 @@ export class PipelineController {
     const normalized = String(storeAppId).trim();
     return normalized || '';
   }
-
 }

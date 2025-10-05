@@ -1,5 +1,11 @@
 // src/common/http/axios-client.ts
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError, InternalAxiosRequestConfig } from 'axios';
+import axios, {
+  AxiosInstance,
+  AxiosRequestConfig,
+  AxiosResponse,
+  AxiosError,
+  InternalAxiosRequestConfig,
+} from 'axios';
 
 /** 공통 에러 코드 */
 export type HttpErrorCode =
@@ -21,7 +27,7 @@ export interface HttpErrorShape {
   message: string;
   code: HttpErrorCode;
   error?: {
-    details?: any;     // 개발/스테이징에서만 풍부하게
+    details?: any; // 개발/스테이징에서만 풍부하게
   };
   meta?: {
     attempt?: number;
@@ -33,20 +39,20 @@ export interface HttpErrorShape {
 
 /** 재시도 옵션 */
 export interface RetryOptions {
-  retries: number;              // 총 시도 횟수 (기본 3)
-  baseDelayMs: number;          // 지수 백오프 기본 (기본 300ms)
-  maxDelayMs: number;           // 백오프 상한 (기본 5000ms)
-  retryOnStatuses?: number[];   // 기본: 429 + 5xx
-  respectRetryAfter?: boolean;  // true면 Retry-After 헤더 존중
+  retries: number; // 총 시도 횟수 (기본 3)
+  baseDelayMs: number; // 지수 백오프 기본 (기본 300ms)
+  maxDelayMs: number; // 백오프 상한 (기본 5000ms)
+  retryOnStatuses?: number[]; // 기본: 429 + 5xx
+  respectRetryAfter?: boolean; // true면 Retry-After 헤더 존중
 }
 
 /** 클라이언트 생성 옵션 */
 export interface HttpClientOptions {
   baseURL?: string;
-  timeoutMs?: number;             // 요청 타임아웃
+  timeoutMs?: number; // 요청 타임아웃
   headers?: Record<string, string>;
   userAgent?: string;
-  requestId?: string;             // 상위 요청ID를 전파하고 싶을 때
+  requestId?: string; // 상위 요청ID를 전파하고 싶을 때
   logger?: { log: (m: string) => void; error: (m: string) => void }; // Nest Logger 등
   retry?: Partial<RetryOptions>;
   // 프록시 등이 필요하면 axios config로 직접 넘겨도 됨
@@ -59,7 +65,7 @@ export interface Ok<T = any> {
   timestamp: string;
   path?: string;
   requestId?: string;
-  message: string;     // "OK"
+  message: string; // "OK"
   code: 'OK';
   data: T;
   meta?: {
@@ -94,7 +100,15 @@ function mapStatusToCode(status?: number): HttpErrorCode {
 }
 
 /** 공통 에러 객체 생성 */
-function toHttpErrorShape(error: AxiosError, path?: string, requestId?: string, attempt?: number, retries?: number, elapsedMs?: number, baseURL?: string): HttpErrorShape {
+function toHttpErrorShape(
+  error: AxiosError,
+  path?: string,
+  requestId?: string,
+  attempt?: number,
+  retries?: number,
+  elapsedMs?: number,
+  baseURL?: string,
+): HttpErrorShape {
   const status = error.response?.status ?? 500;
   const code = mapStatusToCode(status);
   const message =
@@ -102,7 +116,7 @@ function toHttpErrorShape(error: AxiosError, path?: string, requestId?: string, 
     error.message ||
     'Upstream request failed';
   const details =
-    (process.env.NODE_ENV && process.env.NODE_ENV !== 'production')
+    process.env.NODE_ENV && process.env.NODE_ENV !== 'production'
       ? {
           axiosMessage: error.message,
           responseData: error.response?.data,
@@ -123,7 +137,14 @@ function toHttpErrorShape(error: AxiosError, path?: string, requestId?: string, 
 }
 
 /** 공통 성공 래퍼 */
-function toOk<T>(data: T, status: number, path?: string, requestId?: string, elapsedMs?: number, baseURL?: string): Ok<T> {
+function toOk<T>(
+  data: T,
+  status: number,
+  path?: string,
+  requestId?: string,
+  elapsedMs?: number,
+  baseURL?: string,
+): Ok<T> {
   return {
     statusCode: status,
     timestamp: new Date().toISOString(),
@@ -154,7 +175,8 @@ export class HttpClient {
       baseURL: opts.baseURL,
       timeout: opts.timeoutMs ?? 30000,
       headers: {
-        'User-Agent': opts.userAgent ?? 'GameCalendarBot/1.0 (+https://your.domain)',
+        'User-Agent':
+          opts.userAgent ?? 'GameCalendarBot/1.0 (+https://your.domain)',
         ...(opts.headers ?? {}),
       },
       ...(opts.axiosConfigOverride ?? {}),
@@ -169,7 +191,7 @@ export class HttpClient {
         const url = (config.baseURL || '') + (config.url || '');
         this.logger?.log?.(
           `➡️ [REQ] ${config.method?.toUpperCase()} ${url} ` +
-            `| params=${JSON.stringify(config.params ?? {})} | headers=${JSON.stringify(safeHeaders(config.headers))}`
+            `| params=${JSON.stringify(config.params ?? {})} | headers=${JSON.stringify(safeHeaders(config.headers))}`,
         );
         (config as any).__startAt = Date.now();
         return config;
@@ -191,10 +213,14 @@ export class HttpClient {
           const cfg: any = error.config || {};
           const start = cfg.__startAt ?? Date.now();
           const elapsed = Date.now() - start;
-          const url = ((cfg.baseURL || '') + (cfg.url || '')) || '(unknown)';
+          const url = (cfg.baseURL || '') + (cfg.url || '') || '(unknown)';
           const status = error.response?.status ?? 'NO_HTTP';
-          this.logger?.error?.(`❌ [ERR] ${status} ${url} | ${elapsed}ms | ${error.message}`);
-        } catch { /* noop */ }
+          this.logger?.error?.(
+            `❌ [ERR] ${status} ${url} | ${elapsed}ms | ${error.message}`,
+          );
+        } catch {
+          /* noop */
+        }
         return Promise.reject(error);
       },
     );
@@ -203,8 +229,18 @@ export class HttpClient {
   /** 내부: 재시도 가능한지 판단 */
   private shouldRetry(error: AxiosError, attempt: number): boolean {
     const status = error.response?.status;
-    const isNetwork = !!error.code && ['ECONNABORTED', 'ENETDOWN', 'ENOTFOUND', 'ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT'].includes(error.code);
-    const retryStatuses = this.retry.retryOnStatuses ?? defaultRetry.retryOnStatuses!;
+    const isNetwork =
+      !!error.code &&
+      [
+        'ECONNABORTED',
+        'ENETDOWN',
+        'ENOTFOUND',
+        'ECONNRESET',
+        'EAI_AGAIN',
+        'ETIMEDOUT',
+      ].includes(error.code);
+    const retryStatuses =
+      this.retry.retryOnStatuses ?? defaultRetry.retryOnStatuses!;
     const statusRetry = status ? retryStatuses.includes(status) : false;
     return attempt < this.retry.retries && (isNetwork || statusRetry);
   }
@@ -227,7 +263,10 @@ export class HttpClient {
   }
 
   /** 공통 요청 (GET/POST 등 모두 이 함수를 사용) */
-  async request<T = any>(config: AxiosRequestConfig, opts?: { wrapOk?: boolean; pathForMeta?: string }): Promise<Ok<T> | AxiosResponse<T>> {
+  async request<T = any>(
+    config: AxiosRequestConfig,
+    opts?: { wrapOk?: boolean; pathForMeta?: string },
+  ): Promise<Ok<T> | AxiosResponse<T>> {
     const started = Date.now();
     const urlForMeta = (this.baseURL || '') + (config.url || '');
     let lastError: AxiosError | null = null;
@@ -241,15 +280,26 @@ export class HttpClient {
           // AxiosResponse 그대로 반환
           return res;
         }
-        return toOk<T>(res.data, res.status, opts?.pathForMeta ?? urlForMeta, this.requestId, elapsed, this.baseURL);
+        return toOk<T>(
+          res.data,
+          res.status,
+          opts?.pathForMeta ?? urlForMeta,
+          this.requestId,
+          elapsed,
+          this.baseURL,
+        );
       } catch (e) {
         const err = e as AxiosError;
         lastError = err;
 
         // 재시도 여부 판단
         if (this.shouldRetry(err, attempt)) {
-          const retryAfter = err.response?.headers?.['retry-after'] as string | undefined;
-          this.logger?.log?.(`🔁 재시도 ${attempt}/${this.retry.retries - 1} (status=${err.response?.status ?? err.code})`);
+          const retryAfter = err.response?.headers?.['retry-after'] as
+            | string
+            | undefined;
+          this.logger?.log?.(
+            `🔁 재시도 ${attempt}/${this.retry.retries - 1} (status=${err.response?.status ?? err.code})`,
+          );
           await this.backoffDelay(attempt, retryAfter);
           continue;
         }
@@ -261,7 +311,7 @@ export class HttpClient {
     const elapsed = Date.now() - started;
     throw toHttpErrorShape(
       lastError!,
-      (opts?.pathForMeta ?? urlForMeta),
+      opts?.pathForMeta ?? urlForMeta,
       this.requestId,
       this.retry.retries,
       this.retry.retries,
@@ -272,24 +322,54 @@ export class HttpClient {
 
   // 편의 메서드들
   get<T = any>(url: string, config?: AxiosRequestConfig, wrapOk = true) {
-    return this.request<T>({ ...config, method: 'GET', url }, { wrapOk, pathForMeta: url });
+    return this.request<T>(
+      { ...config, method: 'GET', url },
+      { wrapOk, pathForMeta: url },
+    );
   }
-  post<T = any>(url: string, data?: any, config?: AxiosRequestConfig, wrapOk = true) {
-    return this.request<T>({ ...config, method: 'POST', url, data }, { wrapOk, pathForMeta: url });
+  post<T = any>(
+    url: string,
+    data?: any,
+    config?: AxiosRequestConfig,
+    wrapOk = true,
+  ) {
+    return this.request<T>(
+      { ...config, method: 'POST', url, data },
+      { wrapOk, pathForMeta: url },
+    );
   }
-  put<T = any>(url: string, data?: any, config?: AxiosRequestConfig, wrapOk = true) {
-    return this.request<T>({ ...config, method: 'PUT', url, data }, { wrapOk, pathForMeta: url });
+  put<T = any>(
+    url: string,
+    data?: any,
+    config?: AxiosRequestConfig,
+    wrapOk = true,
+  ) {
+    return this.request<T>(
+      { ...config, method: 'PUT', url, data },
+      { wrapOk, pathForMeta: url },
+    );
   }
   delete<T = any>(url: string, config?: AxiosRequestConfig, wrapOk = true) {
-    return this.request<T>({ ...config, method: 'DELETE', url }, { wrapOk, pathForMeta: url });
+    return this.request<T>(
+      { ...config, method: 'DELETE', url },
+      { wrapOk, pathForMeta: url },
+    );
   }
 }
 
 /** 헤더 로깅 시 민감 키 마스킹 */
 function safeHeaders(h?: any) {
   if (!h) return {};
-  const lower = Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
-  const maskKeys = ['authorization', 'x-api-key', 'api-key', 'cookie', 'set-cookie'];
+  const lower = Object.fromEntries(
+    Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  const maskKeys = [
+    'authorization',
+    'x-api-key',
+    'api-key',
+    'cookie',
+    'set-cookie',
+  ];
   for (const k of maskKeys) {
     if (lower[k]) lower[k] = '[masked]';
   }

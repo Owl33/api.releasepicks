@@ -99,7 +99,8 @@ function resolveOptions(): RateLimiterOptions {
       Number.isFinite(refillPerSecond) && refillPerSecond > 0
         ? refillPerSecond
         : 6,
-    minDelayMs: Number.isFinite(minDelayMs) && minDelayMs >= 0 ? minDelayMs : 80,
+    minDelayMs:
+      Number.isFinite(minDelayMs) && minDelayMs >= 0 ? minDelayMs : 80,
     jitterMs: Number.isFinite(jitterMs) && jitterMs >= 0 ? jitterMs : 50,
   };
 }

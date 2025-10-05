@@ -6,6 +6,7 @@ import { RawgDataPipelineService } from './rawg-data-pipeline.service';
 import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
 import { GameRelease } from '../entities/game-release.entity';
+import { SystemEvent } from '../entities/system-event.entity';
 
 // YouTube 모듈 (Phase 4)
 import { YouTubeModule } from '../youtube/youtube.module';
@@ -31,19 +32,9 @@ import { YouTubeModule } from '../youtube/youtube.module';
     YouTubeModule,
 
     // TypeORM 엔티티 등록
-    TypeOrmModule.forFeature([
-      Game,
-      GameDetail,
-      GameRelease,
-    ]),
+    TypeOrmModule.forFeature([Game, GameDetail, GameRelease, SystemEvent]),
   ],
-  providers: [
-    RawgApiService,
-    RawgDataPipelineService,
-  ],
-  exports: [
-    RawgApiService,
-    RawgDataPipelineService,
-  ],
+  providers: [RawgApiService, RawgDataPipelineService],
+  exports: [RawgApiService, RawgDataPipelineService],
 })
 export class RawgModule {}

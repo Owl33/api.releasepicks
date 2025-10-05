@@ -4,7 +4,10 @@
  */
 
 import dayjs from 'dayjs';
-import { generateMonthRange, buildMonthlyParams } from './rawg-query-builder.util';
+import {
+  generateMonthRange,
+  buildMonthlyParams,
+} from './rawg-query-builder.util';
 import { RAWG_COLLECTION, RAWG_PLATFORM_IDS } from '../config/rawg.config';
 
 describe('rawg-query-builder', () => {
@@ -58,7 +61,9 @@ describe('rawg-query-builder', () => {
         const prevDate = dayjs(`${prevYear}-${prevMonth}-01`);
         const currDate = dayjs(`${currYear}-${currMonth}-01`);
 
-        expect(currDate.isAfter(prevDate) || currDate.isSame(prevDate)).toBe(true);
+        expect(currDate.isAfter(prevDate) || currDate.isSame(prevDate)).toBe(
+          true,
+        );
       }
     });
   });

@@ -86,22 +86,38 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     4,
     Math.max(1, Number(process.env.STEAM_COMMUNITY_MAX_CONCURRENCY ?? 4)),
   );
-  private readonly MIN_DELAY_MS = Number(process.env.STEAM_COMMUNITY_MIN_DELAY_MS ?? 350);
+  private readonly MIN_DELAY_MS = Number(
+    process.env.STEAM_COMMUNITY_MIN_DELAY_MS ?? 350,
+  );
   private readonly DELAY_JITTER_MS = Number(
     process.env.STEAM_COMMUNITY_DELAY_JITTER_MS ?? 220,
   );
   private readonly RPS = Number(process.env.STEAM_COMMUNITY_RPS ?? 1.0);
   private readonly BURST = Number(process.env.STEAM_COMMUNITY_BURST ?? 1.1);
-  private readonly JS_FAST_PATH = (process.env.STEAM_COMMUNITY_JS_FAST_PATH ?? '1') === '1';
+  private readonly JS_FAST_PATH =
+    (process.env.STEAM_COMMUNITY_JS_FAST_PATH ?? '1') === '1';
 
   // 타임박스/타임아웃(짧게)
-  private readonly DEADLINE_MS = Number(process.env.STEAM_COMMUNITY_DEADLINE_MS ?? 3500);
-  private readonly GOTO_TIMEOUT_FAST = Number(process.env.STEAM_COMMUNITY_GOTO_TIMEOUT_FAST ?? 1200);
-  private readonly GOTO_TIMEOUT_SLOW = Number(process.env.STEAM_COMMUNITY_GOTO_TIMEOUT_SLOW ?? 2200);
-  private readonly WAIT_SELECTOR_FAST = Number(process.env.STEAM_COMMUNITY_WAIT_SELECTOR_FAST ?? 600);
-  private readonly WAIT_SELECTOR_SLOW = Number(process.env.STEAM_COMMUNITY_WAIT_SELECTOR_SLOW ?? 1200);
+  private readonly DEADLINE_MS = Number(
+    process.env.STEAM_COMMUNITY_DEADLINE_MS ?? 3500,
+  );
+  private readonly GOTO_TIMEOUT_FAST = Number(
+    process.env.STEAM_COMMUNITY_GOTO_TIMEOUT_FAST ?? 1200,
+  );
+  private readonly GOTO_TIMEOUT_SLOW = Number(
+    process.env.STEAM_COMMUNITY_GOTO_TIMEOUT_SLOW ?? 2200,
+  );
+  private readonly WAIT_SELECTOR_FAST = Number(
+    process.env.STEAM_COMMUNITY_WAIT_SELECTOR_FAST ?? 600,
+  );
+  private readonly WAIT_SELECTOR_SLOW = Number(
+    process.env.STEAM_COMMUNITY_WAIT_SELECTOR_SLOW ?? 1200,
+  );
 
-  private limiter = new TokenBucket({ capacity: this.BURST, refillPerSec: this.RPS });
+  private limiter = new TokenBucket({
+    capacity: this.BURST,
+    refillPerSec: this.RPS,
+  });
 
   // 페이지 풀
   private pagePool: Page[] = [];
@@ -113,7 +129,9 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
 
   // 캐시 (0도 캐싱)
   private cache = new Map<string, { at: number; value: number }>();
-  private readonly CACHE_TTL_MS = Number(process.env.STEAM_COMMUNITY_CACHE_TTL_MS ?? 30 * 60 * 1000);
+  private readonly CACHE_TTL_MS = Number(
+    process.env.STEAM_COMMUNITY_CACHE_TTL_MS ?? 30 * 60 * 1000,
+  );
 
   // 429 모니터링
   private recent429: number[] = [];
@@ -138,7 +156,9 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     if (this.browser) {
       this.logger.log('🛑 Puppeteer 종료');
-      await Promise.allSettled(this.pagePool.map((p) => p.close().catch(() => {})));
+      await Promise.allSettled(
+        this.pagePool.map((p) => p.close().catch(() => {})),
+      );
       await this.browser.close();
       this.browser = null;
     }
@@ -149,7 +169,9 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`📡 AppList API 호출: ${APP_LIST_URL}`);
     const { data } = await axios.get(APP_LIST_URL, { timeout: 60_000 });
     const apps = data?.applist?.apps ?? [];
-    this.logger.log(`📥 AppList 로딩 완료: 총 ${apps.length.toLocaleString()}개`);
+    this.logger.log(
+      `📥 AppList 로딩 완료: 총 ${apps.length.toLocaleString()}개`,
+    );
     return apps;
   }
 
@@ -161,18 +183,22 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
 
     const page = this.pagePool.pop();
     if (page) {
-      try { await page.setJavaScriptEnabled(jsEnabled); } catch {}
+      try {
+        await page.setJavaScriptEnabled(jsEnabled);
+      } catch {}
       return page;
     }
 
     while (this.pagePending >= this.MAX_CONCURRENCY) await sleep(10);
     this.pagePending++;
     try {
-      const p = await this.browser!.newPage();
+      const p = await this.browser.newPage();
       await p.setUserAgent(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
       );
-      await p.setExtraHTTPHeaders({ 'accept-language': 'en-US,en;q=0.9,ko-KR;q=0.8' });
+      await p.setExtraHTTPHeaders({
+        'accept-language': 'en-US,en;q=0.9,ko-KR;q=0.8',
+      });
       await p.evaluateOnNewDocument(() => {
         // @ts-ignore
         Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -182,7 +208,13 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
       await p.setRequestInterception(true);
       p.on('request', (req) => {
         const t = req.resourceType();
-        if (t === 'image' || t === 'media' || t === 'font' || t === 'stylesheet') req.abort();
+        if (
+          t === 'image' ||
+          t === 'media' ||
+          t === 'font' ||
+          t === 'stylesheet'
+        )
+          req.abort();
         else req.continue();
       });
 
@@ -203,7 +235,10 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     // 괄호/브래킷 안 부가어, 데모/에디션/사운드트랙/패키지/번들 등 제거
     const cleaned = name
       .replace(/[\(\[\{].*?[\)\]\}]/g, ' ')
-      .replace(/\b(demo|dlc|soundtrack|ost|edition|bundle|package|pack|advanced|tech|tactician)\b/gi, ' ')
+      .replace(
+        /\b(demo|dlc|soundtrack|ost|edition|bundle|package|pack|advanced|tech|tactician)\b/gi,
+        ' ',
+      )
       .replace(/\s{2,}/g, ' ')
       .trim();
     return cleaned.length >= 3 ? cleaned : name;
@@ -333,10 +368,12 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     const page = await this.acquirePage(jsEnabled);
 
     try {
-      this.logger.debug(`🌐 [Search] (${jsEnabled ? 'JS:on' : 'JS:off'}) 열기: ${searchUrl}`);
+      this.logger.debug(
+        `🌐 [Search] (${jsEnabled ? 'JS:on' : 'JS:off'}) 열기: ${searchUrl}`,
+      );
 
       // 시도 수 1회만 (빠르게 실패·성공 결정)
-      let attempt = 1;
+      const attempt = 1;
       let lastErr: any = null;
 
       while (attempt <= 1) {
@@ -345,7 +382,10 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
         try {
           const res = await page.goto(searchUrl, {
             waitUntil: 'domcontentloaded',
-            timeout: Math.max(300, Math.min(gotoTimeoutMs, Math.max(0, deadline - Date.now()))),
+            timeout: Math.max(
+              300,
+              Math.min(gotoTimeoutMs, Math.max(0, deadline - Date.now())),
+            ),
           });
 
           const status = res?.status() ?? 0;
@@ -369,16 +409,30 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
             await page
               .waitForFunction(
                 (q: string) => !!document.querySelector(q),
-                { timeout: Math.max(200, Math.min(waitSelectorMs, Math.max(0, deadline - Date.now()))) },
+                {
+                  timeout: Math.max(
+                    200,
+                    Math.min(
+                      waitSelectorMs,
+                      Math.max(0, deadline - Date.now()),
+                    ),
+                  ),
+                },
                 '.search_result_container, .search_results, .search_row, .search_result_row',
               )
               .catch(() => null);
           }
 
           // 아주 짧은 랜덤 대기(패턴 완화)
-          await sleep(jsEnabled ? 80 + Math.random() * 100 : 40 + Math.random() * 60);
+          await sleep(
+            jsEnabled ? 80 + Math.random() * 100 : 40 + Math.random() * 60,
+          );
 
-          type EvalOut = { totalCards: number; matchedCount: number; firstMembers: number; };
+          type EvalOut = {
+            totalCards: number;
+            matchedCount: number;
+            firstMembers: number;
+          };
 
           const out: EvalOut = await page.evaluate(
             (id: number, reSource: string) => {
@@ -399,10 +453,13 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
               let firstMembers: number = 0;
 
               // 카드 없으면 바로 리턴(상위에서 다음 쿼리 시도)
-              if (cards.length === 0) return { totalCards: 0, matchedCount: 0, firstMembers: 0 };
+              if (cards.length === 0)
+                return { totalCards: 0, matchedCount: 0, firstMembers: 0 };
 
               for (const card of cards) {
-                const appLink = card.querySelector<HTMLAnchorElement>(`a[href*="/app/${id}"]`);
+                const appLink = card.querySelector<HTMLAnchorElement>(
+                  `a[href*="/app/${id}"]`,
+                );
                 if (!appLink) continue;
                 matchedCount++;
 
@@ -411,11 +468,18 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
                 const m = txt.match(re);
                 if (m) {
                   const raw = (m[1] || '').replace(/[^\d]/g, '');
-                  if (raw) { firstMembers = parseInt(raw, 10); break; }
+                  if (raw) {
+                    firstMembers = parseInt(raw, 10);
+                    break;
+                  }
                 }
 
                 // 보조: 하위 엘리먼트 스캔
-                const leaf = Array.from(card.querySelectorAll<HTMLElement>('span, div, small, b, strong, i'))
+                const leaf = Array.from(
+                  card.querySelectorAll<HTMLElement>(
+                    'span, div, small, b, strong, i',
+                  ),
+                )
                   .map((el) => el.innerText || '')
                   .find((s) => re.test(s));
                 if (leaf) {
@@ -431,10 +495,14 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
             this.memberRegex.source,
           );
 
-          this.logger.debug(`🧭 [Search] '${gameName}' (AppID=${appid}) 카드 ${out.totalCards}개 / 매칭 ${out.matchedCount}개`);
+          this.logger.debug(
+            `🧭 [Search] '${gameName}' (AppID=${appid}) 카드 ${out.totalCards}개 / 매칭 ${out.matchedCount}개`,
+          );
 
           if (out.firstMembers && Number.isFinite(out.firstMembers)) {
-            this.logger.debug(`✅ [Search] 멤버 수 파싱 성공: ${out.firstMembers.toLocaleString()}`);
+            this.logger.debug(
+              `✅ [Search] 멤버 수 파싱 성공: ${out.firstMembers.toLocaleString()}`,
+            );
             return out.firstMembers;
           }
 
@@ -447,7 +515,6 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
           // 카드가 있어도 매칭 0이면 실패
           this.logger.debug('❌ [Search] 1페이지 매칭 실패');
           return 0;
-
         } catch (e: any) {
           lastErr = e;
           this.logger.warn(`⚠️  path 실패(단일 시도) → ${e?.message ?? e}`);
@@ -455,10 +522,18 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      this.logger.error(`❌ [Search] 최종 실패: ${lastErr?.message ?? lastErr}`);
+      this.logger.error(
+        `❌ [Search] 최종 실패: ${lastErr?.message ?? lastErr}`,
+      );
       return 0;
     } finally {
-      try { this.releasePage(page); } catch { try { await page.close(); } catch {} }
+      try {
+        this.releasePage(page);
+      } catch {
+        try {
+          await page.close();
+        } catch {}
+      }
     }
   }
 }

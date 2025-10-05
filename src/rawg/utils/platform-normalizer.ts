@@ -9,10 +9,14 @@ export function normalizePlatformSlug(slug: string): PlatformFamily | null {
   return null;
 }
 
-export function extractPlatformFamilies(rawgPlatforms: Array<{ platform?: { slug?: string } }>): PlatformFamily[] {
+export function extractPlatformFamilies(
+  rawgPlatforms: Array<{ platform?: { slug?: string } }>,
+): PlatformFamily[] {
   const set = new Set<PlatformFamily>();
   for (const p of rawgPlatforms || []) {
-    const fam = p?.platform?.slug ? normalizePlatformSlug(p.platform.slug) : null;
+    const fam = p?.platform?.slug
+      ? normalizePlatformSlug(p.platform.slug)
+      : null;
     if (fam) set.add(fam);
   }
   return [...set];

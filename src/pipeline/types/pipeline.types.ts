@@ -132,6 +132,15 @@ export interface PipelineRunResult {
   phase: 'steam' | 'rawg' | 'full';
   totalProcessed: number;
   finishedAt: Date;
+  refreshSummary?: {
+    totalCandidates: number;
+    processed: number;
+    saved: number;
+    failed: number;
+    dryRun: boolean;
+    candidates: SteamRefreshCandidate[];
+  };
+  rawgReport?: any;
 }
 
 /**
@@ -174,4 +183,14 @@ export interface SteamCollectOptions {
   mode: 'bootstrap' | 'operational';
   limit: number;
   strategy?: 'latest' | 'priority';
+}
+
+/**
+ * Steam 출시 윈도우 갱신 후보 정보
+ */
+export interface SteamRefreshCandidate {
+  gameId: number;
+  steamId: number;
+  name: string;
+  slug: string;
 }

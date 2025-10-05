@@ -1,4 +1,9 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+} from '@nestjs/common';
 
 @Catch(HttpException)
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -9,7 +14,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const status = exception.getStatus();
     const payload: any = exception.getResponse();
-    const message = typeof payload === 'string' ? payload : payload?.message || payload?.error || exception.message;
+    const message =
+      typeof payload === 'string'
+        ? payload
+        : payload?.message || payload?.error || exception.message;
 
     const body = {
       statusCode: status,
@@ -19,7 +27,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message,
       code: payload?.error || exception.name || 'HTTP_EXCEPTION',
       data: null,
-      error: process.env.NODE_ENV === 'production' ? null : { details: payload },
+      error:
+        process.env.NODE_ENV === 'production' ? null : { details: payload },
       meta: { elapsedMs: 0 },
     };
 

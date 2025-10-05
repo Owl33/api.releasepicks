@@ -1,4 +1,10 @@
-import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor } from '@nestjs/common';
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  NestInterceptor,
+} from '@nestjs/common';
 import { Observable, tap } from 'rxjs';
 import { maskSensitive } from '../utils/mask.util';
 
@@ -30,11 +36,15 @@ export class LoggingInterceptor implements NestInterceptor {
       tap({
         next: () => {
           const ms = Date.now() - t0;
-          this.logger.log(`${pfx} ✅ 응답 | status=${res?.statusCode ?? '-'} | ${ms}ms`);
+          this.logger.log(
+            `${pfx} ✅ 응답 | status=${res?.statusCode ?? '-'} | ${ms}ms`,
+          );
         },
         error: (err) => {
           const ms = Date.now() - t0;
-          this.logger.error(`${pfx} ❌ 에러 | status=${res?.statusCode ?? '-'} | ${ms}ms | ${err?.message}`);
+          this.logger.error(
+            `${pfx} ❌ 에러 | status=${res?.statusCode ?? '-'} | ${ms}ms | ${err?.message}`,
+          );
         },
       }),
     );

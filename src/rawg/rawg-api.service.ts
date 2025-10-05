@@ -9,7 +9,15 @@ import {
   RAWG_COLLECTION,
   RAWG_PLATFORM_IDS,
 } from './config/rawg.config';
-import { RawgGameSearchResult, RawgGameDetails } from './rawg.types';
+import {
+  RawgGameSearchResult,
+  RawgGameDetails,
+  RawgGameStoreResult,
+} from './rawg.types';
+import { rawgMonitor } from './utils/rawg-monitor';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SystemEvent } from '../entities/system-event.entity';
 
 @Injectable()
 export class RawgApiService {
@@ -26,10 +34,14 @@ export class RawgApiService {
   private lastFailureTime: Date | null = null;
   private readonly failureThreshold = 5;
   private readonly timeout = 5 * 60 * 1000;
+  private last429AlertAt = 0;
+  private last5xxAlertAt = 0;
 
   constructor(
     private readonly httpService: HttpService,
     config: ConfigService,
+    @InjectRepository(SystemEvent)
+    private readonly systemEventRepository: Repository<SystemEvent>,
   ) {
     this.apiKey = config.get<string>('RAWG_API_KEY') || '';
     if (!this.apiKey)
@@ -68,7 +80,7 @@ export class RawgApiService {
       metacritic?: string;
       dates?: string; // "YYYY-MM-01,YYYY-MM-마지막일"
     } = {},
-  ): Promise<RawgGameSearchResult[]> {
+  ): Promise<RawgGameSearchResult[] | null> {
     const platformIds =
       options.platforms || this.getPlatformIdsFromSlug(platformSlug); // 하위호환
 
@@ -89,7 +101,8 @@ export class RawgApiService {
     const res = await this.callApiWithRetry<{
       results: RawgGameSearchResult[];
     }>('/games', params);
-    return res?.results ?? [];
+    if (!res) return null;
+    return res.results ?? [];
   }
 
   // ✅ 기존 이름 유지
@@ -101,6 +114,14 @@ export class RawgApiService {
     return res ?? null;
   }
 
+  async getGameStores(rawgId: number): Promise<RawgGameStoreResult[]> {
+    const res = await this.callApiWithRetry<{ results: RawgGameStoreResult[] }>(
+      `/games/${rawgId}/stores`,
+      { key: this.apiKey },
+    );
+    return res?.results ?? [];
+  }
+
   // ===== Phase 5.5: DLC 부모 게임 조회 API =====
   /**
    * RAWG DLC의 부모 게임(본편) 목록 조회
@@ -108,10 +129,9 @@ export class RawgApiService {
    * @returns 부모 게임 목록 (parent_games_count > 0일 때 호출)
    */
   async getParentGames(rawgId: number): Promise<RawgGameSearchResult[]> {
-    const res = await this.callApiWithRetry<{ results: RawgGameSearchResult[] }>(
-      `/games/${rawgId}/parent-games`,
-      { key: this.apiKey },
-    );
+    const res = await this.callApiWithRetry<{
+      results: RawgGameSearchResult[];
+    }>(`/games/${rawgId}/parent-games`, { key: this.apiKey });
     return res?.results ?? [];
   }
 
@@ -149,6 +169,7 @@ export class RawgApiService {
     await this.checkRateLimit();
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const attemptStartedAt = Date.now();
       try {
         const response: AxiosResponse<T> = await firstValueFrom(
           this.httpService.get(`${this.baseUrl}${endpoint}`, {
@@ -158,13 +179,37 @@ export class RawgApiService {
           }),
         );
         this.onSuccess();
+        const durationMs = Date.now() - attemptStartedAt;
+        const payloadBytes = JSON.stringify(response.data ?? {}).length;
+        rawgMonitor.recordSuccess({
+          endpoint,
+          status: response.status,
+          durationMs,
+          payloadBytes,
+          timestamp: Date.now(),
+        });
+        this.evaluateAlerts();
         return response.data;
       } catch (error: any) {
         this.logger.warn(
           `⚠️ RAWG API 실패 (${attempt}/${maxRetries}) ${endpoint}: ${error?.message}`,
         );
 
-        if (error?.response?.status === 429) {
+        const status = error?.response?.status ?? 0;
+        const durationMs = Date.now() - attemptStartedAt;
+        const payloadBytes = error?.response?.data
+          ? JSON.stringify(error.response.data).length
+          : 0;
+        rawgMonitor.recordError({
+          endpoint,
+          status,
+          durationMs,
+          payloadBytes,
+          timestamp: Date.now(),
+          attempt,
+          level: status >= 500 ? 'error' : 'warn',
+        });
+        if (status === 429) {
           const retryAfter = Number(
             error.response.headers['retry-after'] || 60,
           );
@@ -183,11 +228,20 @@ export class RawgApiService {
           await this.delay(delayMs);
         } else {
           this.onFailure();
+          if (status === 429 || status >= 500) {
+            await this.recordSystemEvent('rawg_api_error', {
+              endpoint,
+              status,
+              attempt,
+              params,
+            });
+          }
         }
       }
     }
 
     this.logger.error(`❌ RAWG API 완전 실패: ${endpoint}`);
+    this.evaluateAlerts();
     return null;
   }
 
@@ -222,5 +276,57 @@ export class RawgApiService {
   }
   private delay(ms: number) {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  private evaluateAlerts(): void {
+    const snapshot = rawgMonitor.snapshot();
+    const now = Date.now();
+
+    if (
+      snapshot.rateLimitCount >= 10 &&
+      now - this.last429AlertAt > 5 * 60 * 1000
+    ) {
+      this.last429AlertAt = now;
+      const message =
+        'RAWG API 429가 5분 이내 10회를 초과했습니다. 파라미터/딜레이를 확인하세요.';
+      this.logger.error(`🚨 [RAWG] 429 알림 – ${message}`);
+      void this.recordSystemEvent('rawg_rate_limit_alert', {
+        message,
+        snapshot,
+      });
+    }
+
+    if (
+      snapshot.serverErrorCount >= 3 &&
+      now - this.last5xxAlertAt > 5 * 60 * 1000
+    ) {
+      this.last5xxAlertAt = now;
+      const message =
+        'RAWG API 5xx 응답이 5분 이내 3회 이상 발생했습니다. 서비스 상태를 확인하세요.';
+      this.logger.error(`🚨 [RAWG] 5xx 알림 – ${message}`);
+      void this.recordSystemEvent('rawg_server_error_alert', {
+        message,
+        snapshot,
+      });
+    }
+  }
+
+  private async recordSystemEvent(
+    eventName: string,
+    eventData: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const event = this.systemEventRepository.create({
+        event_name: eventName,
+        entity_type: 'rawg',
+        entity_id: 0,
+        event_data: eventData,
+      });
+      await this.systemEventRepository.save(event);
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ RAWG 시스템 이벤트 기록 실패: ${(error as Error).message}`,
+      );
+    }
   }
 }

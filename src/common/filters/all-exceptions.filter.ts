@@ -1,4 +1,9 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpStatus } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpStatus,
+} from '@nestjs/common';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -13,12 +18,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: req?.originalUrl || req?.url,
       requestId: req?.requestId,
-      message: process.env.NODE_ENV === 'production'
-        ? '서버 내부 오류가 발생했습니다.'
-        : (exception?.message || 'Unknown error'),
+      message:
+        process.env.NODE_ENV === 'production'
+          ? '서버 내부 오류가 발생했습니다.'
+          : exception?.message || 'Unknown error',
       code: 'INTERNAL_ERROR',
       data: null,
-      error: process.env.NODE_ENV === 'production' ? null : { details: { name: exception?.name, stack: exception?.stack } },
+      error:
+        process.env.NODE_ENV === 'production'
+          ? null
+          : { details: { name: exception?.name, stack: exception?.stack } },
       meta: { elapsedMs: 0 },
     };
 

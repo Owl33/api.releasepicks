@@ -3,7 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   Index,
-  CreateDateColumn
+  CreateDateColumn,
 } from 'typeorm';
 
 /**

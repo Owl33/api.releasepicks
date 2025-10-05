@@ -4,7 +4,7 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
-  PrimaryColumn
+  PrimaryColumn,
 } from 'typeorm';
 import { Game } from './game.entity';
 import { Company } from './company.entity';
@@ -28,16 +28,18 @@ export class GameCompanyRole {
 
   @PrimaryColumn({
     type: 'enum',
-    enum: CompanyRole
+    enum: CompanyRole,
   })
   role: CompanyRole; // 'developer' | 'publisher'
 
   // ===== 관계 설정 =====
-  @ManyToOne(() => Game, game => game.company_roles, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Game, (game) => game.company_roles, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'game_id' })
   game: Game;
 
-  @ManyToOne(() => Company, company => company.game_roles, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Company, (company) => company.game_roles, {
+    onDelete: 'CASCADE',
+  })
   @JoinColumn({ name: 'company_id' })
   company: Company;
 }
