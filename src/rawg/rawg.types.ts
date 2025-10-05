@@ -14,7 +14,7 @@ export interface RawgGameSearchResult {
   name: string;
   released?: string | null;
   tba?: boolean;
-  background_image?: string | null;
+  background_image: string;
   added?: number | null;
   short_screenshots: {
     id: number;

@@ -1,5 +1,18 @@
 import { GameType, ReleaseStatus, Platform, Store } from '../../entities';
-import { StoreLinkDto } from './calendar.dto';
+
+export interface ReleaseInfo {
+  platform: Platform;
+  store: Store;
+  url: string | null;
+  releaseDate: Date | string | number | null;
+  releaseDateRaw: string | null;
+}
+
+export interface DlcInfo {
+  name: string;
+  releaseDate: Date | string | number | null;
+}
+export type CompanyBrief = { id: number; name: string };
 
 export interface GameDetailResponseDto {
   id: number;
@@ -22,27 +35,27 @@ export interface GameDetailResponseDto {
   genres: string[];
   tags: string[];
   supportLanguages: string[];
+
+  header_image: string | null;
   screenshots: string[];
   videoUrl: string | null;
   metacriticScore: number | null;
   opencriticScore: number | null;
-  steamReviewDesc: string | null;
   rawgAdded: number | null;
   totalReviews: number | null;
   reviewScoreDesc: string | null;
   detailPlatformType: string | null;
 
-  // 출시 정보 요약 (기존 releases 배열에서 평탄화)
-  releaseIds: number[];
-  releasePlatforms: Platform[];
-  releaseStores: Store[];
-  releaseStoreLinks: StoreLinkDto[];
-  releaseDates: Array<Date | string | number | null>;
-  releaseStatuses: Array<ReleaseStatus | null>;
-  releaseComingSoonFlags: boolean[];
-  releasePriceCents: Array<number | null>;
-  releaseIsFreeFlags: boolean[];
-  releaseFollowers: Array<number | null>;
-  releaseReviewsTotal: Array<number | null>;
-  releaseReviewScoreDescs: Array<string | null>;
+  // 가격 정보 (releases에서 추출)
+  currentPrice: number | null;
+
+  // 출시 정보 요약 (각 스토어별 릴리즈 정보)
+  // release 테이블은 각 플랫폼별 릴리즈 날짜, store, store_link를 제공
+  releases: ReleaseInfo[];
+
+  // DLC 리스트 (본편 게임인 경우에만 존재, 항상 배열로 반환)
+  dlcs: DlcInfo[];
+
+  developers: CompanyBrief[];
+  publishers: CompanyBrief[];
 }

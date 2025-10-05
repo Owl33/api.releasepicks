@@ -5,17 +5,22 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Game, GameRelease, ReleaseStatus, Platform, Store } from '../entities';
+import {
+  Game,
+  GameRelease,
+  ReleaseStatus,
+  Platform,
+  Store,
+  Company,
+  GameCompanyRole,
+} from '../entities';
 import {
   CalendarResponseDto,
   CalendarReleaseDto,
   StoreLinkDto,
 } from './dto/calendar.dto';
-import { GameDetailResponseDto } from './dto/detail.dto';
-import {
-  HighlightGameDto,
-  HighlightsResponseDto,
-} from './dto/highlights.dto';
+import { GameDetailResponseDto, ReleaseInfo, DlcInfo } from './dto/detail.dto';
+import { HighlightGameDto, HighlightsResponseDto } from './dto/highlights.dto';
 
 interface ReleaseAggregationSummary {
   releaseIds: number[];
@@ -36,6 +41,11 @@ export class GamesService {
     private readonly gameRepository: Repository<Game>,
     @InjectRepository(GameRelease)
     private readonly gameReleaseRepository: Repository<GameRelease>,
+
+    @InjectRepository(GameCompanyRole)
+    private readonly gcrRepository: Repository<GameCompanyRole>,
+    @InjectRepository(Company)
+    private readonly companyRepository: Repository<Company>,
   ) {}
 
   async getCalendarByMonth(month: string): Promise<CalendarResponseDto> {
@@ -67,6 +77,7 @@ export class GamesService {
         end,
       })
       .andWhere('game.is_dlc = false')
+      .andWhere('game.popularity_score >= :minScore', { minScore: 40 })
       .orderBy('release.release_date_date', 'ASC')
       .addOrderBy('game.popularity_score', 'DESC')
       .getRawMany();
@@ -105,7 +116,12 @@ export class GamesService {
       if (existing) {
         this.pushUnique(existing.releaseIds, Number(row.release_id));
         this.pushUnique(existing.platforms, platform);
-        this.pushStoreLink(existing.stores, existing.storeLinks, store, storeUrl);
+        this.pushStoreLink(
+          existing.stores,
+          existing.storeLinks,
+          store,
+          storeUrl,
+        );
         existing.comingSoon = existing.comingSoon || comingSoon;
         existing.releaseStatus = this.mergeReleaseStatus(
           existing.releaseStatus,
@@ -172,45 +188,25 @@ export class GamesService {
     if (!game) {
       throw new NotFoundException('요청한 게임을 찾을 수 없습니다.');
     }
+    const { developers, publishers } = await this.loadCompaniesByRole(game.id);
 
-    const sortedReleases = [...(game.releases ?? [])].sort((a, b) => {
-      const aDate = a.release_date_date?.getTime() ?? Number.MAX_SAFE_INTEGER;
-      const bDate = b.release_date_date?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    const releases: ReleaseInfo[] = (game.releases ?? []).map((release) => ({
+      platform: release.platform,
+      store: release.store,
+      url: release.store_url,
+      releaseDate: release.release_date_date,
+      releaseDateRaw: release.release_date_raw,
+    }));
 
-      if (aDate === bDate) {
-        return a.platform.localeCompare(b.platform);
-      }
+    // 가격 정보 추출 (Steam 우선, 없으면 첫 번째 release, 없으면 null)
+    const steamRelease = game.releases?.find((r) => r.store === 'steam');
+    const priceRelease = steamRelease ?? game.releases?.[0];
+    const currentPrice = priceRelease?.current_price_cents
+      ? priceRelease.current_price_cents / 100
+      : null;
 
-      return aDate - bDate;
-    });
-
-    const releaseIds: number[] = [];
-    const releasePlatforms: Platform[] = [];
-    const releaseStores: Store[] = [];
-    const releaseStoreLinks: StoreLinkDto[] = [];
-    const releaseDates: Array<Date | string | number | null> = [];
-    const releaseStatuses: Array<ReleaseStatus | null> = [];
-    const releaseComingSoonFlags: boolean[] = [];
-    const releasePriceCents: Array<number | null> = [];
-    const releaseIsFreeFlags: boolean[] = [];
-    const releaseFollowers: Array<number | null> = [];
-    const releaseReviewsTotal: Array<number | null> = [];
-    const releaseReviewScoreDescs: Array<string | null> = [];
-
-    sortedReleases.forEach((release) => {
-      releaseIds.push(release.id);
-      releasePlatforms.push(release.platform);
-      releaseStores.push(release.store);
-      releaseStoreLinks.push({ store: release.store, url: release.store_url });
-      releaseDates.push(release.release_date_date);
-      releaseStatuses.push(release.release_status);
-      releaseComingSoonFlags.push(release.coming_soon);
-      releasePriceCents.push(release.current_price_cents);
-      releaseIsFreeFlags.push(release.is_free);
-      releaseFollowers.push(release.followers);
-      releaseReviewsTotal.push(release.reviews_total);
-      releaseReviewScoreDescs.push(release.review_score_desc);
-    });
+    // DLC 리스트 조회 (현재 게임이 부모인 DLC들)
+    const dlcs: DlcInfo[] = await this.loadDlcList(game.steam_id, game.rawg_id);
 
     const detail = game.details;
 
@@ -229,33 +225,27 @@ export class GamesService {
       releaseStatus: game.release_status,
       followersCache: game.followers_cache,
 
+      header_image: detail?.header_image ?? null,
       description: detail?.description ?? null,
       website: detail?.website ?? null,
       genres: detail?.genres ?? [],
       tags: detail?.tags ?? [],
       supportLanguages: detail?.support_languages ?? [],
+
       screenshots: detail?.screenshots ?? [],
       videoUrl: detail?.video_url ?? null,
       metacriticScore: detail?.metacritic_score ?? null,
       opencriticScore: detail?.opencritic_score ?? null,
-      steamReviewDesc: detail?.steam_review_desc ?? null,
       rawgAdded: detail?.rawg_added ?? null,
       totalReviews: detail?.total_reviews ?? null,
       reviewScoreDesc: detail?.review_score_desc ?? null,
       detailPlatformType: detail?.platform_type ?? null,
 
-      releaseIds,
-      releasePlatforms,
-      releaseStores,
-      releaseStoreLinks,
-      releaseDates,
-      releaseStatuses,
-      releaseComingSoonFlags,
-      releasePriceCents,
-      releaseIsFreeFlags,
-      releaseFollowers,
-      releaseReviewsTotal,
-      releaseReviewScoreDescs,
+      currentPrice,
+      releases,
+      dlcs,
+      developers, 
+      publishers, 
     };
   }
 
@@ -450,6 +440,86 @@ export class GamesService {
     return map;
   }
 
+  private async loadDlcList(
+    steamId: number | null,
+    rawgId: number | null,
+  ): Promise<DlcInfo[]> {
+    if (!steamId && !rawgId) {
+      return [];
+    }
+
+    const query = this.gameRepository.createQueryBuilder('game');
+
+    query.where('game.is_dlc = true');
+
+    const conditions: string[] = [];
+    const parameters: Record<string, number> = {};
+
+    if (steamId) {
+      conditions.push('game.parent_steam_id = :steamId');
+      parameters.steamId = steamId;
+    }
+
+    if (rawgId) {
+      conditions.push('game.parent_rawg_id = :rawgId');
+      parameters.rawgId = rawgId;
+    }
+
+    if (conditions.length > 0) {
+      query.andWhere(`(${conditions.join(' OR ')})`, parameters);
+    }
+
+    query
+      .select(['game.name AS name', 'game.release_date_date AS release_date'])
+      .orderBy('game.release_date_date', 'ASC');
+
+    const rows = await query.getRawMany();
+
+    return rows.map((row) => ({
+      name: String(row.name ?? ''),
+      releaseDate: this.toDate(row.release_date),
+    }));
+  }
+  private async loadCompaniesByRole(gameId: number): Promise<{
+    developers: { id: number; name: string }[];
+    publishers: { id: number; name: string }[];
+  }> {
+    const rows = await this.gcrRepository
+      .createQueryBuilder('gcr')
+      .innerJoin('gcr.company', 'c')
+      .select([
+        'c.id AS company_id',
+        'c.name AS company_name',
+        'gcr.role AS role',
+      ])
+      .where('gcr.game_id = :gameId', { gameId })
+      .getRawMany();
+
+    const seenDev = new Set<number>();
+    const seenPub = new Set<number>();
+    const developers: { id: number; name: string }[] = [];
+    const publishers: { id: number; name: string }[] = [];
+
+    for (const r of rows) {
+      const id = Number(r.company_id);
+      const name = String(r.company_name ?? '');
+
+      if (r.role === 'developer') {
+        if (!seenDev.has(id)) {
+          seenDev.add(id);
+          developers.push({ id, name });
+        }
+      } else if (r.role === 'publisher') {
+        if (!seenPub.has(id)) {
+          seenPub.add(id);
+          publishers.push({ id, name });
+        }
+      }
+    }
+
+    return { developers, publishers };
+  }
+
   private resolveMonthRange(month: string): { start: Date; end: Date } {
     const matched = month.match(/^(\d{4})-(0[1-9]|1[0-2])$/);
     if (!matched) {
@@ -466,7 +536,6 @@ export class GamesService {
 
     return { start, end };
   }
-
 
   private startOfDayUtc(date: Date): Date {
     return new Date(

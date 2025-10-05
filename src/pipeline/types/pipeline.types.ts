@@ -82,16 +82,15 @@ export interface GameDetailsData {
   tags?: string[];
   supportLanguages?: string[];
 
+  headerImage: string;
   // 평점 정보
   metacriticScore?: number | null;
   opencriticScore?: number | null;
-  steamReviewDesc?: string;
 
   // RAWG 통계
   rawgAdded?: number;
   totalReviews?: number;
   reviewScoreDesc?: string;
-
   // 플랫폼 타입 요약
   platformType?: 'pc' | 'console' | 'mixed';
 }

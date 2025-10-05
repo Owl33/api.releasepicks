@@ -43,6 +43,7 @@ interface RawgIntermediate {
   rawgId: number;
   slug: string;
   name: string;
+  headerImage: string;
   screenshots: string[];
   released: string | null;
   platformFamilies: ConsoleFamily[];
@@ -170,7 +171,7 @@ export class RawgDataPipelineService {
           ordering: params.ordering,
           metacritic: params.metacritic,
         });
-        console.log(games)
+        console.log(games);
         if (!games) {
           retryReason = 'api_error';
           throw new Error('RAWG API 응답 없음');
@@ -237,6 +238,7 @@ export class RawgDataPipelineService {
             rawgId: g.id,
             slug: g.slug,
             name: g.name,
+            parentRawgId,
             screenshots:
               g.short_screenshots?.slice(0, 5).map((s: any) => s.image) || [],
             released: g.released ?? null,
@@ -244,7 +246,7 @@ export class RawgDataPipelineService {
             added,
             popularityScore,
             isDlc,
-            parentRawgId,
+            headerImage: g.background_image,
             sourceMonth: monthKey,
           });
           seen.add(key);
@@ -416,7 +418,9 @@ export class RawgDataPipelineService {
 
           if (needsStoreApi) {
             try {
-              const stores = await this.rawgApiService.getGameStores(raw.rawgId);
+              const stores = await this.rawgApiService.getGameStores(
+                raw.rawgId,
+              );
               const apiLookup = this.mapStoresByPlatform(
                 stores,
                 raw,
@@ -433,13 +437,17 @@ export class RawgDataPipelineService {
                   continue;
                 }
 
-                const hasUrl = existing.storeUrl && existing.storeUrl.length > 0;
-                const hasAppId = existing.storeAppId && existing.storeAppId.length > 0;
+                const hasUrl =
+                  existing.storeUrl && existing.storeUrl.length > 0;
+                const hasAppId =
+                  existing.storeAppId && existing.storeAppId.length > 0;
 
                 storeLookup[family] = {
                   family: existing.family,
                   store: existing.store,
-                  storeAppId: hasAppId ? existing.storeAppId : apiStore.storeAppId,
+                  storeAppId: hasAppId
+                    ? existing.storeAppId
+                    : apiStore.storeAppId,
                   storeUrl: hasUrl ? existing.storeUrl : apiStore.storeUrl,
                 };
               }
@@ -455,6 +463,7 @@ export class RawgDataPipelineService {
           }
 
           details = {
+            headerImage: raw.headerImage,
             screenshots: raw.screenshots,
             videoUrl: youtubeVideoUrl,
             description:
@@ -479,13 +488,13 @@ export class RawgDataPipelineService {
               );
             }
             const fallback = this.storeFallbackForFamily(family, raw.name);
-          const chosenStore = storeInfo?.store ?? fallback.store;
-          const storeUrl = this.pickBestStoreUrl(
-            storeInfo?.storeUrl,
-            fallback.storeUrl,
-            chosenStore,
-            raw.name,
-          );
+            const chosenStore = storeInfo?.store ?? fallback.store;
+            const storeUrl = this.pickBestStoreUrl(
+              storeInfo?.storeUrl,
+              fallback.storeUrl,
+              chosenStore,
+              raw.name,
+            );
             return {
               platform: family as Platform,
               store: storeInfo?.store ?? fallback.store,
@@ -606,9 +615,7 @@ export class RawgDataPipelineService {
     const combined = tokens.join(' ');
     const storeId = store.store_id ?? 0;
 
-    if (
-      this.isPlayStationStore(combined, storeId)
-    ) {
+    if (this.isPlayStationStore(combined, storeId)) {
       return { family: 'playstation', store: 'psn' as Store };
     }
 
@@ -616,9 +623,7 @@ export class RawgDataPipelineService {
       return { family: 'xbox', store: 'xbox' as Store };
     }
 
-    if (
-      this.isNintendoStore(combined, storeId)
-    ) {
+    if (this.isNintendoStore(combined, storeId)) {
       return { family: 'nintendo', store: 'nintendo' as Store };
     }
 
@@ -713,9 +718,7 @@ export class RawgDataPipelineService {
   private isXboxStore(text: string, storeId: number): boolean {
     const lower = text.toLowerCase();
     return (
-      lower.includes('xbox') ||
-      lower.includes('microsoft') ||
-      storeId === 7
+      lower.includes('xbox') || lower.includes('microsoft') || storeId === 7
     );
   }
 

@@ -20,6 +20,11 @@ async function bootstrap() {
 
   // 전역 예외 필터: HTTP → 나머지
   app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
+  app.enableCors({
+    origin: ['http://localhost:3000'],
+    preflightContinue: false,
+    credentials: true,
+  });
 
   // CORS/프리픽스 등 필요 시 추가
   // app.enableCors();

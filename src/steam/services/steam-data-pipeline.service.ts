@@ -263,7 +263,7 @@ export class SteamDataPipelineService {
                   youtubeVideoUrl ||
                   (steamDetails.movies as any[])?.[0]?.mp4?.max,
                 description:
-                  (steamDetails.detailed_description as string) || undefined,
+                  (steamDetails.short_description as string) || undefined,
                 website: (steamDetails.website as string) || undefined,
                 genres: (steamDetails.genres as any[]) || [],
                 tags: steamDetails.categories || null,
@@ -272,7 +272,8 @@ export class SteamDataPipelineService {
                 platformType: 'pc',
                 totalReviews,
                 reviewScoreDesc,
-                steamReviewDesc: reviewScoreDesc,
+                
+                headerImage:steamDetails.header_image,
               }
             : undefined,
         releases:
@@ -782,7 +783,10 @@ export class SteamDataPipelineService {
     const totalApps = allApps.length;
 
     // 2. 다음 배치 정보 조회 (AppList 길이 기반)
-    const batch = await this.batchStrategyService.getNextBatch(totalApps, limit);
+    const batch = await this.batchStrategyService.getNextBatch(
+      totalApps,
+      limit,
+    );
 
     if (batch.isComplete) {
       this.logger.log(

@@ -334,7 +334,7 @@ export interface SteamAppDetails {
   website?: string | null;
 
   // 미디어
-  header_image?: string;
+  header_image: string;
   screenshots: string[];
   movies: string[];
 

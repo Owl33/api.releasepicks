@@ -42,6 +42,8 @@ export class GameDetail {
   @Column({ type: 'text', nullable: true })
   website: string | null; // 공식 웹사이트
 
+  @Column({ type: 'text', nullable: true })
+  header_image: string;
   // ===== 분류 정보 (RAWG 우선) =====
   @Column({ type: 'text', array: true, default: '{}' })
   genres: string[]; // ['Action', 'RPG']
@@ -58,12 +60,6 @@ export class GameDetail {
 
   @Column({ type: 'integer', nullable: true })
   opencritic_score: number | null; // 오픈크리틱 점수
-
-  @Column({ type: 'text', nullable: true })
-  steam_review_desc: string | null; // Steam 리뷰 요약 설명
-
-  // ===== Steam 통계 (AppDetails + AppReviews API) =====
-  // ⚠️ steam_followers는 game_releases.followers로 통합 (단일 소스 원칙)
 
   // ===== RAWG 통계 =====
   @Column({ type: 'integer', nullable: true })
