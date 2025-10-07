@@ -40,6 +40,8 @@ export class GamesController {
     return this.gamesService.getHighlights(upcoming, popular);
   }
 
+
+
   @Get(':id')
   async getGameDetail(
     @Param('id', ParseIntPipe) id: number,

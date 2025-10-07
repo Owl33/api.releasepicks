@@ -24,7 +24,6 @@ export interface GameDetailResponseDto {
   isDlc: boolean;
   comingSoon: boolean;
   popularityScore: number;
-  platformsSummary: string[];
   releaseDate: Date | string | number | null;
   releaseStatus: ReleaseStatus | null;
   followersCache: number | null;
@@ -36,7 +35,7 @@ export interface GameDetailResponseDto {
   tags: string[];
   supportLanguages: string[];
 
-  header_image: string | null;
+  headerImage: string ;
   screenshots: string[];
   videoUrl: string | null;
   metacriticScore: number | null;
@@ -44,10 +43,12 @@ export interface GameDetailResponseDto {
   rawgAdded: number | null;
   totalReviews: number | null;
   reviewScoreDesc: string | null;
-  detailPlatformType: string | null;
 
   // 가격 정보 (releases에서 추출)
   currentPrice: number | null;
+
+  // 플랫폼 정보 (releases에서 추출한 중복 제거 목록)
+  platforms: Platform[];
 
   // 출시 정보 요약 (각 스토어별 릴리즈 정보)
   // release 테이블은 각 플랫폼별 릴리즈 날짜, store, store_link를 제공

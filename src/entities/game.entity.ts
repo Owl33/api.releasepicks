@@ -37,7 +37,6 @@ import { GameType, ReleaseStatus } from './enums';
 @Index('ix_games_parent_steam', ['parent_steam_id'])
 @Index('ix_games_parent_rawg', ['parent_rawg_id'])
 @Index('ix_games_is_dlc', ['is_dlc'])
-@Index('ix_games_platform_type', ['platform_type'])
 @Index('ix_games_steam_last_refresh', ['steam_last_refresh_at'])
 @Index('ix_games_rawg_last_refresh', ['rawg_last_refresh_at'])
 export class Game {
@@ -76,10 +75,6 @@ export class Game {
   @Column({ type: 'boolean', default: false })
   is_dlc: boolean;
 
-  // ===== 플랫폼 타입 (Phase 5.5 추가) =====
-  @Column({ type: 'text', nullable: true })
-  platform_type: 'pc' | 'playstation' | 'xbox' | 'nintendo' | null;
-
   // ===== 대표 출시 정보 (가장 빠른 출시일 기준) =====
   @Column({ type: 'date', nullable: true })
   release_date_date: Date | null;
@@ -102,9 +97,6 @@ export class Game {
   popularity_score: number; // 0-100 정규화된 점수 (tier는 이걸로 계산)
 
   // ===== 캐시된 요약 정보 =====
-  @Column({ type: 'text', array: true, default: '{}' })
-  platforms_summary: string[]; // ['pc', 'ps5', 'switch']
-
   @Column({ type: 'integer', nullable: true })
   followers_cache: number | null; // 대표 Steam 릴리스 팔로워 캐시
 

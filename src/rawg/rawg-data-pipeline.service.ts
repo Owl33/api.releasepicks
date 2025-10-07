@@ -364,10 +364,6 @@ export class RawgDataPipelineService {
       releaseStatus = ReleaseStatus.RELEASED;
     }
 
-    // ===== Phase 5.5: 플랫폼 타입 추가 =====
-    // RAWG는 콘솔 게임만 수집하므로 첫 번째 패밀리를 platformType으로 사용
-    const platformType = raw.platformFamilies[0] || 'playstation';
-
     const meetsPopularityThreshold =
       popularityScore >= RAWG_COLLECTION.popularityThreshold;
 
@@ -477,7 +473,6 @@ export class RawgDataPipelineService {
             metacriticScore: rawgDetails.metacritic || undefined,
             opencriticScore: undefined,
             rawgAdded: raw.added,
-            platformType: 'console' as const,
           };
 
           releases = raw.platformFamilies.map((family) => {
@@ -533,14 +528,12 @@ export class RawgDataPipelineService {
       // ===== Phase 5.5: DLC 메타데이터 =====
       isDlc: raw.isDlc, // DLC 여부 (parent_games_count > 0 감지)
       parentRawgId: raw.parentRawgId, // 부모 게임 RAWG ID (DLC일 때만 존재)
-      platformType, // 'playstation' | 'xbox' | 'nintendo'
 
       releaseDate,
       releaseDateRaw: raw.released ?? undefined,
       releaseStatus,
       comingSoon,
       popularityScore,
-      platformsSummary: raw.platformFamilies, // 정규화된 패밀리명 그대로 사용
 
       // ===== 회사 정보 (개발사/퍼블리셔) =====
       companies: rawgDetails

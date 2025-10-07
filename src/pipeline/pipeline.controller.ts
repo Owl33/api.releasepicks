@@ -969,13 +969,11 @@ export class PipelineController {
       parent_rawg_id: gameData.parentRawgId ?? null,
       parent_reference_type: gameData.parentReferenceType,
       is_dlc: isDlc, // Phase 5.5
-      platform_type: gameData.platformType, // Phase 5.5
       release_date_date: gameData.releaseDate,
       release_date_raw: gameData.releaseDateRaw,
       release_status: gameData.releaseStatus,
       coming_soon: gameData.comingSoon,
       popularity_score: gameData.popularityScore,
-      platforms_summary: gameData.platformsSummary,
       followers_cache: gameData.followersCache ?? null,
     });
 
@@ -1054,6 +1052,42 @@ export class PipelineController {
       throw new Error(`게임을 찾을 수 없습니다: ${gameId}`);
     }
 
+    // ===== ✅ Steam 게임 보호: RAWG 데이터로 덮어쓰지 않음 =====
+    const isSteamGame = existingGame.steam_id !== null && existingGame.steam_id > 0;
+    const isRawgDataSource = gameData.rawgId !== null && !gameData.steamId;
+
+    if (isSteamGame && isRawgDataSource) {
+      this.logger.debug(
+        `🛡️ [Steam 게임 보호] RAWG 데이터로 detail 덮어쓰기 차단 - ${gameData.name} (steam_id: ${existingGame.steam_id})`,
+      );
+
+      // games 테이블의 변동 필드만 업데이트
+      await manager.update(Game, gameId, {
+        release_date_date: gameData.releaseDate,
+        release_status: gameData.releaseStatus,
+        coming_soon: gameData.comingSoon,
+        popularity_score: gameData.popularityScore,
+        followers_cache: gameData.followersCache ?? null,
+        rawg_id: existingGame.rawg_id ?? gameData.rawgId, // ✅ RAWG ID 추가
+        updated_at: new Date(),
+      });
+
+      // ✅ game_details 스킵, game_releases만 처리 (콘솔 릴리스 정보)
+      if (gameData.releases && gameData.releases.length > 0) {
+        await this.saveGameReleases(gameId, gameData.releases, manager);
+        this.logger.debug(
+          `✅ [콘솔 릴리스] ${gameData.releases.length}개 플랫폼 추가 완료 - ${gameData.name}`,
+        );
+      }
+
+      // ✅ companies도 업데이트 (개발사/퍼블리셔 정보 보완)
+      if (gameData.companies && gameData.companies.length > 0) {
+        await this.saveCompanies(gameId, gameData.companies, manager);
+      }
+
+      return; // game_details 업데이트는 스킵
+    }
+
     const isDlc = gameData.isDlc ?? existingGame.is_dlc ?? false;
     const searchText = buildSearchText(gameData.name, gameData.companies);
 
@@ -1066,7 +1100,6 @@ export class PipelineController {
       release_status: gameData.releaseStatus,
       coming_soon: gameData.comingSoon,
       popularity_score: gameData.popularityScore,
-      platforms_summary: gameData.platformsSummary,
       followers_cache: gameData.followersCache ?? null,
       updated_at: new Date(),
 
@@ -1080,9 +1113,6 @@ export class PipelineController {
       // Phase 5.5: 부모 외부 ID (합집합, NULL로 덮지 않음)
       parent_steam_id: gameData.parentSteamId ?? existingGame.parent_steam_id,
       parent_rawg_id: gameData.parentRawgId ?? existingGame.parent_rawg_id,
-
-      // Phase 5.5: 플랫폼 타입 (NULL일 때만 채움)
-      platform_type: existingGame.platform_type ?? gameData.platformType,
     };
 
     // 1. games 테이블 업데이트
@@ -1097,43 +1127,50 @@ export class PipelineController {
     }
 
     // 2. game_details 업데이트 (본편만, 인기도 40점 이상만)
+    // ===== ✅ 추가 보호: Steam 게임은 RAWG 데이터로 덮어쓰지 않음 =====
     if (gameData.popularityScore >= 40 && gameData.details) {
-      const existingDetails = await manager.findOne(GameDetail, {
-        where: { game_id: gameId },
-      });
-
-      if (existingDetails) {
-        // ✅ camelCase → snake_case 매핑
-        await manager.update(
-          GameDetail,
-          { game_id: gameId },
-          {
-            screenshots: gameData.details.screenshots,
-            video_url: gameData.details.videoUrl,
-            description: gameData.details.description,
-            website: gameData.details.website,
-            genres: gameData.details.genres,
-            header_image: gameData.details.headerImage,
-
-            tags: gameData.details.tags,
-            support_languages: gameData.details.supportLanguages,
-            metacritic_score: gameData.details.metacriticScore ?? null,
-            opencritic_score: gameData.details.opencriticScore ?? null,
-            rawg_added: gameData.details.rawgAdded ?? null,
-            total_reviews: gameData.details.totalReviews ?? null,
-            review_score_desc: gameData.details.reviewScoreDesc,
-            platform_type: gameData.details.platformType,
-            search_text: searchText,
-            updated_at: new Date(),
-          },
+      // Steam 게임이고 현재 업데이트 데이터가 RAWG 소스인 경우 스킵
+      if (isSteamGame && gameData.rawgId && !gameData.steamId) {
+        this.logger.debug(
+          `🛡️ [Steam Detail 보호] RAWG 데이터로 detail 덮어쓰기 차단 - ${gameData.name}`,
         );
       } else {
-        await this.saveGameDetails(
-          gameId,
-          gameData.details,
-          manager,
-          searchText,
-        );
+        const existingDetails = await manager.findOne(GameDetail, {
+          where: { game_id: gameId },
+        });
+
+        if (existingDetails) {
+          // ✅ camelCase → snake_case 매핑
+          await manager.update(
+            GameDetail,
+            { game_id: gameId },
+            {
+              screenshots: gameData.details.screenshots,
+              video_url: gameData.details.videoUrl,
+              description: gameData.details.description,
+              website: gameData.details.website,
+              genres: gameData.details.genres,
+              header_image: gameData.details.headerImage,
+
+              tags: gameData.details.tags,
+              support_languages: gameData.details.supportLanguages,
+              metacritic_score: gameData.details.metacriticScore ?? null,
+              opencritic_score: gameData.details.opencriticScore ?? null,
+              rawg_added: gameData.details.rawgAdded ?? null,
+              total_reviews: gameData.details.totalReviews ?? null,
+              review_score_desc: gameData.details.reviewScoreDesc,
+              search_text: searchText,
+              updated_at: new Date(),
+            },
+          );
+        } else {
+          await this.saveGameDetails(
+            gameId,
+            gameData.details,
+            manager,
+            searchText,
+          );
+        }
       }
     }
 
@@ -1172,7 +1209,6 @@ export class PipelineController {
       rawg_added: detailsData.rawgAdded ?? null,
       total_reviews: detailsData.totalReviews ?? null,
       review_score_desc: detailsData.reviewScoreDesc,
-      platform_type: detailsData.platformType,
       search_text: searchText,
     });
 

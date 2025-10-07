@@ -19,7 +19,6 @@ import { Game } from './game.entity';
  * 특징: 인기도 40점 이상 게임만 저장, Steam+RAWG 통합 데이터
  */
 @Entity('game_details')
-@Index('ix_game_details_platform_type', ['platform_type'])
 @Check('chk_screenshots_max5', 'array_length(screenshots, 1) <= 5')
 export class GameDetail {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
@@ -42,7 +41,7 @@ export class GameDetail {
   @Column({ type: 'text', nullable: true })
   website: string | null; // 공식 웹사이트
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: 'text' })
   header_image: string;
   // ===== 분류 정보 (RAWG 우선) =====
   @Column({ type: 'text', array: true, default: '{}' })
@@ -71,10 +70,7 @@ export class GameDetail {
   @Column({ type: 'text', nullable: true })
   review_score_desc: string | null; // 리뷰 점수 설명
 
-  // ===== 플랫폼 타입 요약 (캐시) =====
-  @Column({ type: 'text', nullable: true })
-  platform_type: string | null; // 'pc' | 'console' | 'mixed'
-
+  // ===== 검색용 캐시 =====
   @Column({ type: 'text', default: '' })
   search_text: string; // PGroonga 검색용 텍스트 캐시
 

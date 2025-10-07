@@ -30,7 +30,6 @@ export interface ProcessedGameData {
 
   // ===== Phase 5.5 추가: DLC 메타데이터 =====
   isDlc?: boolean; // DLC 여부
-  platformType?: 'pc' | 'playstation' | 'xbox' | 'nintendo'; // 플랫폼 타입
   childDlcSteamIds?: number[]; // Steam 본편에서 수집한 DLC AppID 리스트 (백필용)
 
   // 출시 정보
@@ -42,9 +41,6 @@ export interface ProcessedGameData {
   // 인기도
   popularityScore: number;
   followersCache?: number | null;
-
-  // 플랫폼 요약
-  platformsSummary: string[];
 
   // 회사 정보 (개발사/퍼블리셔)
   companies?: CompanyData[];
@@ -91,8 +87,6 @@ export interface GameDetailsData {
   rawgAdded?: number;
   totalReviews?: number;
   reviewScoreDesc?: string;
-  // 플랫폼 타입 요약
-  platformType?: 'pc' | 'console' | 'mixed';
 }
 
 /**

@@ -21,9 +21,11 @@ export interface CalendarReleaseDto {
   comingSoon: boolean;
   releaseStatus: ReleaseStatus | null;
   popularityScore: number;
-  posterImage: string | null;
+  headerImage: string;
   genres: string[];
-  platformsSummary: string[];
+  developers: string[];
+  publishers: string[];
+  currentPrice: number | null;
 }
 
 export interface CalendarResponseDto {

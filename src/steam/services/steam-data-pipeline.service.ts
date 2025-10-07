@@ -235,7 +235,6 @@ export class SteamDataPipelineService {
         parentRawgId: undefined,
         parentReferenceType: undefined,
         isDlc,
-        platformType: 'pc',
         childDlcSteamIds,
         releaseDate,
         releaseDateRaw,
@@ -243,7 +242,6 @@ export class SteamDataPipelineService {
         comingSoon: steamDetails.coming_soon,
         popularityScore,
         followersCache: followers ?? undefined,
-        platformsSummary: ['pc'],
         companies: [
           ...(steamDetails.developers || []).map((dev: any) => ({
             name: typeof dev === 'string' ? dev : dev?.name || 'Unknown',
@@ -263,13 +261,12 @@ export class SteamDataPipelineService {
                   youtubeVideoUrl ||
                   (steamDetails.movies as any[])?.[0]?.mp4?.max,
                 description:
-                  (steamDetails.short_description as string) || undefined,
+                  (steamDetails.detailed_description as string) || undefined,
                 website: (steamDetails.website as string) || undefined,
                 genres: (steamDetails.genres as any[]) || [],
                 tags: steamDetails.categories || null,
                 supportLanguages: steamDetails.supported_languages || [],
                 metacriticScore: steamDetails.metacritic || null,
-                platformType: 'pc',
                 totalReviews,
                 reviewScoreDesc,
                 

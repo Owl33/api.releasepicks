@@ -63,13 +63,14 @@ export class GamesService {
         'release.coming_soon AS release_coming_soon',
         'release.release_status AS release_status',
         'release.release_date_date AS release_date',
+        'release.current_price_cents AS release_current_price_cents',
         'game.id AS game_id',
         'game.name AS game_name',
         'game.slug AS game_slug',
         'game.popularity_score AS game_popularity_score',
-        'game.platforms_summary AS game_platforms_summary',
         'detail.screenshots AS detail_screenshots',
         'detail.genres AS detail_genres',
+        'detail.header_image as header_image',
       ])
       .where('release.release_date_date IS NOT NULL')
       .andWhere('release.release_date_date BETWEEN :start AND :end', {
@@ -83,7 +84,7 @@ export class GamesService {
       .getRawMany();
 
     const uniqueGameIds = new Set<number>();
-    const uniqueDates = new Set<string>();
+    const uniqueDates = new Set<Date>();
     const aggregateMap = new Map<string, CalendarReleaseDto>();
 
     rows.forEach((row) => {
@@ -92,16 +93,13 @@ export class GamesService {
         return;
       }
 
-      const releaseDateKey = releaseDate.toISOString().split('T')[0];
+      const releaseDateKey = releaseDate;
       const gameId = Number(row.game_id);
       const aggregateKey = `${gameId}:${releaseDateKey}`;
 
       uniqueGameIds.add(gameId);
       uniqueDates.add(releaseDateKey);
 
-      const platformsSummary = this.normalizeStringArray(
-        row.game_platforms_summary,
-      );
       const genres = this.normalizeStringArray(row.detail_genres);
       const screenshots = this.normalizeStringArray(row.detail_screenshots);
 
@@ -111,6 +109,10 @@ export class GamesService {
       const popularityScore = this.toNumber(row.game_popularity_score);
       const comingSoon = Boolean(row.release_coming_soon);
       const releaseStatus = (row.release_status as ReleaseStatus) ?? null;
+      const priceCents = row.release_current_price_cents
+        ? Number(row.release_current_price_cents)
+        : null;
+      const currentPrice = priceCents ? priceCents / 100 : null;
 
       const existing = aggregateMap.get(aggregateKey);
       if (existing) {
@@ -132,13 +134,17 @@ export class GamesService {
           popularityScore,
         );
         existing.genres = this.mergeStringArrays(existing.genres, genres);
-        existing.platformsSummary = this.mergeStringArrays(
-          existing.platformsSummary,
-          platformsSummary,
-        );
-        if (!existing.posterImage) {
-          existing.posterImage = this.extractFirst(screenshots);
+        // 가격은 null이 아닌 값 우선, steam 스토어 우선
+        if (existing.currentPrice === null && currentPrice !== null) {
+          existing.currentPrice = currentPrice;
+        } else if (
+          currentPrice !== null &&
+          store === 'steam' &&
+          existing.currentPrice !== null
+        ) {
+          existing.currentPrice = currentPrice;
         }
+
         return;
       }
 
@@ -147,6 +153,7 @@ export class GamesService {
         gameId,
         name: String(row.game_name ?? ''),
         slug: String(row.game_slug ?? ''),
+        headerImage: row.header_image,
         platforms: [platform],
         stores: [store],
         storeLinks: [{ store, url: storeUrl }],
@@ -154,12 +161,26 @@ export class GamesService {
         comingSoon,
         releaseStatus,
         popularityScore,
-        posterImage: this.extractFirst(screenshots),
         genres,
-        platformsSummary,
+        developers: [],
+        publishers: [],
+        currentPrice,
       };
 
       aggregateMap.set(aggregateKey, aggregate);
+    });
+
+    // ✅ 개발사/퍼블리셔 정보 로드
+    const gameIds = Array.from(uniqueGameIds);
+    const companiesMap = await this.loadCompaniesBulk(gameIds);
+
+    // ✅ aggregate에 회사 정보 추가
+    aggregateMap.forEach((aggregate) => {
+      const companies = companiesMap.get(aggregate.gameId);
+      if (companies) {
+        aggregate.developers = companies.developers;
+        aggregate.publishers = companies.publishers;
+      }
     });
 
     const data = Array.from(aggregateMap.values());
@@ -198,6 +219,14 @@ export class GamesService {
       releaseDateRaw: release.release_date_raw,
     }));
 
+    // 플랫폼 정보 추출 (중복 제거)
+    const platforms: Platform[] = [];
+    (game.releases ?? []).forEach((release) => {
+      if (!platforms.includes(release.platform)) {
+        platforms.push(release.platform);
+      }
+    });
+
     // 가격 정보 추출 (Steam 우선, 없으면 첫 번째 release, 없으면 null)
     const steamRelease = game.releases?.find((r) => r.store === 'steam');
     const priceRelease = steamRelease ?? game.releases?.[0];
@@ -220,12 +249,11 @@ export class GamesService {
       isDlc: game.is_dlc,
       comingSoon: game.coming_soon,
       popularityScore: game.popularity_score,
-      platformsSummary: game.platforms_summary ?? [],
       releaseDate: game.release_date_date,
       releaseStatus: game.release_status,
       followersCache: game.followers_cache,
 
-      header_image: detail?.header_image ?? null,
+      headerImage: detail ? detail.header_image : '',
       description: detail?.description ?? null,
       website: detail?.website ?? null,
       genres: detail?.genres ?? [],
@@ -239,13 +267,13 @@ export class GamesService {
       rawgAdded: detail?.rawg_added ?? null,
       totalReviews: detail?.total_reviews ?? null,
       reviewScoreDesc: detail?.review_score_desc ?? null,
-      detailPlatformType: detail?.platform_type ?? null,
 
       currentPrice,
+      platforms,
       releases,
       dlcs,
-      developers, 
-      publishers, 
+      developers,
+      publishers,
     };
   }
 
@@ -285,7 +313,6 @@ export class GamesService {
             'game.name AS game_name',
             'game.slug AS game_slug',
             'game.popularity_score AS game_popularity_score',
-            'game.platforms_summary AS game_platforms_summary',
             'detail.screenshots AS detail_screenshots',
           ])
           .where('game.id IN (:...ids)', { ids: upcomingIds })
@@ -304,7 +331,6 @@ export class GamesService {
         'game.slug AS game_slug',
         'game.popularity_score AS game_popularity_score',
         'game.release_date_date AS game_release_date',
-        'game.platforms_summary AS game_platforms_summary',
         'detail.screenshots AS detail_screenshots',
       ])
       .where('game.popularity_score > 0')
@@ -331,9 +357,6 @@ export class GamesService {
         const popularityScore = this.toNumber(
           row.max_popularity_score ?? details.game_popularity_score,
         );
-        const platformsSummary = this.normalizeStringArray(
-          details.game_platforms_summary,
-        );
         const screenshots = this.normalizeStringArray(
           details.detail_screenshots,
         );
@@ -344,8 +367,8 @@ export class GamesService {
           slug: String(details.game_slug ?? ''),
           releaseDate: releaseDate as Date | string | number | null,
           popularityScore,
-          platformsSummary,
-          posterImage: this.extractFirst(screenshots),
+          headerImage: details.header_image,
+          // posterImage: this.extractFirst(screenshots),
           daysUntilRelease: releaseDate
             ? this.calculateDaysBetween(releaseDate, today)
             : null,
@@ -361,9 +384,6 @@ export class GamesService {
     const popular: HighlightGameDto[] = popularRows.map((row) => {
       const summary = releaseSummaryMap.get(Number(row.game_id));
       const releaseDate = this.toDate(row.game_release_date);
-      const platformsSummary = this.normalizeStringArray(
-        row.game_platforms_summary,
-      );
       const screenshots = this.normalizeStringArray(row.detail_screenshots);
 
       return {
@@ -372,8 +392,8 @@ export class GamesService {
         slug: String(row.game_slug ?? ''),
         releaseDate: releaseDate as Date | string | number | null,
         popularityScore: this.toNumber(row.game_popularity_score),
-        platformsSummary,
-        posterImage: this.extractFirst(screenshots),
+        headerImage: row.header_image,
+        // posterImage: this.extractFirst(screenshots),
         daysUntilRelease: releaseDate
           ? this.calculateDaysBetween(releaseDate, today)
           : null,
@@ -518,6 +538,58 @@ export class GamesService {
     }
 
     return { developers, publishers };
+  }
+
+  /**
+   * 여러 게임의 개발사/퍼블리셔 정보를 한 번에 로드
+   * @param gameIds 게임 ID 배열
+   * @returns Map<gameId, { developers: string[], publishers: string[] }>
+   */
+  private async loadCompaniesBulk(
+    gameIds: number[],
+  ): Promise<Map<number, { developers: string[]; publishers: string[] }>> {
+    if (!gameIds.length) {
+      return new Map();
+    }
+
+    const rows = await this.gcrRepository
+      .createQueryBuilder('gcr')
+      .innerJoin('gcr.company', 'c')
+      .select([
+        'gcr.game_id AS game_id',
+        'c.name AS company_name',
+        'gcr.role AS role',
+      ])
+      .where('gcr.game_id IN (:...ids)', { ids: gameIds })
+      .getRawMany();
+
+    const map = new Map<
+      number,
+      { developers: string[]; publishers: string[] }
+    >();
+
+    rows.forEach((r) => {
+      const gameId = Number(r.game_id);
+      const name = String(r.company_name ?? '');
+
+      let entry = map.get(gameId);
+      if (!entry) {
+        entry = { developers: [], publishers: [] };
+        map.set(gameId, entry);
+      }
+
+      if (r.role === 'developer') {
+        if (!entry.developers.includes(name)) {
+          entry.developers.push(name);
+        }
+      } else if (r.role === 'publisher') {
+        if (!entry.publishers.includes(name)) {
+          entry.publishers.push(name);
+        }
+      }
+    });
+
+    return map;
   }
 
   private resolveMonthRange(month: string): { start: Date; end: Date } {

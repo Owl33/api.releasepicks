@@ -202,7 +202,7 @@ export class SteamAppDetailsService {
       website: data.website || null,
 
       // 미디어
-      header_image: data.header_image,
+      header_image: data.header_image ?? data.capsule_image,
       screenshots: data.screenshots?.slice(0, 5).map((s) => s.path_full) || [],
       movies: data.movies?.slice(0, 1).map((m) => m.mp4?.max) || [],
 
