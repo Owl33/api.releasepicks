@@ -23,23 +23,6 @@ export async function buildServer() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
   });
-  const server = app.getHttpAdapter().getInstance();
-  server.options('*', (_req, res) => {
-    res.setHeader(
-      'Access-Control-Allow-Origin',
-      'https://game-calendar-two.vercel.app',
-    );
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    );
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type,Authorization,X-Request-Id',
-    );
-    res.status(204).end();
-  });
 
   // ❗ serverless에서는 listen() 금지
   await app.init();
