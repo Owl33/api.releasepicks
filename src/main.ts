@@ -17,12 +17,7 @@ export async function buildServer() {
     new ResponseTransformInterceptor(),
   );
   app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
-  app.enableCors({
-    origin: ['http://localhost:3000', 'https://game-calendar-two.vercel.app'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
-  });
+  app.enableCors();
 
   // ❗ serverless에서는 listen() 금지
   await app.init();
