@@ -30,6 +30,6 @@ async function bootstrap() {
   // app.enableCors();
   // app.setGlobalPrefix('api');
 
-  await app.listen(8080);
+  await app.init(); // ★ serverless 필수 (listen 금지)
+  return app;
 }
-bootstrap();

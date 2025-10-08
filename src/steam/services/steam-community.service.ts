@@ -8,6 +8,7 @@ import {
 import axios from 'axios';
 import puppeteer, { Browser, Page } from 'puppeteer';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
+import chromium from '@sparticuz/chromium';
 
 type App = { appid: number; name: string };
 export type SteamFollowersResult = {
@@ -144,11 +145,13 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
       headless: true,
       executablePath: executablePath || undefined,
       args: [
+        ...chromium.args,
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
         '--blink-settings=imagesEnabled=false',
       ],
+
       defaultViewport: { width: 1280, height: 800 },
     });
   }
