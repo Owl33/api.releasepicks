@@ -25,7 +25,6 @@
     "update:steam-details": "ts-node scripts/update-steam-game-details.ts",
     "update:steam-details:dry": "ts-node scripts/update-steam-game-details.ts --dry-run",
     "update:steam-details:test": "ts-node scripts/update-steam-game-details.ts --dry-run --limit 10"
-    
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",
@@ -36,6 +35,7 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/typeorm": "^11.0.0",
+    "@sparticuz/chromium": "^141.0.0",
     "axios": "^1.12.2",
     "bottleneck": "^2.19.5",
     "cache-manager": "^7.2.0",
@@ -47,6 +47,7 @@
     "pg": "^8.16.3",
     "playwright": "^1.55.1",
     "puppeteer": "^24.22.3",
+    "puppeteer-core": "^24.23.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "slugify": "^1.6.6",
