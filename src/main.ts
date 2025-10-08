@@ -1,3 +1,4 @@
+// src/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
@@ -6,30 +7,20 @@ import { ResponseTransformInterceptor } from './common/interceptors/response.int
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
-async function bootstrap() {
+export async function buildServer() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
-  // 요청 ID
   app.use(new RequestIdMiddleware().use);
-
-  // 전역 인터셉터: 로깅 → 성공응답 표준화
-  app.useGlobalInterceptors(
-    new LoggingInterceptor(),
-    new ResponseTransformInterceptor(),
-  );
-
-  // 전역 예외 필터: HTTP → 나머지
+  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseTransformInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
   app.enableCors({
-    origin: ['http://localhost:3000'],
-    preflightContinue: false,
+    origin: ['http://localhost:3000'], // 필요 시 도메인 추가
     credentials: true,
   });
 
-  // CORS/프리픽스 등 필요 시 추가
-  // app.enableCors();
-  // app.setGlobalPrefix('api');
+  // ❗ Serverless에서는 listen 금지
+  await app.init();
 
-  await app.init(); // ★ serverless 필수 (listen 금지)
-  return app;
+  // Express request listener 반환
+  return app.getHttpAdapter().getInstance();
 }
