@@ -17,7 +17,13 @@ export async function buildServer() {
     new ResponseTransformInterceptor(),
   );
   app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
-  app.enableCors();
+  app.enableCors({
+    origin: '*',
+    preflightContinue: false,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+  });
 
   // ❗ serverless에서는 listen() 금지
   await app.init();
