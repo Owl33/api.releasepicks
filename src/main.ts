@@ -18,8 +18,27 @@ export async function buildServer() {
   );
   app.useGlobalFilters(new HttpExceptionFilter(), new AllExceptionsFilter());
   app.enableCors({
-    origin: ['http://localhost:3000', 'https://game-calendar-two.vercel.app'], // 필요 시 도메인 추가
+    origin: ['http://localhost:3000', 'https://game-calendar-two.vercel.app'],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+  });
+  const server = app.getHttpAdapter().getInstance();
+  server.options('*', (_req, res) => {
+    res.setHeader(
+      'Access-Control-Allow-Origin',
+      'https://game-calendar-two.vercel.app',
+    );
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+    );
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type,Authorization,X-Request-Id',
+    );
+    res.status(204).end();
   });
 
   // ❗ serverless에서는 listen() 금지
