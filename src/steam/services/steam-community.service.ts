@@ -2,13 +2,10 @@
 import {
   Injectable,
   Logger,
-  OnModuleInit,
   OnModuleDestroy,
 } from '@nestjs/common';
 import axios from 'axios';
-import puppeteer, { Browser, Page } from 'puppeteer';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
-import chromium from '@sparticuz/chromium';
 
 type App = { appid: number; name: string };
 export type SteamFollowersResult = {
@@ -21,6 +18,32 @@ const APP_LIST_URL = 'https://api.steampowered.com/ISteamApps/GetAppList/v2/';
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** ───────────────────────────────────────────────────────────────
+ *  Puppeteer 구조적 타입 (필요 메서드만)
+ *  ─ puppeteer / puppeteer-core 어느 쪽이 와도 호환됨
+ *  ───────────────────────────────────────────────────────────── */
+interface MinimalPage {
+  setJavaScriptEnabled(enabled: boolean): Promise<void>;
+  setUserAgent(ua: string): Promise<void>;
+  setExtraHTTPHeaders(headers: Record<string, string>): Promise<void>;
+  evaluateOnNewDocument(fn: (...args: any[]) => any): Promise<void>;
+  setRequestInterception(value: boolean): Promise<void>;
+  on(event: 'request', cb: (req: any) => void): void;
+  goto(url: string, opts?: any): Promise<{ status(): number; headers(): Record<string, string> } | null>;
+  waitForFunction(
+    fn: (...args: any[]) => any,
+    opts?: { timeout?: number },
+    ...args: any[]
+  ): Promise<any>;
+  evaluate<T>(fn: (...args: any[]) => T, ...args: any[]): Promise<T>;
+  close(): Promise<void>;
+}
+
+interface MinimalBrowser {
+  newPage(): Promise<MinimalPage>;
+  close(): Promise<void>;
 }
 
 /** 간단 토큰 버킷 리미터: burst 허용 후 초당 일정 속도로 회복 (+ 일시 감속 지원) */
@@ -77,9 +100,12 @@ class TokenBucket {
 }
 
 @Injectable()
-export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
+export class SteamCommunityService implements OnModuleDestroy {
   private readonly logger = new Logger(SteamCommunityService.name);
-  private browser: Browser | null = null;
+
+  // 브라우저/런처는 지연 초기화 (구조적 타입 사용)
+  private browserPromise: Promise<MinimalBrowser> | null = null;
+
   private readonly globalLimiter = getGlobalRateLimiter();
 
   // ── 성능/안정화 파라미터 (ENV로 조절 가능) ─────────────────────────────
@@ -120,8 +146,8 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     refillPerSec: this.RPS,
   });
 
-  // 페이지 풀
-  private pagePool: Page[] = [];
+  // 페이지 풀 (구조적 타입)
+  private pagePool: MinimalPage[] = [];
   private pagePending = 0;
 
   /** 다국어 '멤버' 키워드 패턴 */
@@ -137,33 +163,66 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
   // 429 모니터링
   private recent429: number[] = [];
 
-  async onModuleInit() {
-    this.logger.log('🚀 Puppeteer 실행 시작');
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  /** 서버리스 환경 여부 */
+  private isServerless() {
+    return !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_VERSION;
+  }
 
-    this.browser = await puppeteer.launch({
-      headless: true,
-      executablePath: executablePath || undefined,
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--blink-settings=imagesEnabled=false',
-      ],
+  /** 필요 시에만 브라우저 띄우기 (서버리스/로컬 분기) */
+  private async getBrowser(): Promise<MinimalBrowser> {
+    if (this.browserPromise) return this.browserPromise;
 
-      defaultViewport: { width: 1280, height: 800 },
-    });
+    this.logger.log('🚀 Puppeteer 브라우저 초기화 시작');
+
+    if (this.isServerless()) {
+      // 서버리스: puppeteer-core + @sparticuz/chromium
+      this.browserPromise = (async () => {
+        const [chromiumMod, pptrCore] = await Promise.all([
+          import('@sparticuz/chromium'),
+          import('puppeteer-core'),
+        ]);
+
+        const chromium = (chromiumMod as any).default || (chromiumMod as any);
+
+        const executablePath = await chromium.executablePath();
+        const browser = await (pptrCore as any).launch({
+          args: chromium.args,
+          executablePath,
+          headless: true,
+          defaultViewport: { width: 1280, height: 800 },
+        });
+
+        this.logger.log('✅ 서버리스 브라우저 준비 완료');
+        return browser as unknown as MinimalBrowser;
+      })();
+    } else {
+      // 로컬 개발: puppeteer (devDependency) 사용
+      this.browserPromise = (async () => {
+        const local = await import('puppeteer');
+        const browser = await local.default.launch({
+          headless: true,
+          defaultViewport: { width: 1280, height: 800 },
+        });
+        this.logger.log('✅ 로컬 브라우저 준비 완료');
+        return browser as unknown as MinimalBrowser;
+      })();
+    }
+
+    return this.browserPromise;
   }
 
   async onModuleDestroy() {
-    if (this.browser) {
-      this.logger.log('🛑 Puppeteer 종료');
-      await Promise.allSettled(
-        this.pagePool.map((p) => p.close().catch(() => {})),
-      );
-      await this.browser.close();
-      this.browser = null;
+    if (this.browserPromise) {
+      try {
+        const browser = await this.browserPromise;
+        this.logger.log('🛑 Puppeteer 종료');
+        await Promise.allSettled(this.pagePool.map((p) => p.close().catch(() => {})));
+        await browser.close();
+      } catch (e) {
+        this.logger.warn(`브라우저 종료 중 경고: ${(e as any)?.message || e}`);
+      } finally {
+        this.browserPromise = null;
+      }
     }
   }
 
@@ -181,8 +240,8 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
   // ───────────────────────────────────────────────────────────────
   // 페이지 풀
   // ───────────────────────────────────────────────────────────────
-  private async acquirePage(jsEnabled: boolean): Promise<Page> {
-    if (!this.browser) throw new Error('브라우저가 초기화되지 않았습니다.');
+  private async acquirePage(jsEnabled: boolean): Promise<MinimalPage> {
+    const browser = await this.getBrowser();
 
     const page = this.pagePool.pop();
     if (page) {
@@ -195,7 +254,7 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     while (this.pagePending >= this.MAX_CONCURRENCY) await sleep(10);
     this.pagePending++;
     try {
-      const p = await this.browser.newPage();
+      const p = await browser.newPage();
       await p.setUserAgent(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
       );
@@ -209,16 +268,18 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
       await p.setJavaScriptEnabled(jsEnabled);
 
       await p.setRequestInterception(true);
-      p.on('request', (req) => {
-        const t = req.resourceType();
+      p.on('request', (req: any) => {
+        const t = req.resourceType?.() ?? req._resourceType; // core/local 호환
         if (
           t === 'image' ||
           t === 'media' ||
           t === 'font' ||
           t === 'stylesheet'
-        )
+        ) {
           req.abort();
-        else req.continue();
+        } else {
+          req.continue();
+        }
       });
 
       return p;
@@ -227,7 +288,7 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private releasePage(page: Page) {
+  private releasePage(page: MinimalPage) {
     this.pagePool.push(page);
   }
 
@@ -277,7 +338,7 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
       if (Date.now() >= deadline) break;
       const url = `https://steamcommunity.com/search/groups/?text=${encodeURIComponent(q)}`;
 
-      // ① Fast path (JS:off) — 1회만, 매우 짧은 타임아웃
+      // ① Fast path (JS:off)
       if (this.JS_FAST_PATH) {
         best = await this.tryParseWithPage(
           appid,
@@ -291,12 +352,11 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
         if (best > 0) break;
       }
 
-      // 카드가 0개면(로그 상 totalCards=0) 즉시 다음 질의로 넘어가기 위해
-      // JS:on 시도 전 아주 짧게 랜덤 대기 (패턴 완화)
+      // 짧은 지연(패턴 완화)
       await sleep(60 + Math.floor(Math.random() * 90));
       if (Date.now() >= deadline) break;
 
-      // ② Slow path (JS:on) — 1회만
+      // ② Slow path (JS:on)
       best = await this.tryParseWithPage(
         appid,
         gameName,
@@ -307,9 +367,6 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
         deadline,
       );
       if (best > 0) break;
-
-      // 다음 질의로
-      if (Date.now() >= deadline) break;
     }
 
     const finalVal = Math.max(0, best | 0);
@@ -377,7 +434,6 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
 
       // 시도 수 1회만 (빠르게 실패·성공 결정)
       const attempt = 1;
-      let lastErr: any = null;
 
       while (attempt <= 1) {
         if (Date.now() >= deadline) return 0;
@@ -519,15 +575,12 @@ export class SteamCommunityService implements OnModuleInit, OnModuleDestroy {
           this.logger.debug('❌ [Search] 1페이지 매칭 실패');
           return 0;
         } catch (e: any) {
-          lastErr = e;
-          this.logger.warn(`⚠️  path 실패(단일 시도) → ${e?.message ?? e}`);
+          const msg = e?.message ?? String(e);
+          this.logger.warn(`⚠️  path 실패(단일 시도) → ${msg}`);
           return 0;
         }
       }
 
-      this.logger.error(
-        `❌ [Search] 최종 실패: ${lastErr?.message ?? lastErr}`,
-      );
       return 0;
     } finally {
       try {
