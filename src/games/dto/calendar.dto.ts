@@ -19,6 +19,8 @@ export interface CalendarReleaseDto {
   storeLinks: StoreLinkDto[];
   releaseDate: Date | string | number | null;
   comingSoon: boolean;
+  releaseDateRaw?: string | null;
+
   releaseStatus: ReleaseStatus | null;
   popularityScore: number;
   headerImage: string;

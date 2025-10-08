@@ -18,7 +18,14 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "regression:phase7": "ts-node scripts/regression/phase7-regression.ts"
+    "regression:phase7": "ts-node scripts/regression/phase7-regression.ts",
+    "update:pc-details": "ts-node scripts/update-pc-game-details.ts",
+    "update:pc-details:dry": "ts-node scripts/update-pc-game-details.ts --dry-run",
+    "update:pc-details:test": "ts-node scripts/update-pc-game-details.ts --dry-run --limit 10",
+    "update:steam-details": "ts-node scripts/update-steam-game-details.ts",
+    "update:steam-details:dry": "ts-node scripts/update-steam-game-details.ts --dry-run",
+    "update:steam-details:test": "ts-node scripts/update-steam-game-details.ts --dry-run --limit 10"
+    
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

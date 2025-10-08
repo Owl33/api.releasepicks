@@ -27,6 +27,7 @@ import { rawgMonitor, RawgMonitorSnapshot } from './utils/rawg-monitor';
 
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../youtube/youtube.service';
+import { normalizeGameName } from '../common/utils/game-name-normalizer.util';
 
 export interface CollectProcessedDataOptions {
   // 기존 호출부를 존중: 필요한 옵션만 해석 (없으면 전역 기본값 사용)
@@ -234,9 +235,14 @@ export class RawgDataPipelineService {
             }
           }
 
+          // ⚠️ RAWG API의 slug는 플랫폼별 표기 차이로 중복 게임을 유발할 수 있음
+          // 예: "Metal Gear Solid Delta" (RAWG) vs "METAL GEAR SOLID Δ" (Steam)
+          // 해결: normalizeGameName()으로 통일된 slug 생성
+          const normalizedSlug = normalizeGameName(g.name);
+
           rawResults.push({
             rawgId: g.id,
-            slug: g.slug,
+            slug: normalizedSlug, // ⚠️ 변경: g.slug → normalizedSlug
             name: g.name,
             parentRawgId,
             screenshots:

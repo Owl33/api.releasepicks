@@ -5,11 +5,15 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { GamesService } from './games.service';
 import { CalendarResponseDto } from './dto/calendar.dto';
 import { GameDetailResponseDto } from './dto/detail.dto';
 import { HighlightsResponseDto } from './dto/highlights.dto';
+import { GameFilterDto, FilteredGamesResponseDto } from './dto/filter.dto';
+import { SearchGamesDto, SearchResponseDto } from './dto/search.dto';
 
 /**
  * 프론트엔드에서 직접 호출하는 게임 전용 API 컨트롤러
@@ -40,7 +44,21 @@ export class GamesController {
     return this.gamesService.getHighlights(upcoming, popular);
   }
 
+  @Get('all')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async getAllGames(
+    @Query() filters: GameFilterDto,
+  ): Promise<FilteredGamesResponseDto> {
+    return this.gamesService.getAllGames(filters);
+  }
 
+  @Get('search')
+  @UsePipes(new ValidationPipe({ transform: true }))
+  async searchGames(
+    @Query() dto: SearchGamesDto,
+  ): Promise<SearchResponseDto> {
+    return this.gamesService.searchGames(dto);
+  }
 
   @Get(':id')
   async getGameDetail(

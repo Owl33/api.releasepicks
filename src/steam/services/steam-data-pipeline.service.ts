@@ -109,7 +109,7 @@ export class SteamDataPipelineService {
         return null;
       }
 
-      const slug = this.generateSlug(app.name);
+      const slug = this.generateSlug(app.name, app.appid);
 
       timers.followersStart = Date.now();
       await this.globalLimiter.take('steam:followers', {
@@ -1018,17 +1018,17 @@ export class SteamDataPipelineService {
 
   /**
    * 슬러그 생성 (URL 친화적, 다국어 지원)
-   * - 영어, 숫자, 한글, 일본어(히라가나/가타카나/한자) 지원
-   * - 특수문자 제거, 공백을 하이픈으로 변환
+   *
+   * ⚠️ DEPRECATED: 이 메서드는 normalizeGameName()으로 대체되었습니다.
+   * - 그리스 문자, 로마 숫자, 특수 기호 정규화 미지원
+   * - 플랫폼 간 이름 표기 차이로 인한 중복 게임 문제 발생
+   *
+   * @deprecated src/common/utils/game-name-normalizer.util.ts의 normalizeGameName() 사용
    */
-  private generateSlug(name: string): string {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9가-힣ぁ-んァ-ヶ一-龯\s-]/g, '') // 특수문자 제거 (영어/숫자/한글/일본어 허용)
-      .replace(/\s+/g, '-') // 공백을 하이픈으로
-      .replace(/-+/g, '-') // 연속 하이픈 제거
-      .replace(/^-|-$/g, '') // 앞뒤 하이픈 제거
-      .substring(0, 100); // 길이 제한
+  private generateSlug(name: string, fallbackId?: number): string {
+    // ⚠️ 하위 호환성을 위해 유지하지만, normalizeGameName()을 사용하도록 변경됨
+    const { normalizeGameName } = require('../../common/utils/game-name-normalizer.util');
+    return normalizeGameName(name, fallbackId);
   }
 }
 
