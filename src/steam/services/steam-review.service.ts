@@ -37,7 +37,7 @@ export class SteamReviewService {
       const startTime = Date.now();
 
       // Rate Limiting
-      const url = `${this.steamReviewUrl}/${appId}?json=1`;
+      const url = `${this.steamReviewUrl}/${appId}?json=1&language=all&purchase_type=all`;
       const requestStart = Date.now();
       const response = await firstValueFrom(
         this.httpService.get(url, {
