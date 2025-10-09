@@ -15,7 +15,7 @@ export const RAWG_PLATFORM_IDS = {
 export const RAWG_COLLECTION = {
   pageSize: 200 as const,
   ordering: '-released' as const,
-  pastMonths: 12,
+  pastMonths: 120,
   futureMonths: 12,
   popularityThreshold: 40,
   minAdded: 3,

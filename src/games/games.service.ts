@@ -38,6 +38,8 @@ interface ReleaseAggregationSummary {
   stores: Store[];
   storeLinks: StoreLinkDto[];
   comingSoon: boolean;
+  currentPrice: number | null; // ✅ 추가: 페이지 내 대표 가격(스팀 우선)
+  isFree: boolean; // ✅ 추가: 페이지 내 무료 여부(스팀 우선)
 }
 
 /**
@@ -305,7 +307,8 @@ export class GamesService {
   ): Promise<HighlightsResponseDto> {
     const now = new Date();
     const today = this.startOfDayUtc(now);
-    const upperBound = this.addDays(today, 60);
+    const upperBound = this.addDays(today, 120);
+    const shuffleSalt = now.toISOString().slice(0, 16); // 'YYYY-MM-DDTHH:MM'
 
     /**
      * UPCOMING
@@ -349,7 +352,8 @@ export class GamesService {
             'detail.screenshots AS detail_screenshots',
           ])
           .where('game.id IN (:...ids)', { ids: upcomingIds })
-          .orderBy('RANDOM()') // 완전 랜덤
+          .orderBy('md5( (game.id)::text || :salt )', 'ASC')
+          .setParameters({ salt: shuffleSalt })
           .limit(upcomingLimit)
           .getRawMany()
       : [];
@@ -382,6 +386,8 @@ export class GamesService {
         storeLinks: summary?.storeLinks ?? [],
         releaseIds: summary?.releaseIds ?? [],
         comingSoon: summary?.comingSoon ?? false,
+        currentPrice: summary?.currentPrice ?? null, // ✅ 추가
+        isFree: summary?.isFree ?? false, // ✅ 추가
       };
     });
 
@@ -403,9 +409,10 @@ export class GamesService {
         'detail.header_image AS header_image',
         'detail.screenshots AS detail_screenshots',
       ])
-      .where('game.popularity_score > 0')
+      .where('game.popularity_score > 70')
       .andWhere('game.is_dlc = false')
-      .orderBy('RANDOM()') // 완전 랜덤
+      .orderBy('md5( (game.id)::text || :salt )', 'ASC')
+      .setParameters({ salt: shuffleSalt })
       .limit(popularLimit)
       .getRawMany();
 
@@ -434,6 +441,8 @@ export class GamesService {
         storeLinks: summary?.storeLinks ?? [],
         releaseIds: summary?.releaseIds ?? [],
         comingSoon: summary?.comingSoon ?? false,
+        currentPrice: summary?.currentPrice ?? null, // ✅ 추가
+        isFree: summary?.isFree ?? false, // ✅ 추가
       };
     });
 
@@ -460,6 +469,8 @@ export class GamesService {
         'release.store AS release_store',
         'release.store_url AS release_store_url',
         'release.coming_soon AS release_coming_soon',
+        'release.is_free AS release_is_free', // ✅ 추가
+        'release.current_price_cents AS release_current_price_cents', // ✅ 추가
       ])
       .where('release.game_id IN (:...ids)', { ids: gameIds })
       .getRawMany();
@@ -479,12 +490,40 @@ export class GamesService {
         stores: [],
         storeLinks: [],
         comingSoon: false,
+        currentPrice: null, // ✅ 초기값
+        isFree: false, // ✅ 초기값
       };
 
       this.pushUnique(summary.releaseIds, Number(row.release_id));
       this.pushUnique(summary.platforms, platform);
       this.pushStoreLink(summary.stores, summary.storeLinks, store, storeUrl);
       summary.comingSoon = summary.comingSoon || comingSoon;
+      const priceCents =
+        row.release_current_price_cents != null
+          ? Number(row.release_current_price_cents)
+          : null;
+      const currentPrice = priceCents != null ? priceCents / 100 : null; // ✅ cents → 원화/달러 등
+      const isFree =
+        row.release_is_free === true
+          ? true
+          : row.release_is_free === false
+            ? false
+            : null; // ✅ 명시적 null 허용
+      // 가격
+      if (store === 'steam') {
+        // 스팀 값이 있으면 무조건 갱신
+        if (currentPrice !== null) summary.currentPrice = currentPrice;
+        // 무료 여부도 스팀 값이 있으면 우선 반영
+        if (isFree !== null) summary.isFree = isFree;
+      } else {
+        // 스팀이 아직 못 채웠다면, 첫 유효값을 채움
+        if (summary.currentPrice === null && currentPrice !== null) {
+          summary.currentPrice = currentPrice;
+        }
+        if (summary.isFree === null && isFree !== null) {
+          summary.isFree = isFree;
+        }
+      }
 
       map.set(gameId, summary);
     });

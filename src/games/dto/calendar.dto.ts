@@ -15,10 +15,10 @@ export interface CalendarReleaseDto {
   name: string;
   slug: string;
   platforms: Platform[];
+  releaseDate: Date | string | number | null;
   stores: Store[];
   ogName: string;
   storeLinks: StoreLinkDto[];
-  releaseDate: Date | string | number | null;
   comingSoon: boolean;
   releaseDateRaw?: string | null;
 

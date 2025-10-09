@@ -8,15 +8,18 @@ export interface HighlightGameDto {
   gameId: number;
   name: string;
   slug: string;
+  platforms: Platform[];
   releaseDate: Date | string | number | null;
   popularityScore: number;
   headerImage: string ;
   daysUntilRelease: number | null;
-  platforms: Platform[];
   stores: Store[];
   storeLinks: StoreLinkDto[];
   releaseIds: number[];
   comingSoon: boolean;
+  releaseDateRaw?: string | null;
+  currentPrice: number | null;
+  isFree: boolean;
 }
 
 export interface HighlightsResponseDto {
