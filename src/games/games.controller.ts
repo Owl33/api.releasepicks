@@ -25,16 +25,16 @@ export class GamesController {
     private readonly gameSearchService: GameSearchService,
   ) {}
 
-  @Get('calendar')
-  async getCalendar(
-    @Query('month') month?: string,
-  ): Promise<CalendarResponseDto> {
-    if (!month) {
-      throw new BadRequestException('month 쿼리 파라미터는 필수입니다.');
-    }
+  // @Get('calendar')
+  // async getCalendar(
+  //   @Query('month') month?: string,
+  // ): Promise<CalendarResponseDto> {
+  //   if (!month) {
+  //     throw new BadRequestException('month 쿼리 파라미터는 필수입니다.');
+  //   }
 
-    return this.gamesService.getCalendarByMonth(month);
-  }
+  //   return this.gamesService.getCalendarByMonth(month);
+  // }
 
   @Get('highlights')
   async getHighlights(

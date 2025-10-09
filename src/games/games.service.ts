@@ -58,167 +58,167 @@ export class GamesService {
     private readonly companyRepository: Repository<Company>,
   ) {}
 
-  async getCalendarByMonth(month: string): Promise<CalendarResponseDto> {
-    const { start, end } = this.resolveMonthRange(month);
+  // async getCalendarByMonth(month: string): Promise<CalendarResponseDto> {
+  //   const { start, end } = this.resolveMonthRange(month);
 
-    const rows = await this.gameReleaseRepository
-      .createQueryBuilder('release')
-      .innerJoin('release.game', 'game')
-      .leftJoin('game.details', 'detail')
-      .select([
-        'release.id AS release_id',
-        'release.platform AS release_platform',
-        'release.store AS release_store',
-        'release.store_url AS release_store_url',
-        'release.coming_soon AS release_coming_soon',
-        'release.release_status AS release_status',
-        'release.release_date_date AS release_date',
-        'release.current_price_cents AS release_current_price_cents',
-        'game.id AS game_id',
-        'game.name AS game_name',
-        'game.slug AS game_slug',
-        'game.og_name as game_og_name',
-        'game.popularity_score AS game_popularity_score',
-        'detail.screenshots AS detail_screenshots',
-        'detail.genres AS detail_genres',
-        'detail.header_image as header_image',
-      ])
-      .where('release.release_date_date IS NOT NULL')
-      .andWhere('release.release_date_date BETWEEN :start AND :end', {
-        start,
-        end,
-      })
-      .andWhere('game.is_dlc = false')
-      .andWhere('game.popularity_score >= :minScore', { minScore: 40 })
-      .orderBy('release.release_date_date', 'ASC')
-      .addOrderBy('game.popularity_score', 'DESC')
-      .getRawMany();
+  //   const rows = await this.gameReleaseRepository
+  //     .createQueryBuilder('release')
+  //     .innerJoin('release.game', 'game')
+  //     .leftJoin('game.details', 'detail')
+  //     .select([
+  //       'release.id AS release_id',
+  //       'release.platform AS release_platform',
+  //       'release.store AS release_store',
+  //       'release.store_url AS release_store_url',
+  //       'release.coming_soon AS release_coming_soon',
+  //       'release.release_status AS release_status',
+  //       'release.release_date_date AS release_date',
+  //       'release.current_price_cents AS release_current_price_cents',
+  //       'game.id AS game_id',
+  //       'game.name AS game_name',
+  //       'game.slug AS game_slug',
+  //       'game.og_name as game_og_name',
+  //       'game.popularity_score AS game_popularity_score',
+  //       'detail.screenshots AS detail_screenshots',
+  //       'detail.genres AS detail_genres',
+  //       'detail.header_image as header_image',
+  //     ])
+  //     .where('release.release_date_date IS NOT NULL')
+  //     .andWhere('release.release_date_date BETWEEN :start AND :end', {
+  //       start,
+  //       end,
+  //     })
+  //     .andWhere('game.is_dlc = false')
+  //     .andWhere('game.popularity_score >= :minScore', { minScore: 40 })
+  //     .orderBy('release.release_date_date', 'ASC')
+  //     .addOrderBy('game.popularity_score', 'DESC')
+  //     .getRawMany();
 
-    const uniqueGameIds = new Set<number>();
-    const uniqueDates = new Set<Date>();
-    const aggregateMap = new Map<string, CalendarReleaseDto>();
+  //   const uniqueGameIds = new Set<number>();
+  //   const uniqueDates = new Set<Date>();
+  //   const aggregateMap = new Map<string, CalendarReleaseDto>();
 
-    rows.forEach((row) => {
-      const releaseDate = this.toDate(row.release_date);
-      if (!releaseDate) {
-        return;
-      }
+  //   rows.forEach((row) => {
+  //     const releaseDate = this.toDate(row.release_date);
+  //     if (!releaseDate) {
+  //       return;
+  //     }
 
-      const releaseDateKey = releaseDate;
-      const gameId = Number(row.game_id);
-      // ✅ 수정: 같은 게임은 출시일이 달라도 하나로 통합 (gameId만 사용)
-      const aggregateKey = `${gameId}`;
+  //     const releaseDateKey = releaseDate;
+  //     const gameId = Number(row.game_id);
+  //     // ✅ 수정: 같은 게임은 출시일이 달라도 하나로 통합 (gameId만 사용)
+  //     const aggregateKey = `${gameId}`;
 
-      uniqueGameIds.add(gameId);
-      uniqueDates.add(releaseDateKey);
+  //     uniqueGameIds.add(gameId);
+  //     uniqueDates.add(releaseDateKey);
 
-      const genres = this.normalizeStringArray(row.detail_genres);
-      const screenshots = this.normalizeStringArray(row.detail_screenshots);
+  //     const genres = this.normalizeStringArray(row.detail_genres);
+  //     const screenshots = this.normalizeStringArray(row.detail_screenshots);
 
-      const platform = row.release_platform as Platform;
-      const store = row.release_store as Store;
-      const storeUrl = row.release_store_url ?? null;
-      const popularityScore = this.toNumber(row.game_popularity_score);
-      const comingSoon = Boolean(row.release_coming_soon);
-      const releaseStatus = (row.release_status as ReleaseStatus) ?? null;
-      const priceCents = row.release_current_price_cents
-        ? Number(row.release_current_price_cents)
-        : null;
-      const currentPrice = priceCents ? priceCents / 100 : null;
+  //     const platform = row.release_platform as Platform;
+  //     const store = row.release_store as Store;
+  //     const storeUrl = row.release_store_url ?? null;
+  //     const popularityScore = this.toNumber(row.game_popularity_score);
+  //     const comingSoon = Boolean(row.release_coming_soon);
+  //     const releaseStatus = (row.release_status as ReleaseStatus) ?? null;
+  //     const priceCents = row.release_current_price_cents
+  //       ? Number(row.release_current_price_cents)
+  //       : null;
+  //     const currentPrice = priceCents ? priceCents / 100 : null;
 
-      const existing = aggregateMap.get(aggregateKey);
-      if (existing) {
-        this.pushUnique(existing.releaseIds, Number(row.release_id));
-        this.pushUnique(existing.platforms, platform);
-        this.pushStoreLink(
-          existing.stores,
-          existing.storeLinks,
-          store,
-          storeUrl,
-        );
-        existing.comingSoon = existing.comingSoon || comingSoon;
-        existing.releaseStatus = this.mergeReleaseStatus(
-          existing.releaseStatus,
-          releaseStatus,
-        );
-        existing.popularityScore = Math.max(
-          existing.popularityScore,
-          popularityScore,
-        );
-        existing.genres = this.mergeStringArrays(existing.genres, genres);
-        // ✅ 수정: 가장 빠른 출시일 선택 (기존 날짜와 비교)
-        if (
-          existing.releaseDate === null ||
-          releaseDate < existing.releaseDate
-        ) {
-          existing.releaseDate = releaseDate;
-        }
-        // 가격은 null이 아닌 값 우선, steam 스토어 우선
-        if (existing.currentPrice === null && currentPrice !== null) {
-          existing.currentPrice = currentPrice;
-        } else if (
-          currentPrice !== null &&
-          store === 'steam' &&
-          existing.currentPrice !== null
-        ) {
-          existing.currentPrice = currentPrice;
-        }
+  //     const existing = aggregateMap.get(aggregateKey);
+  //     if (existing) {
+  //       this.pushUnique(existing.releaseIds, Number(row.release_id));
+  //       this.pushUnique(existing.platforms, platform);
+  //       this.pushStoreLink(
+  //         existing.stores,
+  //         existing.storeLinks,
+  //         store,
+  //         storeUrl,
+  //       );
+  //       existing.comingSoon = existing.comingSoon || comingSoon;
+  //       existing.releaseStatus = this.mergeReleaseStatus(
+  //         existing.releaseStatus,
+  //         releaseStatus,
+  //       );
+  //       existing.popularityScore = Math.max(
+  //         existing.popularityScore,
+  //         popularityScore,
+  //       );
+  //       existing.genres = this.mergeStringArrays(existing.genres, genres);
+  //       // ✅ 수정: 가장 빠른 출시일 선택 (기존 날짜와 비교)
+  //       if (
+  //         existing.releaseDate === null ||
+  //         releaseDate < existing.releaseDate
+  //       ) {
+  //         existing.releaseDate = releaseDate;
+  //       }
+  //       // 가격은 null이 아닌 값 우선, steam 스토어 우선
+  //       if (existing.currentPrice === null && currentPrice !== null) {
+  //         existing.currentPrice = currentPrice;
+  //       } else if (
+  //         currentPrice !== null &&
+  //         store === 'steam' &&
+  //         existing.currentPrice !== null
+  //       ) {
+  //         existing.currentPrice = currentPrice;
+  //       }
 
-        return;
-      }
+  //       return;
+  //     }
 
-      const aggregate: CalendarReleaseDto = {
-        releaseIds: [Number(row.release_id)],
-        gameId,
-        name: row.game_name,
-        ogName: row.game_og_name,
-        slug: row.game_slug,
-        headerImage: row.header_image,
-        platforms: [platform],
-        stores: [store],
-        storeLinks: [{ store, url: storeUrl }],
-        releaseDate: releaseDateKey,
-        comingSoon,
-        releaseStatus,
-        popularityScore,
-        genres,
-        developers: [],
-        publishers: [],
-        currentPrice,
-      };
+  //     const aggregate: CalendarReleaseDto = {
+  //       releaseIds: [Number(row.release_id)],
+  //       gameId,
+  //       name: row.game_name,
+  //       ogName: row.game_og_name,
+  //       slug: row.game_slug,
+  //       headerImage: row.header_image,
+  //       platforms: [platform],
+  //       stores: [store],
+  //       storeLinks: [{ store, url: storeUrl }],
+  //       releaseDate: releaseDateKey,
+  //       comingSoon,
+  //       releaseStatus,
+  //       popularityScore,
+  //       genres,
+  //       developers: [],
+  //       publishers: [],
+  //       currentPrice,
+  //     };
 
-      aggregateMap.set(aggregateKey, aggregate);
-    });
+  //     aggregateMap.set(aggregateKey, aggregate);
+  //   });
 
-    // ✅ 개발사/퍼블리셔 정보 로드
-    const gameIds = Array.from(uniqueGameIds);
-    const companiesMap = await this.loadCompaniesBulk(gameIds);
+  //   // ✅ 개발사/퍼블리셔 정보 로드
+  //   const gameIds = Array.from(uniqueGameIds);
+  //   const companiesMap = await this.loadCompaniesBulk(gameIds);
 
-    // ✅ aggregate에 회사 정보 추가
-    aggregateMap.forEach((aggregate) => {
-      const companies = companiesMap.get(aggregate.gameId);
-      if (companies) {
-        aggregate.developers = companies.developers;
-        aggregate.publishers = companies.publishers;
-      }
-    });
+  //   // ✅ aggregate에 회사 정보 추가
+  //   aggregateMap.forEach((aggregate) => {
+  //     const companies = companiesMap.get(aggregate.gameId);
+  //     if (companies) {
+  //       aggregate.developers = companies.developers;
+  //       aggregate.publishers = companies.publishers;
+  //     }
+  //   });
 
-    const data = Array.from(aggregateMap.values());
+  //   const data = Array.from(aggregateMap.values());
 
-    return {
-      month,
-      range: {
-        start: start,
-        end: end,
-      },
-      count: {
-        total: data.length,
-        games: uniqueGameIds.size,
-        days: uniqueDates.size,
-      },
-      data,
-    };
-  }
+  //   return {
+  //     month,
+  //     range: {
+  //       start: start,
+  //       end: end,
+  //     },
+  //     count: {
+  //       total: data.length,
+  //       games: uniqueGameIds.size,
+  //       days: uniqueDates.size,
+  //     },
+  //     data,
+  //   };
+  // }
 
   async getGameDetail(gameId: number): Promise<GameDetailResponseDto> {
     const game = await this.gameRepository.findOne({
@@ -253,7 +253,7 @@ export class GamesService {
     const currentPrice = priceRelease?.current_price_cents
       ? priceRelease.current_price_cents / 100
       : null;
-
+    const isFree = steamRelease?.is_free ?? game.releases?.[0].is_free;
     // DLC 리스트 조회 (현재 게임이 부모인 DLC들)
     const dlcs: DlcInfo[] = await this.loadDlcList(game.steam_id, game.rawg_id);
 
@@ -290,6 +290,7 @@ export class GamesService {
       reviewScoreDesc: detail?.review_score_desc ?? null,
 
       currentPrice,
+      isFree,
       platforms,
       releases,
       dlcs,
@@ -1037,6 +1038,7 @@ export class GamesService {
         'release.platform AS release_platform',
         'release.store AS release_store',
         'release.store_url AS release_store_url',
+        'release.is_free AS release_is_free',
         'release.coming_soon AS release_coming_soon',
         'release.release_status AS release_status',
         'release.release_date_date AS release_date',
@@ -1091,7 +1093,7 @@ export class GamesService {
         ? Number(row.release_current_price_cents)
         : null;
       const currentPrice = priceCents ? priceCents / 100 : null;
-
+      const isFree = row.release_is_free;
       const existing = aggregateMap.get(aggregateKey);
       if (existing) {
         this.pushUnique(existing.releaseIds, Number(row.release_id));
@@ -1156,6 +1158,7 @@ export class GamesService {
         developers: [],
         publishers: [],
         currentPrice,
+        isFree,
       };
 
       aggregateMap.set(aggregateKey, aggregate);

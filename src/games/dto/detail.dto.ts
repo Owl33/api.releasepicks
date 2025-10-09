@@ -47,7 +47,7 @@ export interface GameDetailResponseDto {
 
   // 가격 정보 (releases에서 추출)
   currentPrice: number | null;
-
+  isFree: boolean;
   // 플랫폼 정보 (releases에서 추출한 중복 제거 목록)
   platforms: Platform[];
 

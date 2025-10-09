@@ -36,7 +36,7 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
   });
 
-  const port = Number(8080);
+  const port = Number(8082);
   await app.listen(port);
 
   const logger = new Logger('Bootstrap');

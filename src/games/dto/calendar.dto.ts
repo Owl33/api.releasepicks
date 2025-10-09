@@ -29,6 +29,7 @@ export interface CalendarReleaseDto {
   developers: string[];
   publishers: string[];
   currentPrice: number | null;
+  isFree: boolean;
 }
 
 export interface CalendarResponseDto {

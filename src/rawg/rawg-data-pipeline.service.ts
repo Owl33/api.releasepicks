@@ -172,7 +172,6 @@ export class RawgDataPipelineService {
           ordering: params.ordering,
           metacritic: params.metacritic,
         });
-        console.log(games);
         if (!games) {
           retryReason = 'api_error';
           throw new Error('RAWG API 응답 없음');
