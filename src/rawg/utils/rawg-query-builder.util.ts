@@ -3,20 +3,32 @@ import dayjs from 'dayjs';
 import { RAWG_COLLECTION, RAWG_PLATFORM_IDS } from '../config/rawg.config';
 
 export function generateMonthRange(
-  pastMonths = RAWG_COLLECTION.pastMonths,
-  futureMonths = RAWG_COLLECTION.futureMonths,
-): Array<[number, number]> {
-  const now = dayjs();
-  const start = now.subtract(pastMonths, 'month').startOf('month');
-  const end = now.add(futureMonths, 'month').endOf('month');
+  pastMonths: number,
+  futureMonths: number,
+): [number, number][] {
+  // 현재 기준으로 과거~미래 월 목록 생성
+  const out: [number, number][] = [];
+  const now = new Date();
+  const baseY = now.getUTCFullYear();
+  const baseM = now.getUTCMonth(); // 0-11
 
-  const months: Array<[number, number]> = [];
-  let cur = start.clone();
-  while (cur.isBefore(end) || cur.isSame(end, 'month')) {
-    months.push([cur.year(), cur.month() + 1]); // month: 1-12
-    cur = cur.add(1, 'month');
+  const startIdx = baseY * 12 + baseM - pastMonths + 1; // inclusive
+  const endIdx = baseY * 12 + baseM + futureMonths; // inclusive
+
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const y = Math.floor(idx / 12);
+    const m = (idx % 12) + 1; // 1-12
+    out.push([y, m]);
   }
-  return months;
+
+  // 가까운 달부터 처리 (현재 month index와의 절대거리 기준)
+  const nowIdx = baseY * 12 + baseM;
+  out.sort((a, b) => {
+    const ai = a[0] * 12 + (a[1] - 1);
+    const bi = b[0] * 12 + (b[1] - 1);
+    return Math.abs(ai - nowIdx) - Math.abs(bi - nowIdx);
+  });
+  return out;
 }
 
 export function buildMonthlyParams(

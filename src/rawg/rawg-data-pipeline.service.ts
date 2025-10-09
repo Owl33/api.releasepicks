@@ -123,6 +123,11 @@ export class RawgDataPipelineService {
     const target =
       limitMonths && limitMonths > 0 ? months.slice(0, limitMonths) : months;
 
+    // 진행률 로그: 총 월 수
+    this.logger.log(
+      `🗓️ [RAWG] 대상 월 수: ${target.length}개 (past=${pastMonths}, future=${futureMonths}, limit=${limitMonths ?? '∞'})`,
+    );
+
     const queue = target.map(([year, month]) => ({
       year,
       month,
@@ -142,9 +147,12 @@ export class RawgDataPipelineService {
     const retryLogs: RawgRetryLog[] = [];
     const failedMonths: string[] = [];
     const consoleIssues: string[] = [];
+    let monthIndex = 0;
 
     while (queue.length) {
       const task = queue.shift()!;
+      monthIndex++;
+
       const monthKey = `${task.year}-${String(task.month).padStart(2, '0')}`;
       const stat: RawgMonthStat = {
         month: monthKey,
@@ -165,24 +173,43 @@ export class RawgDataPipelineService {
         });
         stat.requestCount += 1;
 
-        const games = await this.rawgApiService.searchGamesByPlatform('', {
+        +(
+          // 진행률 로그: 월 단위 시작
+          this.logger.log(
+            `📅 [RAWG] (${monthIndex}/${target.length}) ${monthKey} 수집 시작 (attempt ${task.attempt})`,
+          )
+        );
+
+        // ✅ 페이지네이션 사용
+        const games = await this.rawgApiService.searchGamesByPlatformPaged({
           platforms: unifiedPlatforms,
           dates: params.dates,
-          page_size: params.page_size,
           ordering: params.ordering,
           metacritic: params.metacritic,
+          pageSize: RAWG_COLLECTION.pageSize, // 총 수집 목표
+          maxPages: 10, // 안전장치
         });
+
         if (!games) {
           retryReason = 'api_error';
           throw new Error('RAWG API 응답 없음');
         }
 
         if (!games.length) {
-          retryReason = 'empty_result';
-          throw new Error('조회 결과 없음');
+          // ✅ empty_result는 재시도 금지 (정상 상황)
+          stat.gameCount = 0;
+          stat.success = true;
+          stat.reason = 'empty_result';
+          this.logger.log(
+            `➖ [RAWG] ${monthKey} 결과 없음 (0) — 다음 달로 이동`,
+          );
+          continue;
         }
 
         let addedCount = 0;
+        let skippedByAdded = 0;
+        let skippedByPopularity = 0;
+
         for (const g of games) {
           const key = String(g?.id || g?.slug || '');
           if (!key || seen.has(key)) continue;
@@ -192,12 +219,14 @@ export class RawgDataPipelineService {
             consoleIssues.push(
               `[${monthKey}] added(${added}) < ${RAWG_COLLECTION.minAdded} → 스킵: ${g.name}`,
             );
+            skippedByAdded++;
             continue;
           }
 
           const popularityScore =
             PopularityCalculator.calculateRawgPopularity(added);
           if (popularityScore < RAWG_COLLECTION.popularityThreshold) {
+            skippedByPopularity++;
             continue;
           }
 
@@ -260,12 +289,15 @@ export class RawgDataPipelineService {
 
         stat.gameCount = addedCount;
         stat.success = true;
-        if (!addedCount) {
-          stat.reason = 'filtered';
-        }
+        stat.reason = `ok(len=${games.length}, kept=${addedCount}, skipAdded=${skippedByAdded}, skipPop=${skippedByPopularity})`;
+        this.logger.log(
+          `✅ [RAWG] ${monthKey} 완료 — 해당 월 총 게임 :${games.length}, 인기도 통과:${addedCount}, added필터:${skippedByAdded}, 인기도 필터에 해당한 게임:${skippedByPopularity}`,
+        );
       } catch (error) {
         const message = retryReason ?? (error as Error).message;
         stat.reason = message;
+        // ❗ empty_result는 try 블록에서 continue 처리됨 — 여기 오면 '진짜 에러'
+
         if (task.attempt < maxAttempts) {
           shouldRetry = true;
           retryReason = message;
@@ -313,14 +345,30 @@ export class RawgDataPipelineService {
     }
 
     this.logger.log(
-      `✨ [RAWG] 월 단위 통합 수집 완료 — unique: ${rawResults.length}`,
+      `✨ [RAWG] 월 단위 통합 수집 완료 — 고유 게임 수: ${rawResults.length}`,
     );
 
     const processedData: ProcessedGameData[] = [];
     for (const raw of rawResults) {
+      // 매핑 진행률 로그
+      this.logger.log(
+        `🧪 [RAWG] 게임 메타 매핑 시작 — 총 ${rawResults.length}건`,
+      );
+
+      for (let i = 0; i < rawResults.length; i++) {
+        const raw = rawResults[i];
+        if (i === 0 || (i + 1) % 25 === 0 || i === rawResults.length - 1) {
+          this.logger.log(
+            `🔧 [RAWG] 매핑 진행 ${i + 1}/${rawResults.length} — ${raw.name}`,
+          );
+        }
+      }
       const gameData = await this.mapToProcessedGameData(raw, consoleIssues);
       processedData.push(gameData);
     }
+    this.logger.log(
+      `✅ [RAWG] 게임 메타 매핑 완료 — ${processedData.length}건`,
+    );
 
     const report: RawgCollectionReport = {
       startedAt: new Date(startedAt).toISOString(),

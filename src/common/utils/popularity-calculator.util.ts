@@ -21,17 +21,20 @@
 export class PopularityCalculator {
   // 등급 구간 정의(하한 followers, 점수 하한, 점수 상한, 상한 다음 구간의 하한)
   private static readonly BANDS = [
-    { min:    0, scoreMin:  0, scoreMax:  9, nextMin:   100 },   // F
-    { min:  100, scoreMin: 10, scoreMax: 19, nextMin:  1000 },   // D
-    { min: 1000, scoreMin: 20, scoreMax: 29, nextMin:  2000 },   // C
-    { min: 2000, scoreMin: 30, scoreMax: 39, nextMin:  5000 },   // C+
-    { min: 5000, scoreMin: 40, scoreMax: 49, nextMin: 10000 },   // B
-    { min:10000, scoreMin: 50, scoreMax: 59, nextMin: 20000 },   // B+
-    { min:30000, scoreMin: 60, scoreMax: 69, nextMin: 80000 },   // A
-    { min:100000,scoreMin: 70, scoreMax: 79, nextMin:200000 },   // A+
-    { min:200000,scoreMin: 80, scoreMax: 89, nextMin:500000 },   // S
+    { min: 0, scoreMin: 0, scoreMax: 9, nextMin: 100 }, // F
+    { min: 100, scoreMin: 10, scoreMax: 19, nextMin: 1000 }, // D
+    { min: 1000, scoreMin: 20, scoreMax: 29, nextMin: 2000 }, // C
+    { min: 2000, scoreMin: 30, scoreMax: 39, nextMin: 5000 }, // C+
+    { min: 5000, scoreMin: 40, scoreMax: 49, nextMin: 10000 }, // B
+    { min: 10000, scoreMin: 50, scoreMax: 59, nextMin: 20000 }, // B+
+    { min: 30000, scoreMin: 60, scoreMax: 69, nextMin: 80000 }, // A
+    { min: 100000, scoreMin: 70, scoreMax: 79, nextMin: 200000 }, // A+
+    { min: 200000, scoreMin: 80, scoreMax: 89, nextMin: 500000 }, // S
     // S+: 500k 이상은 별도 처리(아래 computeSPlus)
   ] as const;
+  private static readonly RAWG_ADDED_TO_FOLLOWERS_FACTOR = Number(
+    process.env.RAWG_ADDED_TO_FOLLOWERS_FACTOR ?? '150',
+  );
 
   private static clamp(n: number, lo: number, hi: number) {
     return Math.max(lo, Math.min(hi, n));
@@ -99,7 +102,11 @@ export class PopularityCalculator {
     if (!Number.isFinite(added) || added < 0) {
       throw new Error('Added count must be a non-negative finite number');
     }
-    const followersEquivalent = Math.floor(added / 150);
+    // ✅ 올바른 환산: followers ≈ added × 150
+    //    예) B 시작점 5,000 followers ↔ added ≈ 33.3
+    const followersEquivalent = Math.round(
+      added * this.RAWG_ADDED_TO_FOLLOWERS_FACTOR,
+    );
     return this.computeScoreFromFollowers(followersEquivalent);
   }
 
@@ -107,11 +114,17 @@ export class PopularityCalculator {
    * 혼합 점수 (기본 80:20)
    * - 입력은 0~100을 기대
    */
-  static calculateMixedPopularity(steamScore: number, rawgScore: number): number {
+  static calculateMixedPopularity(
+    steamScore: number,
+    rawgScore: number,
+  ): number {
     if (
-      !Number.isFinite(steamScore) || !Number.isFinite(rawgScore) ||
-      steamScore < 0 || steamScore > 100 ||
-      rawgScore < 0 || rawgScore > 100
+      !Number.isFinite(steamScore) ||
+      !Number.isFinite(rawgScore) ||
+      steamScore < 0 ||
+      steamScore > 100 ||
+      rawgScore < 0 ||
+      rawgScore > 100
     ) {
       throw new Error('Scores must be between 0 and 100');
     }
@@ -119,7 +132,9 @@ export class PopularityCalculator {
   }
 
   /** (옵션) 점수 → 등급 문자열 */
-  static gradeFromScore(score: number): 'S+'|'S'|'A+'|'A'|'B+'|'B'|'C+'|'C'|'D'|'F' {
+  static gradeFromScore(
+    score: number,
+  ): 'S+' | 'S' | 'A+' | 'A' | 'B+' | 'B' | 'C+' | 'C' | 'D' | 'F' {
     if (score >= 90) return 'S+';
     if (score >= 80) return 'S';
     if (score >= 70) return 'A+';

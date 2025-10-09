@@ -76,6 +76,8 @@ export class RawgApiService {
     options: {
       platforms?: string; // 권장: "187,18,186,1,7" 같은 통합 문자열 직접 전달
       page_size?: number;
+      page?: number;
+
       ordering?: string;
       metacritic?: string;
       dates?: string; // "YYYY-MM-01,YYYY-MM-마지막일"
@@ -87,6 +89,8 @@ export class RawgApiService {
     const params: any = {
       key: this.apiKey,
       platforms: platformIds,
+      page: options.page || 1,
+
       page_size: options.page_size || RAWG_COLLECTION.pageSize,
       ordering: options.ordering || RAWG_COLLECTION.ordering,
     };
@@ -120,6 +124,43 @@ export class RawgApiService {
       { key: this.apiKey },
     );
     return res?.results ?? [];
+  }
+  async searchGamesByPlatformPaged(options: {
+    platforms?: string;
+    dates: string;
+    ordering?: string;
+    metacritic?: string;
+    pageSize?: number; // 총 수집 목표 수 (예: 200)
+    maxPages?: number; // 안전장치 (기본 10)
+  }): Promise<RawgGameSearchResult[]> {
+    const perPage = Math.min(
+      40,
+      Math.max(1, options.pageSize ?? RAWG_COLLECTION.pageSize),
+    ); // RAWG 제한 고려
+    const maxPages = Math.max(1, options.maxPages ?? 10);
+    const targetTotal = Math.max(
+      1,
+      options.pageSize ?? RAWG_COLLECTION.pageSize,
+    );
+
+    const results: RawgGameSearchResult[] = [];
+    let fetched = 0;
+    for (let page = 1; page <= maxPages; page++) {
+      const chunk = await this.searchGamesByPlatform('', {
+        platforms: options.platforms,
+        dates: options.dates,
+        ordering: options.ordering,
+        metacritic: options.metacritic,
+        page_size: perPage,
+        page,
+      });
+      if (!chunk || chunk.length === 0) break;
+      results.push(...chunk);
+      fetched += chunk.length;
+      if (chunk.length < perPage) break; // 마지막 페이지 추정
+      if (fetched >= targetTotal) break; // 목표량 도달
+    }
+    return results;
   }
 
   // ===== Phase 5.5: DLC 부모 게임 조회 API =====
