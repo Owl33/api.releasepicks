@@ -30,7 +30,7 @@ async function bootstrap() {
 
   // ⚠️ credentials=true면 origin='*' 금지 → 개발 기원만 명시
   app.enableCors({
-    origin: ['*'],
+    origin: '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],

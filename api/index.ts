@@ -26,7 +26,7 @@ async function createServer() {
 
   // serverless 환경 CORS: credentials=false + 와일드카드 허용(필요시 기원 제한)
   app.enableCors({
-    origin: process.env.CORS_ORIGIN?.split(',') ?? ['*'],
+    origin: '*',
     credentials: false,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
