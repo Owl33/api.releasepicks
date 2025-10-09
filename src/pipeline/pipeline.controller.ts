@@ -6,7 +6,9 @@
   Logger,
   ValidationPipe,
   UsePipes,
+  Param,
 } from '@nestjs/common';
+
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { setTimeout as sleep } from 'timers/promises';
@@ -48,7 +50,7 @@ import { SegmentedBatchDto } from './dto/segmented-batch.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
 import { RateLimitExceededError } from '../common/concurrency/rate-limit-monitor';
 import { buildSearchText } from './utils/search-text.util';
-
+import { SingleGameManualDto } from './dto/single-game-manual-dto ';
 type SaveMetricsSummary = {
   totalItems: number;
   successRate: number;
@@ -551,6 +553,157 @@ export class PipelineController {
       throw err;
     }
   }
+  @Post('manual/game/:id')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async executeManualSingleGame(
+    @Param('id') idParam: string,
+    @Query() params: SingleGameManualDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const startedAt = Date.now();
+    const gameId = Number(idParam);
+    const sources = params.sources ?? 'both';
+    const dryRun = params.dryRun ?? false;
+    const mode = params.mode ?? 'operational';
+
+    this.logger.log('🚀 [단일 파이프라인] 시작');
+    this.logger.log(`   - gameId: ${gameId}`);
+    this.logger.log(`   - sources: ${sources}`);
+    this.logger.log(`   - mode: ${mode}`);
+    this.logger.log(`   - dryRun: ${dryRun}`);
+
+    // 0) 대상 게임 조회
+    const game = await this.gamesRepository.findOne({ where: { id: gameId } });
+    if (!game) {
+      return {
+        statusCode: 404,
+        message: `게임을 찾을 수 없습니다: ${gameId}`,
+        data: undefined,
+      };
+    }
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'full',
+      'single_game_pipeline_manual',
+    );
+
+    try {
+      const tasks: Promise<ProcessedGameData | null>[] = [];
+
+      // 1) Steam 단일 수집 (steam_id가 있는 경우)
+      if ((sources === 'steam' || sources === 'both') && game.steam_id) {
+        // ⬇️ 아래 메서드는 SteamDataPipelineService에 아주 얇게 추가(헬퍼)해둡니다.
+        tasks.push(
+          this.steamDataPipeline.collectOneBySteamId(game.steam_id, { mode }),
+        );
+      }
+
+      // 2) RAWG 단일 수집 (rawg_id가 있는 경우)
+      // if ((sources === 'rawg' || sources === 'both') && game.rawg_id) {
+      //   // ⬇️ 아래 메서드는 RawgDataPipelineService에 아주 얇게 추가(헬퍼)해둡니다.
+      //   tasks.push(this.rawgDataPipeline.collectOneByRawgId(game.rawg_id));
+      // }
+
+      // RAWG/Steam ID가 없는데 해당 소스를 요청한 경우 경고만 로그
+      if ((sources === 'steam' || sources === 'both') && !game.steam_id) {
+        this.logger.warn(
+          `⚠️ [단일 파이프라인] steam_id 없음 → Steam 수집 스킵 (gameId=${gameId})`,
+        );
+      }
+      if ((sources === 'rawg' || sources === 'both') && !game.rawg_id) {
+        this.logger.warn(
+          `⚠️ [단일 파이프라인] rawg_id 없음 → RAWG 수집 스킵 (gameId=${gameId})`,
+        );
+      }
+
+      // 3) 수집 실행
+      const raws = await Promise.all(tasks);
+      const collected = raws.filter((x): x is ProcessedGameData => !!x);
+      console.log('결과', raws);
+      if (collected.length === 0) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'no-data',
+          0,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message:
+            '수집할 데이터가 없습니다(해당 소스 ID 없음 또는 수집 실패).',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'full',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+          },
+        };
+      }
+
+      // 4) dry-run: 저장 없이 리포트만
+      if (dryRun) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'dry-run',
+          collected.length,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message: '단일 파이프라인 드라이런 완료',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'full',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            // 필요시 미리보기 정보 일부만 첨부 가능
+          },
+        };
+      }
+
+      // 5) 통합 저장 (POST+PATCH 자동 판별, Steam 보호/세맨틱은 내부 updateGame 로직이 처리)
+      const saveResult = await this.saveIntegratedData(
+        collected,
+        pipelineRun.id,
+      );
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'completed',
+        undefined,
+        collected.length,
+        saveResult.created + saveResult.updated,
+        saveResult.failed,
+      );
+
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      this.logger.log(
+        `✅ [단일 파이프라인] 완료 (${durationSeconds}s) — created:${saveResult.created}, updated:${saveResult.updated}, failed:${saveResult.failed}`,
+      );
+
+      return {
+        statusCode: 200,
+        message: '단일 파이프라인 실행 완료',
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'full',
+          totalProcessed: collected.length,
+          finishedAt: new Date(),
+        },
+      };
+    } catch (error) {
+      const err = this.normalizeError(error);
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      this.logger.error(
+        `❌ [단일 파이프라인] 실패 (${durationSeconds}s) - ${err.message}`,
+      );
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
+    }
+  }
 
   /**
    * POST + PATCH 자동 판별 저장
@@ -962,6 +1115,8 @@ export class PipelineController {
     const game = manager.create(Game, {
       name: gameData.name,
       slug: gameData.slug,
+      og_name: gameData.ogName,
+      og_slug: gameData.ogSlug,
       steam_id: gameData.steamId ?? null,
       rawg_id: gameData.rawgId ?? null,
       game_type: gameData.gameType,
@@ -1053,7 +1208,8 @@ export class PipelineController {
     }
 
     // ===== ✅ Steam 게임 보호: RAWG 데이터로 덮어쓰지 않음 =====
-    const isSteamGame = existingGame.steam_id !== null && existingGame.steam_id > 0;
+    const isSteamGame =
+      existingGame.steam_id !== null && existingGame.steam_id > 0;
     const isRawgDataSource = gameData.rawgId !== null && !gameData.steamId;
 
     if (isSteamGame && isRawgDataSource) {
@@ -1095,6 +1251,9 @@ export class PipelineController {
     const updateData: Partial<Game> = {
       // 변동 가능 필드: 항상 갱신
       name: gameData.name,
+      slug: gameData.slug,
+      og_name: gameData.ogName,
+      og_slug: gameData.ogSlug,
       release_date_date: gameData.releaseDate,
       release_date_raw: gameData.releaseDateRaw,
       release_status: gameData.releaseStatus,
@@ -1151,8 +1310,8 @@ export class PipelineController {
               website: gameData.details.website,
               genres: gameData.details.genres,
               header_image: gameData.details.headerImage,
-
               tags: gameData.details.tags,
+              sexual: gameData.details.sexual,
               support_languages: gameData.details.supportLanguages,
               metacritic_score: gameData.details.metacriticScore ?? null,
               opencritic_score: gameData.details.opencriticScore ?? null,
@@ -1203,6 +1362,8 @@ export class PipelineController {
       website: detailsData.website,
       genres: detailsData.genres,
       tags: detailsData.tags,
+      sexual: detailsData.sexual,
+
       support_languages: detailsData.supportLanguages,
       metacritic_score: detailsData.metacriticScore ?? null,
       opencritic_score: detailsData.opencriticScore ?? null,

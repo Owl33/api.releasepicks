@@ -26,11 +26,7 @@ import {
   FilteredGamesResponseDto,
   PaginationMeta,
 } from './dto/filter.dto';
-import {
-  SearchGamesDto,
-  SearchGameDto,
-  SearchResponseDto,
-} from './dto/search.dto';
+
 import {
   expandGenreSearchTerms,
   expandTagSearchTerms,
@@ -81,6 +77,7 @@ export class GamesService {
         'game.id AS game_id',
         'game.name AS game_name',
         'game.slug AS game_slug',
+        'game.og_name as game_og_name',
         'game.popularity_score AS game_popularity_score',
         'detail.screenshots AS detail_screenshots',
         'detail.genres AS detail_genres',
@@ -174,6 +171,7 @@ export class GamesService {
         releaseIds: [Number(row.release_id)],
         gameId,
         name: String(row.game_name ?? ''),
+        ogName: String(row.game_og_name),
         slug: String(row.game_slug ?? ''),
         headerImage: row.header_image,
         platforms: [platform],
@@ -265,6 +263,7 @@ export class GamesService {
       id: game.id,
       name: game.name,
       slug: game.slug,
+      ogName: game.og_name,
       steamId: game.steam_id ?? null,
       rawgId: game.rawg_id ?? null,
       gameType: game.game_type,
@@ -1047,6 +1046,7 @@ export class GamesService {
         'game.id AS game_id',
         'game.name AS game_name',
         'game.slug AS game_slug',
+        'game.og_name as game_og_name',
         'game.popularity_score AS game_popularity_score',
         'game.coming_soon AS game_coming_soon',
 
@@ -1141,6 +1141,7 @@ export class GamesService {
         releaseIds: [Number(row.release_id)],
         gameId,
         name: String(row.game_name ?? ''),
+        ogName: String(row.game_og_name),
         slug: String(row.game_slug ?? ''),
         headerImage: row.header_image,
         platforms: [platform],
@@ -1220,111 +1221,6 @@ export class GamesService {
       },
       data,
     };
-  }
-
-  /**
-   * 게임 검색 (자동완성)
-   */
-  async searchGames(dto: SearchGamesDto): Promise<SearchResponseDto> {
-    const rawQ = (dto.q ?? '').trim();
-    const limit = dto.limit ?? 10;
-    if (rawQ.length < 2) {
-      return { query: rawQ, count: 0, data: [] };
-    }
-
-    const minScore = 40; // 인기도 하한
-    const q = rawQ.toLowerCase();
-    const qPrefix = `${q}%`; // 이름 프리픽스 부스트
-    const qLike = `%${q}%`; // 이름 부분일치 보조
-
-    // 🔧 쿼리 길이에 따른 동적 임계값 (짧은 쿼리는 더 엄격)
-    const len = q.length;
-    const NAME_MIN = len >= 8 ? 0.35 : len >= 5 ? 0.3 : 0.27;
-    const TEXT_MIN = len >= 8 ? 0.22 : len >= 5 ? 0.18 : 0.15;
-
-    // 🔧 슬러그 유사도(하이픈 치환)
-    const qSlug = q.replace(/\s+/g, '-');
-
-    const qb = this.gameRepository
-      .createQueryBuilder('game')
-      .innerJoin('game.details', 'detail') // search_text가 details에 있으므로 innerJoin
-      .select([
-        'game.id AS game_id',
-        'game.name AS game_name',
-        'game.slug AS game_slug',
-        'game.release_date_date AS release_date',
-        'game.popularity_score AS popularity_score',
-        'game.followers_cache AS followers_cache',
-        'detail.header_image AS header_image',
-      ])
-      // === 유사도/부스트 피처 ===
-      .addSelect('similarity(lower(game.name), :q)', 'sim_name')
-      .addSelect('word_similarity(lower(game.name), :q)', 'wsim_name') // pg_trgm의 word_similarity
-      .addSelect("similarity(COALESCE(detail.search_text, ''), :q)", 'sim_text')
-      .addSelect('similarity(lower(game.slug), :qSlug)', 'sim_slug')
-      .addSelect(
-        `
-  (
-    1.2 * (
-      CASE
-        WHEN lower(game.name) = :q THEN 1.0
-        WHEN lower(game.name) LIKE :qPrefix THEN 0.9
-        WHEN lower(game.name) LIKE :qLike THEN 0.4
-        ELSE 0.0
-      END
-    )
-    + 0.9 * similarity(lower(game.name), :q)
-    + 0.35 * word_similarity(lower(game.name), :q)
-    + 0.25 * similarity(COALESCE(detail.search_text,''), :q)
-    + 0.15 * similarity(lower(game.slug), :qSlug)
-    + 0.15 * LEAST(GREATEST(game.popularity_score,0),100)/100.0
-  )
-  `,
-        'rank',
-      )
-
-      // === 필터: DLC 제외 + 인기도 하한 + (이름 또는 본문 최소 유사도 충족) ===
-      .where('game.is_dlc = false')
-      .andWhere('game.popularity_score >= :minScore', { minScore })
-      .andWhere(
-        `(
-         similarity(lower(game.name), :q) >= :NAME_MIN
-         OR word_similarity(lower(game.name), :q) >= :NAME_MIN
-         OR similarity(COALESCE(detail.search_text,''), :q) >= :TEXT_MIN
-       )`,
-      )
-
-      // === 정렬: rank 우선 → 인기도 → 최신순
-      .orderBy('rank', 'DESC')
-      .addOrderBy('game.popularity_score', 'DESC')
-      .addOrderBy('game.release_date_date', 'DESC')
-      .setParameters({
-        q,
-        qSlug,
-        qPrefix,
-        qLike,
-        NAME_MIN,
-        TEXT_MIN,
-        minScore,
-      })
-      .limit(limit);
-
-    const rows = await qb.getRawMany();
-
-    const data: SearchGameDto[] = rows.map((row) => ({
-      gameId: Number(row.game_id),
-      name: String(row.game_name ?? ''),
-      slug: String(row.game_slug ?? ''),
-      headerImage: row.header_image ?? null,
-      releaseDate: row.release_date ? new Date(row.release_date) : null,
-      popularityScore: Number(row.popularity_score ?? 0),
-      followersCache: row.followers_cache ? Number(row.followers_cache) : null,
-      platforms: [],
-      developers: [],
-      publishers: [],
-    }));
-
-    return { query: rawQ, count: data.length, data };
   }
 
   private parseDateLoose(value?: string | Date | null): Date | null {

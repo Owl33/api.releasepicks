@@ -18,6 +18,7 @@ export interface GameDetailResponseDto {
   id: number;
   name: string;
   slug: string;
+  ogName: string;
   steamId: number | null;
   rawgId: number | null;
   gameType: GameType;
@@ -35,7 +36,7 @@ export interface GameDetailResponseDto {
   tags: string[];
   supportLanguages: string[];
 
-  headerImage: string ;
+  headerImage: string;
   screenshots: string[];
   videoUrl: string | null;
   metacriticScore: number | null;

@@ -16,6 +16,7 @@ export interface CalendarReleaseDto {
   slug: string;
   platforms: Platform[];
   stores: Store[];
+  ogName: string;
   storeLinks: StoreLinkDto[];
   releaseDate: Date | string | number | null;
   comingSoon: boolean;

@@ -45,10 +45,14 @@ export class Game {
 
   @Column({ type: 'text' })
   name: string;
+  @Column({ type: 'text' })
+  og_name: string;
 
   @Column({ type: 'citext', unique: true })
   slug: string;
 
+  @Column({ type: 'citext', unique: true })
+  og_slug: string;
   // ===== 외부 소스 ID =====
   @Column({ type: 'integer', nullable: true })
   steam_id: number | null;

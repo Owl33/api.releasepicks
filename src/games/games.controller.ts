@@ -14,13 +14,16 @@ import { GameDetailResponseDto } from './dto/detail.dto';
 import { HighlightsResponseDto } from './dto/highlights.dto';
 import { GameFilterDto, FilteredGamesResponseDto } from './dto/filter.dto';
 import { SearchGamesDto, SearchResponseDto } from './dto/search.dto';
-
+import { GameSearchService } from './game-search.service';
 /**
  * 프론트엔드에서 직접 호출하는 게임 전용 API 컨트롤러
  */
 @Controller('api/games')
 export class GamesController {
-  constructor(private readonly gamesService: GamesService) {}
+  constructor(
+    private readonly gamesService: GamesService,
+    private readonly gameSearchService: GameSearchService,
+  ) {}
 
   @Get('calendar')
   async getCalendar(
@@ -53,11 +56,16 @@ export class GamesController {
   }
 
   @Get('search')
-  @UsePipes(new ValidationPipe({ transform: true }))
-  async searchGames(
-    @Query() dto: SearchGamesDto,
-  ): Promise<SearchResponseDto> {
-    return this.gamesService.searchGames(dto);
+  @UsePipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: false, // 불필요한 400 방지
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  )
+  async searchGames(@Query() dto: SearchGamesDto): Promise<SearchResponseDto> {
+    return this.gameSearchService.searchGames(dto);
   }
 
   @Get(':id')

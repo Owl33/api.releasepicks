@@ -52,7 +52,8 @@ export class GameDetail {
 
   @Column({ type: 'text', array: true, default: '{}' })
   support_languages: string[]; // 지원 언어
-
+  @Column({ type: 'boolean', default: false, nullable: false })
+  sexual: boolean;
   // ===== 평점 정보 (확실히 구할 수 있는 것만) =====
   @Column({ type: 'integer', nullable: true })
   metacritic_score: number | null; // 메타크리틱 점수

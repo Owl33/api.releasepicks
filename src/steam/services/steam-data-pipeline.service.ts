@@ -30,7 +30,7 @@ import { SteamApp } from './steam-applist.service';
 
 // 유틸
 import { PopularityCalculator } from '../../common/utils/popularity-calculator.util';
-
+import { normalizeGameName } from '../../common/utils/game-name-normalizer.util';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../../youtube/youtube.service';
 
@@ -99,6 +99,11 @@ export class SteamDataPipelineService {
       const steamDetails = await this.steamAppDetailsService.fetchAppDetails(
         app.appid,
       );
+      const displayName =
+        typeof steamDetails?.name === 'string' && steamDetails.name.trim()
+          ? steamDetails.name.trim()
+          : app.name;
+
       timers.appDetailsDuration = Date.now() - timers.appDetailsStart;
       this.logger.debug(
         `${prefix}⏱️ AppDetails ${(timers.appDetailsDuration / 1000).toFixed(2)}초`,
@@ -109,8 +114,8 @@ export class SteamDataPipelineService {
         return null;
       }
 
-      const slug = this.generateSlug(app.name, app.appid);
-
+      const slug = normalizeGameName(steamDetails.name, app.appid);
+      const og_slug = normalizeGameName(app.name, app.appid);
       timers.followersStart = Date.now();
       await this.globalLimiter.take('steam:followers', {
         minDelayMs: 120,
@@ -138,54 +143,52 @@ export class SteamDataPipelineService {
       this.logger.debug(
         `${prefix}📊 인기도 점수: ${popularityScore}점 (한국어 지원)`,
       );
-      if (hasKorean) {
-        if (popularityScore >= 40) {
-          try {
-            await this.globalLimiter.take('steam:reviews', {
-              minDelayMs: 100,
-              jitterMs: 50,
-            });
-            const result = await this.steamReviewService.fetchAppReview(
-              app.appid,
-            );
-            totalReviews = result?.total_reviews || 0;
-            reviewScoreDesc = result?.review_score_desc || '';
-          } catch (error) {
-            this.logger.warn(
-              `${prefix}⚠️ Review 수집 실패: ${error?.message ?? error}`,
-            );
-          }
-        }
-
-        if (popularityScore >= 40) {
-          timers.youtubeStart = Date.now();
-          try {
-            await this.globalLimiter.take('steam:youtube', {
-              minDelayMs: 80,
-              jitterMs: 40,
-            });
-            const trailerResult = await this.youtubeService.findOfficialTrailer(
-              app.name,
-            );
-            const picked = trailerResult?.picked;
-            if (picked?.url) {
-              youtubeVideoUrl = picked.url;
-            }
-            timers.youtubeDuration = Date.now() - timers.youtubeStart;
-            this.logger.debug(
-              `${prefix}⏱️ YouTube ${(timers.youtubeDuration / 1000).toFixed(2)}초`,
-            );
-          } catch (error) {
-            timers.youtubeDuration = Date.now() - timers.youtubeStart;
-            this.logger.warn(
-              `${prefix}⚠️ YouTube 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error?.message ?? error}`,
-            );
-          }
-        } else {
-          this.logger.debug(
-            `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
+      if (popularityScore >= 40) {
+        try {
+          await this.globalLimiter.take('steam:reviews', {
+            minDelayMs: 100,
+            jitterMs: 50,
+          });
+          const result = await this.steamReviewService.fetchAppReview(
+            app.appid,
+          );
+          totalReviews = result?.total_reviews || 0;
+          reviewScoreDesc = result?.review_score_desc || '';
+        } catch (error) {
+          this.logger.warn(
+            `${prefix}⚠️ Review 수집 실패: ${error?.message ?? error}`,
           );
         }
+      }
+
+      if (popularityScore >= 40) {
+        timers.youtubeStart = Date.now();
+        try {
+          await this.globalLimiter.take('steam:youtube', {
+            minDelayMs: 80,
+            jitterMs: 40,
+          });
+          const trailerResult = await this.youtubeService.findOfficialTrailer(
+            app.name,
+          );
+          const picked = trailerResult?.picked;
+          if (picked?.url) {
+            youtubeVideoUrl = picked.url;
+          }
+          timers.youtubeDuration = Date.now() - timers.youtubeStart;
+          this.logger.debug(
+            `${prefix}⏱️ YouTube ${(timers.youtubeDuration / 1000).toFixed(2)}초`,
+          );
+        } catch (error) {
+          timers.youtubeDuration = Date.now() - timers.youtubeStart;
+          this.logger.warn(
+            `${prefix}⚠️ YouTube 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error?.message ?? error}`,
+          );
+        }
+      } else {
+        this.logger.debug(
+          `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
+        );
       }
 
       const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
@@ -226,8 +229,10 @@ export class SteamDataPipelineService {
       const releaseStatus = parsed.releaseStatus;
 
       const processedGame: ProcessedGameData = {
-        name: app.name,
+        name: steamDetails.name || app.name,
         slug,
+        ogName: app.name,
+        ogSlug: og_slug,
         steamId: app.appid,
         rawgId: undefined,
         gameType,
@@ -253,7 +258,7 @@ export class SteamDataPipelineService {
           })),
         ],
         details:
-          hasKorean && popularityScore >= 40
+          popularityScore >= 40
             ? {
                 screenshots:
                   (steamDetails.screenshots as any[])?.slice(0, 5) || [],
@@ -268,13 +273,14 @@ export class SteamDataPipelineService {
                 supportLanguages: steamDetails.supported_languages || [],
                 metacriticScore: steamDetails.metacritic || null,
                 totalReviews,
+                sexual: steamDetails.sexual || false,
                 reviewScoreDesc,
-                
-                headerImage:steamDetails.header_image,
+
+                headerImage: steamDetails.header_image,
               }
             : undefined,
         releases:
-          hasKorean && popularityScore >= 40
+          popularityScore >= 40
             ? [
                 {
                   platform: Platform.PC,
@@ -305,6 +311,32 @@ export class SteamDataPipelineService {
       );
       return null;
     }
+  }
+  public async collectOneBySteamId(
+    steamId: number,
+    opts?: { mode?: 'bootstrap' | 'operational'; fallbackName?: string },
+  ): Promise<ProcessedGameData | null> {
+    // 이름 확보 (로그/슬러그 가독성용) — build 내부에서 AppDetails.name을 다시 우선 사용하므로 안전
+    const cachedName = await this.lookupAppNameFromCache(steamId);
+    const app: SteamApp = {
+      appid: steamId,
+      name: cachedName ?? opts?.fallbackName ?? `app-${steamId}`,
+    };
+
+    // 동일 파이프라인 실행 (followers/reviews/YouTube/인기도/DLC 규칙 그대로)
+    return this.buildProcessedGameDataFromApp(app, { index: 0, total: 1 });
+  }
+
+  /** AppList 캐시에서 특정 appid의 이름을 찾아준다. (없으면 undefined) */
+  private async lookupAppNameFromCache(
+    steamId: number,
+  ): Promise<string | undefined> {
+    const apps = await this.getOrCacheAppList();
+    // 선형 탐색 (한 번만 수행, 비용 미미)
+    for (let i = 0; i < apps.length; i++) {
+      if (apps[i].appid === steamId) return apps[i].name;
+    }
+    return undefined;
   }
 
   /**
@@ -1027,7 +1059,9 @@ export class SteamDataPipelineService {
    */
   private generateSlug(name: string, fallbackId?: number): string {
     // ⚠️ 하위 호환성을 위해 유지하지만, normalizeGameName()을 사용하도록 변경됨
-    const { normalizeGameName } = require('../../common/utils/game-name-normalizer.util');
+    const {
+      normalizeGameName,
+    } = require('../../common/utils/game-name-normalizer.util');
     return normalizeGameName(name, fallbackId);
   }
 }

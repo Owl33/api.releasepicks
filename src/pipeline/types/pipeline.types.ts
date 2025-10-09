@@ -19,6 +19,8 @@ export interface ProcessedGameData {
   // 기본 정보
   name: string;
   slug: string;
+  ogName: string;
+  ogSlug: string;
   steamId?: number;
   rawgId?: number;
 
@@ -31,17 +33,14 @@ export interface ProcessedGameData {
   // ===== Phase 5.5 추가: DLC 메타데이터 =====
   isDlc?: boolean; // DLC 여부
   childDlcSteamIds?: number[]; // Steam 본편에서 수집한 DLC AppID 리스트 (백필용)
-
   // 출시 정보
   releaseDate?: Date | null;
   releaseDateRaw?: string;
   releaseStatus: ReleaseStatus;
   comingSoon: boolean;
-
   // 인기도
   popularityScore: number;
   followersCache?: number | null;
-
   // 회사 정보 (개발사/퍼블리셔)
   companies?: CompanyData[];
 
@@ -77,6 +76,7 @@ export interface GameDetailsData {
   genres?: string[];
   tags?: string[];
   supportLanguages?: string[];
+  sexual: boolean;
 
   headerImage: string;
   // 평점 정보

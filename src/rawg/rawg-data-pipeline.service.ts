@@ -472,6 +472,7 @@ export class RawgDataPipelineService {
               rawgDetails.description_raw ??
               rawgDetails.description ??
               undefined,
+            sexual: false,
             website: rawgDetails.website || undefined,
             genres: rawgDetails.genres?.map((g: any) => g.name) || [],
             tags: rawgDetails.tags?.slice(0, 10).map((t: any) => t.name) || [],
@@ -527,6 +528,8 @@ export class RawgDataPipelineService {
 
     return {
       name: raw.name,
+      ogName: raw.name,
+      ogSlug: raw.slug,
       slug: raw.slug,
       rawgId: raw.rawgId,
       gameType: GameType.GAME, // RAWG 데이터는 기본적으로 GAME으로 분류

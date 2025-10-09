@@ -1,4 +1,11 @@
-import { IsString, MinLength, IsOptional, IsInt, Min, Max } from 'class-validator';
+import {
+  IsString,
+  MinLength,
+  IsOptional,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 
 /**
@@ -6,22 +13,23 @@ import { Transform } from 'class-transformer';
  * 자동완성 검색에 사용
  */
 export class SearchGamesDto {
-  /**
-   * 검색어 (최소 2자)
-   */
-  @IsString()
-  @MinLength(2, { message: '검색어는 최소 2자 이상이어야 합니다.' })
-  q: string;
-
-  /**
-   * 결과 개수 제한
-   */
   @IsOptional()
-  @Transform(({ value }) => parseInt(value, 10))
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  // ⛔️ MinLength(2) 제거 — 짧은 q도 통과시켜 서비스에서 처리
+  q?: string;
+
+  @IsOptional()
+  // undefined/null/''는 그대로 undefined 유지 → @IsOptional() 통과
+  @Transform(({ value }) =>
+    value === undefined || value === null || value === ''
+      ? undefined
+      : parseInt(value, 10),
+  )
   @IsInt()
   @Min(1)
   @Max(20)
-  limit?: number; // 기본값: 10
+  limit?: number; // 기본값은 서비스에서 10으로 처리
 }
 
 /**
