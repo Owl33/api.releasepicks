@@ -71,10 +71,6 @@ export class GameDetail {
   @Column({ type: 'text', nullable: true })
   review_score_desc: string | null; // 리뷰 점수 설명
 
-  // ===== 검색용 캐시 =====
-  @Column({ type: 'text', default: '' })
-  search_text: string; // PGroonga 검색용 텍스트 캐시
-
   // ===== 타임스탬프 =====
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

@@ -11,7 +11,7 @@ export interface HighlightGameDto {
   platforms: Platform[];
   releaseDate: Date | string | number | null;
   popularityScore: number;
-  headerImage: string ;
+  headerImage: string;
   daysUntilRelease: number | null;
   stores: Store[];
   storeLinks: StoreLinkDto[];

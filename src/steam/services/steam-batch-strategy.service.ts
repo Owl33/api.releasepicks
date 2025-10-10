@@ -30,7 +30,8 @@ export class SteamBatchStrategyService {
     totalTarget: number;
   }> {
     const normalizedTotal = Math.max(totalApps, 0);
-    this.totalTarget = normalizedTotal > 0 ? normalizedTotal : this.DEFAULT_TARGET;
+    this.totalTarget =
+      normalizedTotal > 0 ? normalizedTotal : this.DEFAULT_TARGET;
 
     const progress = await this.getSyncStatus();
     const rawProcessed = progress?.totalProcessed ?? 0;
@@ -52,9 +53,10 @@ export class SteamBatchStrategyService {
 
     const remaining = this.totalTarget - totalProcessed;
 
-    const batchSize = overrideBatchSize && overrideBatchSize > 0
-      ? Math.min(overrideBatchSize, remaining)
-      : remaining;
+    const batchSize =
+      overrideBatchSize && overrideBatchSize > 0
+        ? Math.min(overrideBatchSize, remaining)
+        : remaining;
 
     const startIndex = totalProcessed;
     const endIndex = startIndex + batchSize;
@@ -159,7 +161,8 @@ export class SteamBatchStrategyService {
   }> {
     const syncStatus = await this.getSyncStatus();
     const totalProcessed = syncStatus?.totalProcessed ?? 0;
-    const totalTarget = this.totalTarget ?? syncStatus?.totalTarget ?? this.DEFAULT_TARGET;
+    const totalTarget =
+      this.totalTarget ?? syncStatus?.totalTarget ?? this.DEFAULT_TARGET;
     const percentage = (totalProcessed / totalTarget) * 100;
 
     // 현재 단계 판별

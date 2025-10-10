@@ -22,6 +22,7 @@ import { SteamBatchStrategyService } from './services/steam-batch-strategy.servi
 import { SteamReviewService } from './services/steam-review.service';
 // YouTube 모듈 (Phase 4)
 import { YouTubeModule } from '../youtube/youtube.module';
+import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-persistence.module';
 
 /**
  * Steam API 모듈
@@ -51,6 +52,7 @@ import { YouTubeModule } from '../youtube/youtube.module';
       PipelineItem,
       SystemEvent,
     ]),
+    PipelinePersistenceModule,
   ],
   providers: [
     SteamAppListService,

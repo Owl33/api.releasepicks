@@ -1,9 +1,5 @@
 // src/steam-community/steamcommunity.service.ts
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import axios from 'axios';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
 
@@ -31,7 +27,10 @@ interface MinimalPage {
   evaluateOnNewDocument(fn: (...args: any[]) => any): Promise<void>;
   setRequestInterception(value: boolean): Promise<void>;
   on(event: 'request', cb: (req: any) => void): void;
-  goto(url: string, opts?: any): Promise<{ status(): number; headers(): Record<string, string> } | null>;
+  goto(
+    url: string,
+    opts?: any,
+  ): Promise<{ status(): number; headers(): Record<string, string> } | null>;
   waitForFunction(
     fn: (...args: any[]) => any,
     opts?: { timeout?: number },
@@ -216,10 +215,12 @@ export class SteamCommunityService implements OnModuleDestroy {
       try {
         const browser = await this.browserPromise;
         this.logger.log('🛑 Puppeteer 종료');
-        await Promise.allSettled(this.pagePool.map((p) => p.close().catch(() => {})));
+        await Promise.allSettled(
+          this.pagePool.map((p) => p.close().catch(() => {})),
+        );
         await browser.close();
       } catch (e) {
-        this.logger.warn(`브라우저 종료 중 경고: ${(e as any)?.message || e}`);
+        this.logger.warn(`브라우저 종료 중 경고: ${e?.message || e}`);
       } finally {
         this.browserPromise = null;
       }

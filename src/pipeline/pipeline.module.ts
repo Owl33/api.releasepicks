@@ -12,6 +12,7 @@ import { PipelineItem } from '../entities/pipeline-item.entity';
 
 import { SteamModule } from '../steam/steam.module';
 import { RawgModule } from '../rawg/rawg.module';
+import { PipelinePersistenceModule } from './persistence/pipeline-persistence.module';
 
 /**
  * Pipeline Module
@@ -32,6 +33,7 @@ import { RawgModule } from '../rawg/rawg.module';
     ScheduleModule.forRoot(), // Cron 스케줄링
     SteamModule, // Steam 데이터 수집 서비스
     RawgModule, // RAWG 데이터 수집 서비스
+    PipelinePersistenceModule, // Phase3 Persistence 계층 스켈레톤
   ],
   controllers: [PipelineController],
   exports: [],

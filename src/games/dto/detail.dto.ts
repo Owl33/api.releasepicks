@@ -22,7 +22,6 @@ export interface GameDetailResponseDto {
   steamId: number | null;
   rawgId: number | null;
   gameType: GameType;
-  isDlc: boolean;
   comingSoon: boolean;
   popularityScore: number;
   releaseDate: Date | string | number | null;

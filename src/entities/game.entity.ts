@@ -36,7 +36,9 @@ import { GameType, ReleaseStatus } from './enums';
 @Index('ix_games_coming_soon', ['coming_soon'])
 @Index('ix_games_parent_steam', ['parent_steam_id'])
 @Index('ix_games_parent_rawg', ['parent_rawg_id'])
-@Index('ix_games_is_dlc', ['is_dlc'])
+@Index('ix_games_game_type_dlc', ['game_type'], {
+  where: "game_type = 'dlc'",
+})
 @Index('ix_games_steam_last_refresh', ['steam_last_refresh_at'])
 @Index('ix_games_rawg_last_refresh', ['rawg_last_refresh_at'])
 export class Game {
@@ -74,10 +76,6 @@ export class Game {
     default: GameType.GAME,
   })
   game_type: GameType;
-
-  // ===== DLC 여부 플래그 =====
-  @Column({ type: 'boolean', default: false })
-  is_dlc: boolean;
 
   // ===== 대표 출시 정보 (가장 빠른 출시일 기준) =====
   @Column({ type: 'date', nullable: true })

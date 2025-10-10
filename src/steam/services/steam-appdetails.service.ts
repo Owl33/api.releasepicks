@@ -230,38 +230,43 @@ export class SteamAppDetailsService {
     };
   }
 
-/**
- * 성인향(섹스 중심) 판정 로직
- * - AO 표현은 즉시 true
- * - notes에 sexual/nudity 계열이 있고, 본문 강한 키워드 점수가 2점 이상이면 true
- * - 나이등급/경고(notes)는 본문 스코어에서 완전 배제 (IMMORTALITY, GTA V 오탐 방지)
- */
+  /**
+   * 성인향(섹스 중심) 판정 로직
+   * - AO 표현은 즉시 true
+   * - notes에 sexual/nudity 계열이 있고, 본문 강한 키워드 점수가 2점 이상이면 true
+   * - 나이등급/경고(notes)는 본문 스코어에서 완전 배제 (IMMORTALITY, GTA V 오탐 방지)
+   */
 
   /** 메인 판별 함수 */
   private detectSexual(data: any): boolean {
     // ── 필드 수집
-    const notesRaw = String(data?.content_descriptors?.notes ?? "");
+    const notesRaw = String(data?.content_descriptors?.notes ?? '');
     const bodyRaw = [
-      data?.mature_content_description ?? "", // 스팀의 경고 본문도 종종 들어오는데, 이건 body로 볼지 옵션
-      data?.short_description ?? "",
-      data?.detailed_description ?? "",
-      data?.about_the_game ?? "",
-    ].join(" ");
+      data?.mature_content_description ?? '', // 스팀의 경고 본문도 종종 들어오는데, 이건 body로 볼지 옵션
+      data?.short_description ?? '',
+      data?.detailed_description ?? '',
+      data?.about_the_game ?? '',
+    ].join(' ');
 
     // ── 정규화
     const textNotes = this.normalizeText(notesRaw); // ← notes는 '조건' 판정에만 사용
-    const textBody = this.normalizeText(bodyRaw);   // ← 본문 스코어링은 여기서만!
+    const textBody = this.normalizeText(bodyRaw); // ← 본문 스코어링은 여기서만!
 
     // ── (선택) AAA 감점
     const ALLOW_AAA_BIAS = false;
     let bias = 0;
     if (ALLOW_AAA_BIAS) {
-      const publisher = this.arrayOrStr(data?.publishers ?? data?.publisher).toLowerCase();
-      const developers = this.arrayOrStr(data?.developers ?? data?.developer).toLowerCase();
-      const franchise = String(data?.franchise ?? "").toLowerCase();
-      const isAAA = /(rockstar|atlus|bethesda|ubisoft|electronic\s*arts|ea|capcom|square\s*enix|nintendo|sony|microsoft|bandai\s*namco)/.test(
-        `${publisher} ${developers} ${franchise}`,
-      );
+      const publisher = this.arrayOrStr(
+        data?.publishers ?? data?.publisher,
+      ).toLowerCase();
+      const developers = this.arrayOrStr(
+        data?.developers ?? data?.developer,
+      ).toLowerCase();
+      const franchise = String(data?.franchise ?? '').toLowerCase();
+      const isAAA =
+        /(rockstar|atlus|bethesda|ubisoft|electronic\s*arts|ea|capcom|square\s*enix|nintendo|sony|microsoft|bandai\s*namco)/.test(
+          `${publisher} ${developers} ${franchise}`,
+        );
       if (isAAA) bias -= 1;
     }
 
@@ -271,8 +276,14 @@ export class SteamAppDetailsService {
       (data?.categories ?? []).map((c: any) => c?.description ?? c),
     );
 
-    const DECISIVE_TAGS = new Set(["hentai", "eroge", "adult only", "nsfw", "r18"]); // +3
-    const STRONG_TAGS = new Set(["sexual content", "nudity"]); // 둘 다 있어도 총 +2
+    const DECISIVE_TAGS = new Set([
+      'hentai',
+      'eroge',
+      'adult only',
+      'nsfw',
+      'r18',
+    ]); // +3
+    const STRONG_TAGS = new Set(['sexual content', 'nudity']); // 둘 다 있어도 총 +2
 
     let score = 0;
 
@@ -320,7 +331,9 @@ export class SteamAppDetailsService {
       /연애\s*이벤트|하렘|섹시/,
     ];
 
-    const strongHitsFromBody = STRONG_BODY.filter((rx) => rx.test(textBody)).length;
+    const strongHitsFromBody = STRONG_BODY.filter((rx) =>
+      rx.test(textBody),
+    ).length;
     if (strongHitsFromBody > 0) score += 2; // 1개 이상 존재 시 +2
     if (WEAK_BODY.some((rx) => rx.test(textBody))) score += 1;
 
@@ -342,7 +355,9 @@ export class SteamAppDetailsService {
 
     // ── 7) FMV/영화형 장르 감점 (성인 전용 지표 없을 때만)
     const isFMV =
-      /(fmv|interactive\s+(movie|film)|narrative\s+adventure|cinematic)/.test(textBody);
+      /(fmv|interactive\s+(movie|film)|narrative\s+adventure|cinematic)/.test(
+        textBody,
+      );
     if (isFMV) score -= 1;
 
     // ── 8) AAA 바이어스
@@ -353,7 +368,12 @@ export class SteamAppDetailsService {
       strongHitsFromBody >= 2 &&
       this.hasProximity(
         textBody,
-        [[/sexual|성적|노출|누드|sex|nudity/, /content|콘텐츠|scenes?|acts?|패치|cg/]],
+        [
+          [
+            /sexual|성적|노출|누드|sex|nudity/,
+            /content|콘텐츠|scenes?|acts?|패치|cg/,
+          ],
+        ],
         80,
       );
     if (triggerB) return true;
@@ -371,20 +391,25 @@ export class SteamAppDetailsService {
 
   /** HTML/URL/파일명 제거 + 소문자화 + 공백 정리 */
   private normalizeText(html: string): string {
-    return String(html)
-      // URL/파일 경로 제거
-      .replace(/https?:\/\/\S+/gi, " ")
-      .replace(/\b[\w\-\/]+\.(jpg|jpeg|png|gif|webm|mp4|avif|apng|webp)\b/gi, " ")
-      // HTML 제거
-      .replace(/<[^>]*>/g, " ")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/&amp;/gi, "&")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      // 공백 정리 & 소문자
-      .replace(/\s+/g, " ")
-      .toLowerCase()
-      .trim();
+    return (
+      String(html)
+        // URL/파일 경로 제거
+        .replace(/https?:\/\/\S+/gi, ' ')
+        .replace(
+          /\b[\w\-\/]+\.(jpg|jpeg|png|gif|webm|mp4|avif|apng|webp)\b/gi,
+          ' ',
+        )
+        // HTML 제거
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        // 공백 정리 & 소문자
+        .replace(/\s+/g, ' ')
+        .toLowerCase()
+        .trim()
+    );
   }
 
   /** 배열/문자 뒤섞인 필드 → 문자열 배열(lowercase는 호출부에서) */
@@ -392,15 +417,22 @@ export class SteamAppDetailsService {
     if (!v) return [];
     const arr = Array.isArray(v) ? v : [v];
     return arr
-      .map((x) => (x == null ? "" : String(x)))
+      .map((x) => (x == null ? '' : String(x)))
       .map((s) => s.toLowerCase().trim())
       .filter(Boolean);
   }
 
   /** 두 패턴이 maxGap 이내에 공존하는지 (본문에서만 사용) */
-  private hasProximity(text: string, pairs: [RegExp, RegExp][], maxGap: number): boolean {
+  private hasProximity(
+    text: string,
+    pairs: [RegExp, RegExp][],
+    maxGap: number,
+  ): boolean {
     for (const [a, b] of pairs) {
-      const aGlobal = new RegExp(a.source, a.flags.includes("g") ? a.flags : a.flags + "g");
+      const aGlobal = new RegExp(
+        a.source,
+        a.flags.includes('g') ? a.flags : a.flags + 'g',
+      );
       let m: RegExpExecArray | null;
       while ((m = aGlobal.exec(text))) {
         const aIdx = m.index;
@@ -415,9 +447,10 @@ export class SteamAppDetailsService {
 
   /** 'non-graphic|brief|partial|non-explicit|artistic' 가 sexual/nudity 주변(±gap)에 존재하면 true */
   private softenNearSexual(text: string, gap = 60): boolean {
-    const SOFTEN = /(non[-\s]?graphic|brief|partial|non[-\s]?explicit|artistic)/;
+    const SOFTEN =
+      /(non[-\s]?graphic|brief|partial|non[-\s]?explicit|artistic)/;
     const SEXUAL = /(sexual|sex|nudity|누드|노출|성적)/;
-    const sexualG = new RegExp(SEXUAL.source, SEXUAL.flags + "g");
+    const sexualG = new RegExp(SEXUAL.source, SEXUAL.flags + 'g');
     let m: RegExpExecArray | null;
     while ((m = sexualG.exec(text))) {
       const idx = m.index;
@@ -430,10 +463,9 @@ export class SteamAppDetailsService {
 
   /** 문자열/문자열배열을 공백으로 연결 */
   private arrayOrStr(v: any): string {
-    if (!v) return "";
-    return Array.isArray(v) ? v.join(" ") : String(v);
+    if (!v) return '';
+    return Array.isArray(v) ? v.join(' ') : String(v);
   }
-
 
   private htmlToText(html: string): string {
     return html

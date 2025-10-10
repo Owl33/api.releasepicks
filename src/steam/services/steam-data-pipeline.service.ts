@@ -25,7 +25,7 @@ import {
   PrioritySelectionOptions,
   ExistingGamesMap,
   SteamRefreshCandidate,
-} from '../../pipeline/types/pipeline.types';
+} from '@pipeline/contracts';
 import { SteamApp } from './steam-applist.service';
 
 // 유틸
@@ -39,6 +39,7 @@ import { SteamBatchStrategyService } from './steam-batch-strategy.service';
 import { runWithConcurrency } from '../../common/concurrency/promise-pool.util';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
 import { RateLimitExceededError } from '../../common/concurrency/rate-limit-monitor';
+import { ExistingGamesSnapshotService } from '../../pipeline/persistence/services/existing-games-snapshot.service';
 
 /**
  * Steam 데이터 파이프라인 서비스
@@ -82,6 +83,7 @@ export class SteamDataPipelineService {
     private readonly steamReviewService: SteamReviewService,
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
     private readonly batchStrategyService: SteamBatchStrategyService, // Phase 5: Batch Strategy
+    private readonly existingGamesSnapshotService: ExistingGamesSnapshotService,
   ) {}
 
   private async buildProcessedGameDataFromApp(
@@ -114,8 +116,8 @@ export class SteamDataPipelineService {
         return null;
       }
 
-      const slug = normalizeGameName(steamDetails.name, app.appid);
-      const og_slug = normalizeGameName(app.name, app.appid);
+      const slugCandidate = normalizeGameName(steamDetails.name, app.appid);
+      const ogSlugCandidate = normalizeGameName(app.name, app.appid);
       timers.followersStart = Date.now();
       await this.globalLimiter.take('steam:followers', {
         minDelayMs: 120,
@@ -230,16 +232,15 @@ export class SteamDataPipelineService {
 
       const processedGame: ProcessedGameData = {
         name: steamDetails.name || app.name,
-        slug,
+        slug: slugCandidate ?? undefined,
         ogName: app.name,
-        ogSlug: og_slug,
+        ogSlug: ogSlugCandidate ?? undefined,
         steamId: app.appid,
         rawgId: undefined,
         gameType,
         parentSteamId,
         parentRawgId: undefined,
         parentReferenceType: undefined,
-        isDlc,
         childDlcSteamIds,
         releaseDate,
         releaseDateRaw,
@@ -615,76 +616,19 @@ export class SteamDataPipelineService {
     bucketSizes: { latest: number; soon: number; popular: number },
     appIndex: Map<number, SteamApp>,
   ): Promise<ExistingGamesMap> {
-    const buffer = Math.max(
-      50,
-      Number(process.env.STEAM_EXISTING_BUFFER ?? '150'),
-    );
-    const selectColumns: (keyof Game)[] = [
-      'steam_id',
-      'coming_soon',
-      'release_date_date',
-      'followers_cache',
-      'popularity_score',
-    ];
+    const snapshot =
+      await this.existingGamesSnapshotService.loadPriorityBuckets(bucketSizes);
+    if (appIndex.size === 0) {
+      return snapshot;
+    }
 
-    const attach = (game: Game, map: ExistingGamesMap): void => {
-      if (!game.steam_id) return;
-      if (!appIndex.has(game.steam_id)) return;
-
-      map.set(game.steam_id, {
-        steam_id: game.steam_id,
-        coming_soon: game.coming_soon,
-        release_date_date: game.release_date_date ?? undefined,
-        followers_cache: Math.round(Number(game.followers_cache ?? 0)),
-        popularity_score: game.popularity_score,
-      });
-    };
-
-    const map: ExistingGamesMap = new Map<
-      number,
-      {
-        steam_id: number;
-        coming_soon?: boolean | null;
-        release_date_date?: Date | null;
-        followers_cache?: number | null;
-        popularity_score?: number | null;
+    const filtered: ExistingGamesMap = new Map();
+    snapshot.forEach((value, steamId) => {
+      if (appIndex.has(steamId)) {
+        filtered.set(steamId, value);
       }
-    >();
-
-    const latestRows = await this.gameRepository
-      .createQueryBuilder('g')
-      .select(selectColumns.map((col) => `g.${String(col)}`))
-      .where('g.steam_id IS NOT NULL')
-      .orderBy('g.steam_id', 'DESC')
-      .limit(bucketSizes.latest + buffer)
-      .getMany();
-    latestRows.forEach((row) => attach(row, map));
-
-    const comingSoonRows = await this.gameRepository
-      .createQueryBuilder('g')
-      .select(selectColumns.map((col) => `g.${String(col)}`))
-      .where('g.steam_id IS NOT NULL')
-      .andWhere('g.coming_soon = :comingSoon', { comingSoon: true })
-      .orderBy('g.release_date_date', 'ASC')
-      .limit(bucketSizes.soon + buffer)
-      .getMany();
-    comingSoonRows.forEach((row) => attach(row, map));
-
-    const popularRows = await this.gameRepository
-      .createQueryBuilder('g')
-      .select(selectColumns.map((col) => `g.${String(col)}`))
-      .where('g.steam_id IS NOT NULL')
-      .andWhere('COALESCE(g.followers_cache, 0) > :threshold', {
-        threshold: Number(
-          process.env.STEAM_POPULAR_FOLLOWERS_THRESHOLD ?? '1000',
-        ),
-      })
-      .orderBy('g.followers_cache', 'DESC')
-      .limit(bucketSizes.popular + buffer)
-      .getMany();
-    popularRows.forEach((row) => attach(row, map));
-
-    return map;
+    });
+    return filtered;
   }
   async listAllSteamAppIdsV2(): Promise<number[]> {
     // 이미 갖고 있는 AppList v2 fetcher를 thin wrapper로 노출
@@ -1021,7 +965,7 @@ export class SteamDataPipelineService {
     return this.gameRepository
       .createQueryBuilder('game')
       .where('game.steam_id IS NOT NULL')
-      .andWhere('game.is_dlc = false')
+      .andWhere("game.game_type <> 'dlc'")
       .andWhere(
         new Brackets((qb) => {
           qb.where('game.popularity_score >= :popularity', {

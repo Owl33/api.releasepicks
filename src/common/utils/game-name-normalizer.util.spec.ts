@@ -9,11 +9,15 @@ describe('normalizeGameName', () => {
     });
 
     it('Ω (오메가) → omega로 변환', () => {
-      expect(normalizeGameName('Omega Ω Protocol')).toBe('omega-omega-protocol');
+      expect(normalizeGameName('Omega Ω Protocol')).toBe(
+        'omega-omega-protocol',
+      );
     });
 
     it('Α (알파) → alpha로 변환', () => {
-      expect(normalizeGameName('Alpha Α Centauri')).toBe('alpha-alpha-centauri');
+      expect(normalizeGameName('Alpha Α Centauri')).toBe(
+        'alpha-alpha-centauri',
+      );
     });
 
     it('Σ (시그마) → sigma로 변환', () => {
@@ -21,7 +25,9 @@ describe('normalizeGameName', () => {
     });
 
     it('여러 그리스 문자 동시 변환', () => {
-      expect(normalizeGameName('Α to Ω Journey')).toBe('alpha-to-omega-journey');
+      expect(normalizeGameName('Α to Ω Journey')).toBe(
+        'alpha-to-omega-journey',
+      );
     });
   });
 
@@ -59,7 +65,9 @@ describe('normalizeGameName', () => {
     });
 
     it('여러 상표 기호 동시 제거', () => {
-      expect(normalizeGameName('Title™ Brand® ©2024')).toBe('title-brand-2024');
+      expect(normalizeGameName('Title™ Brand® ©2024')).toBe(
+        'title-brand-2024',
+      );
     });
   });
 

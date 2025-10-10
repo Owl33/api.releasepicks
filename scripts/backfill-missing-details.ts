@@ -146,13 +146,25 @@ async function main() {
 
   // 1) 후보군 조회
   const sql = `
-    WITH missing AS (
+    WITH stats AS (
+      SELECT COUNT(*) AS total
+      FROM public.games g
+      LEFT JOIN public.game_details d ON d.game_id = g.id
+      WHERE g.popularity_score >= 40
+        AND (g.steam_id IS NOT NULL OR g.rawg_id IS NOT NULL)
+        AND g.game_type <> 'dlc'
+        AND (
+          d.id IS NULL
+          OR NOT EXISTS (SELECT 1 FROM public.game_releases r WHERE r.game_id = g.id)
+        )
+    ),
+    missing AS (
       SELECT g.id, g.steam_id, g.rawg_id
       FROM public.games g
       LEFT JOIN public.game_details d ON d.game_id = g.id
       WHERE g.popularity_score >= 40
         AND (g.steam_id IS NOT NULL OR g.rawg_id IS NOT NULL)
-        AND COALESCE(g.is_dlc, FALSE) = FALSE
+        AND g.game_type <> 'dlc'
         AND (
           d.id IS NULL
           OR NOT EXISTS (SELECT 1 FROM public.game_releases r WHERE r.game_id = g.id)
@@ -167,6 +179,29 @@ async function main() {
   log('🔎 [후보 조회] SQL 실행...');
   const candidates: Candidate[] = await dataSource.query(sql);
   log(`🎯 [후보 확보] 총 ${candidates.length}건`);
+  try {
+    const totalResult = await dataSource.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM public.games g
+      LEFT JOIN public.game_details d ON d.game_id = g.id
+      WHERE g.popularity_score >= 40
+        AND (g.steam_id IS NOT NULL OR g.rawg_id IS NOT NULL)
+        AND g.game_type <> 'dlc'
+        AND (
+          d.id IS NULL
+          OR NOT EXISTS (SELECT 1 FROM public.game_releases r WHERE r.game_id = g.id)
+        )
+      `
+    );
+    if (Array.isArray(totalResult) && totalResult[0] && totalResult[0].total != null) {
+      log(`📊 [전체 통계] 후보 전체 수: ${totalResult[0].total}`);
+    } else {
+      log('📊 [전체 통계] 후보 전체 수: 미확인');
+    }
+  } catch (e) {
+    warn('⚠️ 전체 통계를 조회하지 못했습니다.', (e as Error).message);
+  }
 
   if (!candidates.length) {
     log('✅ 보강 대상이 없습니다. 종료합니다.');
@@ -190,7 +225,7 @@ async function main() {
       const c = candidates[i];
       const info = `game=${c.id} (steam_id=${c.steam_id ?? '-'}, rawg_id=${c.rawg_id ?? '-'})`;
 
-      log(`🧵#${wid} ▶ 처리 시작: ${info}`);
+      log(`🧵#${wid} ▶ 처리 시작: ${info} (progress=${i + 1}/${candidates.length})`);
 
       // 3-1) RAWG 우선 (있을 때만)
       if (c.rawg_id) {

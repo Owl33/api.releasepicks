@@ -90,7 +90,7 @@ export class GamesService {
   //       start,
   //       end,
   //     })
-  //     .andWhere('game.is_dlc = false')
+  //     .andWhere("game.game_type <> 'dlc'")
   //     .andWhere('game.popularity_score >= :minScore', { minScore: 40 })
   //     .orderBy('release.release_date_date', 'ASC')
   //     .addOrderBy('game.popularity_score', 'DESC')
@@ -269,7 +269,6 @@ export class GamesService {
       steamId: game.steam_id ?? null,
       rawgId: game.rawg_id ?? null,
       gameType: game.game_type,
-      isDlc: game.is_dlc,
       comingSoon: game.coming_soon,
       popularityScore: game.popularity_score,
       releaseDate: game.release_date_date,
@@ -327,7 +326,7 @@ export class GamesService {
       .where('release.release_date_date IS NOT NULL')
       .andWhere('release.release_date_date >= :today', { today })
       .andWhere('release.release_date_date <= :upper', { upper: upperBound })
-      .andWhere('game.is_dlc = false')
+      .andWhere("game.game_type <> 'dlc'")
       .groupBy('release.game_id')
       .getRawMany();
 
@@ -410,7 +409,7 @@ export class GamesService {
         'detail.screenshots AS detail_screenshots',
       ])
       .where('game.popularity_score > 70')
-      .andWhere('game.is_dlc = false')
+      .andWhere("game.game_type <> 'dlc'")
       .orderBy('md5( (game.id)::text || :salt )', 'ASC')
       .setParameters({ salt: shuffleSalt })
       .limit(popularLimit)
@@ -541,7 +540,7 @@ export class GamesService {
 
     const query = this.gameRepository.createQueryBuilder('game');
 
-    query.where('game.is_dlc = true');
+    query.where("game.game_type = 'dlc'");
 
     const conditions: string[] = [];
     const parameters: Record<string, number> = {};
@@ -850,7 +849,7 @@ export class GamesService {
       .leftJoin('game.details', 'detail');
 
     // DLC 제외
-    base.andWhere('game.is_dlc = false');
+    base.andWhere("game.game_type <> 'dlc'");
 
     // 인기도 필터 (기본: 40 ~ 100)
     const popularityScore = filters.popularityScore ?? 40;
@@ -985,10 +984,7 @@ export class GamesService {
     //    - name 정렬 시 game.name
     //    - 항상 안정적인 tie-breaker (game.id ASC) 추가
     // ---------------------------------------------------------
-    const sortBy = (filters.sortBy ?? 'releaseDate') as
-      | 'releaseDate'
-      | 'popularity'
-      | 'name';
+    const sortBy = filters.sortBy ?? 'releaseDate';
     const sortOrder = (filters.sortOrder ?? 'ASC').toUpperCase() as
       | 'ASC'
       | 'DESC';
@@ -1117,7 +1113,7 @@ export class GamesService {
             ? true
             : false;
 
-      const releaseDateRaw = (row as any).release_date_raw ?? null;
+      const releaseDateRaw = row.release_date_raw ?? null;
 
       gameIdsSet.add(gameId);
 

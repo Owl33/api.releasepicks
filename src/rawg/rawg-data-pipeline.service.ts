@@ -14,7 +14,10 @@ import {
   RawgGameSearchResult,
   RawgGameStoreResult,
 } from './rawg.types';
-import { ProcessedGameData } from '../pipeline/types/pipeline.types';
+import {
+  ProcessedGameData,
+  CollectProcessedDataOptions,
+} from '@pipeline/contracts';
 import {
   GameType,
   ReleaseStatus,
@@ -28,15 +31,6 @@ import { rawgMonitor, RawgMonitorSnapshot } from './utils/rawg-monitor';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../youtube/youtube.service';
 import { normalizeGameName } from '../common/utils/game-name-normalizer.util';
-
-export interface CollectProcessedDataOptions {
-  // 기존 호출부를 존중: 필요한 옵션만 해석 (없으면 전역 기본값 사용)
-  monthsBack?: number; // default 12
-  monthsForward?: number; // default 6
-  limitMonths?: number; // 테스트용: 앞에서 N개월만
-  ordering?: '-released' | '-added';
-  metacritic?: string; // 운영 옵션
-}
 
 type ConsoleFamily = 'playstation' | 'xbox' | 'nintendo';
 
@@ -449,7 +443,7 @@ export class RawgDataPipelineService {
 
       const intermediate: RawgIntermediate = {
         rawgId,
-        slug: normalizeGameName(details.name), // 네가 쓰는 정규화 슬러그
+        slug: normalizeGameName(details.name) ?? undefined, // 네가 쓰는 정규화 슬러그
         name: details.name,
         headerImage: (details as any)?.background_image ?? '',
         screenshots:
@@ -673,17 +667,16 @@ export class RawgDataPipelineService {
       }
     }
 
+    const gameType = raw.isDlc ? GameType.DLC : GameType.GAME;
+
     return {
       name: raw.name,
       ogName: raw.name,
       ogSlug: raw.slug,
       slug: raw.slug,
       rawgId: raw.rawgId,
-      gameType: GameType.GAME, // RAWG 데이터는 기본적으로 GAME으로 분류
-
-      // ===== Phase 5.5: DLC 메타데이터 =====
-      isDlc: raw.isDlc, // DLC 여부 (parent_games_count > 0 감지)
-      parentRawgId: raw.parentRawgId, // 부모 게임 RAWG ID (DLC일 때만 존재)
+      gameType,
+      parentRawgId: raw.isDlc ? raw.parentRawgId : undefined,
 
       releaseDate,
       releaseDateRaw: raw.released ?? undefined,
