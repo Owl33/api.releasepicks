@@ -40,15 +40,14 @@ export class ManualPipelineDto {
   limit?: number = 200;
 
   /**
-   * 수집 전략: 'latest' | 'priority' | 'batch'
-   * - latest: 최신순 (테스트용)
+   * 수집 전략: 'latest' | 'priority'
+   * - latest: 최신순 (bootstrap 테스트용)
    * - priority: 복합 우선순위 (operational 모드)
-   * - batch: 점진적 배치 수집 (15만개, 자동 커서 전진)
    * @default 'latest'
    */
   @IsOptional()
-  @IsEnum(['latest', 'priority', 'batch'], {
-    message: 'strategy는 latest, priority, batch 중 하나여야 합니다',
+  @IsEnum(['latest', 'priority'], {
+    message: 'strategy는 latest, priority 중 하나여야 합니다',
   })
-  strategy?: 'latest' | 'priority' | 'new' | 'batch' = 'latest';
+  strategy?: 'latest' | 'priority' = 'latest';
 }

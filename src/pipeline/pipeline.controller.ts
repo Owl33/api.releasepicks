@@ -10,7 +10,6 @@
 } from '@nestjs/common';
 
 import { Cron } from '@nestjs/schedule';
-import { setTimeout as sleep } from 'timers/promises';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Repository,
@@ -23,15 +22,13 @@ import { PipelineItem } from '../entities/pipeline-item.entity';
 
 import { SteamDataPipelineService } from '../steam/services/steam-data-pipeline.service';
 import { RawgDataPipelineService } from '../rawg/rawg-data-pipeline.service';
-import { SteamBatchStrategyService } from '../steam/services/steam-batch-strategy.service';
 import { IntegratedPersistenceService } from './persistence/integrated-persistence.service';
 
 import { ProcessedGameData, ApiResponse, PipelineRunResult } from '@pipeline/contracts';
 
 import { ManualPipelineDto } from './dto/manual-pipeline.dto';
-import { SegmentedBatchDto } from './dto/segmented-batch.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
-import { RateLimitExceededError } from '../common/concurrency/rate-limit-monitor';
+import { SteamNewDto } from './dto/steam-new.dto';
 import { SingleGameManualDto } from './dto/single-game-manual-dto';
 /**
  * Pipeline Controller
@@ -49,7 +46,6 @@ export class PipelineController {
   constructor(
     private readonly steamDataPipeline: SteamDataPipelineService,
     private readonly rawgDataPipeline: RawgDataPipelineService,
-    private readonly steamBatchStrategy: SteamBatchStrategyService,
     @InjectRepository(Game)
     private readonly gamesRepository: Repository<Game>,
     @InjectRepository(PipelineRun)
@@ -169,28 +165,14 @@ export class PipelineController {
       if (phase === 'steam' || phase === 'full') {
         this.logger.log('📥 [수동 파이프라인] Steam 데이터 수집 시작');
 
-        let steamData: ProcessedGameData[];
-
-        // ✅ strategy=batch: 점진적 배치 수집 (사용자 지정 limit 또는 자동 커서 전진)
-        if (strategy === 'batch') {
-          this.logger.log(
-            `🔄 [수동 파이프라인] 배치 전략 - 점진적 수집 시작${limit ? ` (limit: ${limit}개)` : ' (자동 배치 크기)'}`,
-          );
-          steamData = await this.steamDataPipeline.collectBatchData(limit);
-          this.logger.log(
-            `✨ [수동 파이프라인] Steam 배치: ${steamData.length}개 수집 완료`,
-          );
-        } else {
-          // 기존: latest/priority/incremental 전략
-          steamData = await this.steamDataPipeline.collectProcessedData({
-            mode,
-            limit,
-            strategy,
-          });
-          this.logger.log(
-            `✨ [수동 파이프라인] Steam: ${steamData.length}/${limit}개 수집 완료`,
-          );
-        }
+        const steamData = await this.steamDataPipeline.collectProcessedData({
+          mode,
+          limit,
+          strategy,
+        });
+        this.logger.log(
+          `✨ [수동 파이프라인] Steam: ${steamData.length}/${limit}개 수집 완료`,
+        );
 
         data = [...data, ...steamData];
       }
@@ -213,102 +195,6 @@ export class PipelineController {
 
       // saveResult는 최소한 아래 형태라고 가정
       // type SaveResult = { created: number; updated: number; failed: number; failedItems?: any[] };
-
-      if (strategy === 'batch' && (phase === 'steam' || phase === 'full')) {
-        const createdCount = saveResult?.created ?? 0;
-        const updatedCount = saveResult?.updated ?? 0;
-        const failedCount = saveResult?.failed ?? 0;
-
-        // ✅ "시도한 개수"로 커서를 전진: 성공 + 실패 = 이번 라운드에서 소비한 입력 수
-        // const attemptedCount = createdCount + updatedCount + failedCount;
-        const attemptedCount = limit;
-
-        await this.steamBatchStrategy.updateBatchProgress(limit);
-
-        this.logger.log(
-          `📊 [배치 진행 상태] attempted=${attemptedCount} (created:${createdCount}, updated:${updatedCount}, failed:${failedCount}) → 커서 +${attemptedCount}`,
-        );
-      }
-
-      // manual 실행 진입부에서
-      // if (phase === 'steam' && strategy === 'new') { ... }
-      if (phase === 'steam' && strategy === 'new') {
-        this.logger.log('🆕 [수동 파이프라인] Steam 신규 탐지 전략 시작');
-
-        // 1) DB에 있는 모든 steam_id 집합
-        const existingSteamIdsRaw = await this.gamesRepository
-          .createQueryBuilder('g')
-          .select('g.steam_id', 'steam_id')
-          .where('g.steam_id IS NOT NULL')
-          .getRawMany<{ steam_id: number }>();
-        const existing = new Set(
-          existingSteamIdsRaw.map((r) => Number(r.steam_id)),
-        );
-
-        // 2) AppList v2 전체
-        const allIds = await this.steamDataPipeline.listAllSteamAppIdsV2();
-
-        // 3) 차집합(=진짜 신규)
-        const newcomers = allIds.filter((id) => !existing.has(id));
-        this.logger.log(
-          `🧮 [신규 탐지] AppList=${allIds.length}, DB=${existing.size}, 신규=${newcomers.length}`,
-        );
-
-        // 4) limit가 있으면 상한 적용
-        const take = limit ?? 200;
-        const targets = newcomers.slice(0, take);
-
-        if (targets.length === 0) {
-          await this.completePipelineRun(
-            pipelineRun.id,
-            'completed',
-            'no-newcomers',
-            0,
-            0,
-            0,
-          );
-          return {
-            statusCode: 200,
-            message: '신규 Steam 게임이 없습니다.',
-            data: {
-              pipelineRunId: pipelineRun.id,
-              phase: 'steam',
-              totalProcessed: 0,
-              finishedAt: new Date(),
-            },
-          };
-        }
-
-        // 5) 상세 수집 → 저장
-        const collected = await this.steamDataPipeline.collectManyBySteamIds(
-          targets,
-          { mode },
-        );
-        const saveResult = await this.persistence.saveProcessedGames(
-          collected,
-          pipelineRun.id,
-        );
-
-        await this.completePipelineRun(
-          pipelineRun.id,
-          'completed',
-          undefined,
-          collected.length,
-          saveResult.created + saveResult.updated,
-          saveResult.failed,
-        );
-
-        return {
-          statusCode: 200,
-          message: `Steam 신규 ${collected.length}건 처리 완료`,
-          data: {
-            pipelineRunId: pipelineRun.id,
-            phase: 'steam',
-            totalProcessed: collected.length,
-            finishedAt: new Date(),
-          },
-        };
-      }
 
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
@@ -349,6 +235,165 @@ export class PipelineController {
 
       this.logger.error(`❌ [수동 파이프라인] 실패 (${durationSeconds}초)`);
       this.logger.error(`   - 오류: ${err.message}`);
+
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
+    }
+  }
+
+  @Post('steam/new')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async executeSteamNew(
+    @Body() params: SteamNewDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const mode = params.mode ?? 'operational';
+    const limit = params.limit ?? 200;
+    const dryRun = params.dryRun ?? false;
+
+    this.logger.log('🆕 [Steam 신규 탐지] 시작');
+    this.logger.log(`   - mode: ${mode}`);
+    this.logger.log(`   - limit: ${limit}`);
+    this.logger.log(`   - dryRun: ${dryRun}`);
+
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'steam',
+      'steam_new_pipeline_manual',
+    );
+
+    try {
+      const existingSteamIdsRaw = await this.gamesRepository
+        .createQueryBuilder('g')
+        .select('g.steam_id', 'steam_id')
+        .where('g.steam_id IS NOT NULL')
+        .getRawMany<{ steam_id: number }>();
+      const existing = new Set(
+        existingSteamIdsRaw.map((r) => Number(r.steam_id)),
+      );
+
+      const allIds = await this.steamDataPipeline.listAllSteamAppIdsV2();
+      const newcomers = allIds.filter((id) => !existing.has(id));
+
+      this.logger.log(
+        `🧮 [Steam 신규 탐지] 후보 집계 — AppList=${allIds.length}, DB=${existing.size}, 신규=${newcomers.length}`,
+      );
+
+      if (newcomers.length === 0) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'no-newcomers',
+          0,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message: '신규 Steam 게임이 없습니다.',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'steam',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            steamNewSummary: {
+              candidates: 0,
+              inspected: 0,
+              targetIds: [],
+              created: 0,
+              updated: 0,
+              saved: 0,
+              failed: 0,
+              dryRun,
+            },
+          },
+        };
+      }
+
+      const targets = newcomers.sort((a, b) => b - a).slice(0, limit);
+      this.logger.log(
+        `🎯 [Steam 신규 탐지] 처리 대상 확정 — limit=${limit}, 실제 대상=${targets.length}`,
+      );
+
+      if (dryRun) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'dry-run',
+          0,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message: `Steam 신규 후보 ${targets.length}건 (dry-run)`,
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'steam',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            steamNewSummary: {
+              candidates: newcomers.length,
+              inspected: targets.length,
+              targetIds: targets,
+              created: 0,
+              updated: 0,
+              saved: 0,
+              failed: 0,
+              dryRun: true,
+              sample: targets.slice(0, Math.min(20, targets.length)),
+            },
+          },
+        };
+      }
+
+        const collected = await this.steamDataPipeline.collectManyBySteamIds(
+          targets,
+          { mode },
+        );
+        this.logger.log(
+          `📦 [Steam 신규 탐지] 상세 수집 완료 — 수집 성공=${collected.length}/${targets.length}`,
+        );
+      const saveResult = await this.persistence.saveProcessedGames(
+        collected,
+        pipelineRun.id,
+      );
+
+      this.logger.log(
+        `💾 [Steam 신규 탐지] 저장 결과 — created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
+      );
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'completed',
+        undefined,
+        collected.length,
+        saveResult.created + saveResult.updated,
+        saveResult.failed,
+      );
+
+      return {
+        statusCode: 200,
+        message: `Steam 신규 ${saveResult.created + saveResult.updated}건 처리 완료 (시도 ${targets.length}건)`,
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'steam',
+          totalProcessed: collected.length,
+          finishedAt: new Date(),
+          steamNewSummary: {
+            candidates: newcomers.length,
+            inspected: targets.length,
+             targetIds: targets,
+             created: saveResult.created,
+             updated: saveResult.updated,
+            saved: saveResult.created + saveResult.updated,
+            failed: saveResult.failed,
+            dryRun: false,
+          },
+        },
+      };
+    } catch (error) {
+      const err = this.normalizeError(error);
+      this.logger.error(`❌ [Steam 신규 탐지] 실패 - ${err.message}`);
 
       await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
       throw err;
@@ -486,130 +531,6 @@ export class PipelineController {
     }
   }
 
-  @Post('batch/segmented')
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  async executeSegmentedBatch(
-    @Body() params: SegmentedBatchDto,
-  ): Promise<ApiResponse<PipelineRunResult>> {
-    const totalLimit = Math.min(params.totalLimit ?? 150_000, 150_000);
-    const chunkSize = Math.max(1, Math.min(params.chunkSize ?? 3_000, 10_000));
-    const pauseMs = (params.pauseSeconds ?? 0) * 1000;
-
-    const pipelineRun = await this.createPipelineRun('manual', 'steam');
-    const startedAt = Date.now();
-
-    let attempted = 0;
-    let created = 0;
-    let updated = 0;
-    let failed = 0;
-
-    try {
-      while (attempted < totalLimit) {
-        const remaining = totalLimit - attempted;
-        const requestSize = Math.min(chunkSize, remaining);
-
-        const batchData =
-          await this.steamDataPipeline.collectBatchData(requestSize);
-
-        if (!batchData.length) {
-          this.logger.log(
-            `⏹️ [세그먼트 배치] 추가로 수집할 데이터가 없어 종료합니다. (${attempted}/${totalLimit})`,
-          );
-          break;
-        }
-
-        this.logger.log(
-          `📦 [세그먼트 배치] ${batchData.length}건 수집, 저장 시작 (${attempted + batchData.length}/${totalLimit})`,
-        );
-
-        const result = await this.persistence.saveProcessedGames(
-          batchData,
-          pipelineRun.id,
-        );
-
-        created += result.created;
-        updated += result.updated;
-        failed += result.failed;
-        attempted += batchData.length;
-
-        await this.steamBatchStrategy.updateBatchProgress(batchData.length);
-
-        if (pauseMs > 0 && attempted < totalLimit) {
-          this.logger.log(
-            `⏳ [세그먼트 배치] 다음 세그먼트 전 ${pauseMs}ms 대기`,
-          );
-          await sleep(pauseMs);
-        }
-      }
-
-      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
-
-      this.logger.log(
-        `✅ [세그먼트 배치] 완료 (${durationSeconds}s) — attempted:${attempted}, created:${created}, updated:${updated}, failed:${failed}`,
-      );
-
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'completed',
-        undefined,
-        attempted,
-        created + updated,
-        failed,
-      );
-
-      return {
-        statusCode: 200,
-        message: '세그먼트 배치 실행 완료',
-        data: {
-          pipelineRunId: pipelineRun.id,
-          phase: 'steam',
-          totalProcessed: attempted,
-          finishedAt: new Date(),
-        },
-      };
-    } catch (error) {
-      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
-      const err = this.normalizeError(error);
-
-      if (error instanceof RateLimitExceededError) {
-        const message =
-          'Steam AppDetails 레이트 리밋에 도달했습니다. 잠시 후 다시 시도해주세요.';
-        this.logger.error(
-          `❌ [세그먼트 배치] Rate Limit 초과로 중단 (${durationSeconds}초)`,
-        );
-        await this.completePipelineRun(
-          pipelineRun.id,
-          'failed',
-          message,
-          attempted,
-          created + updated,
-          failed,
-        );
-        return {
-          statusCode: 429,
-          message,
-          data: {
-            pipelineRunId: pipelineRun.id,
-            phase: 'steam',
-            totalProcessed: attempted,
-            finishedAt: new Date(),
-          },
-        };
-      }
-
-      this.logger.error(`❌ [세그먼트 배치] 실패: ${err.message}`);
-
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'failed',
-        err.message,
-        attempted,
-        created + updated,
-        failed,
-      );
-      throw err;
-    }
-  }
   @Post('manual/game/:id')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   async executeManualSingleGame(

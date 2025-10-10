@@ -34,8 +34,6 @@ import { normalizeGameName } from '../../common/utils/game-name-normalizer.util'
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../../youtube/youtube.service';
 
-// Batch Strategy 서비스 추가 (Phase 5 성능 최적화)
-import { SteamBatchStrategyService } from './steam-batch-strategy.service';
 import { runWithConcurrency } from '../../common/concurrency/promise-pool.util';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
 import { RateLimitExceededError } from '../../common/concurrency/rate-limit-monitor';
@@ -82,7 +80,6 @@ export class SteamDataPipelineService {
     private readonly steamCommunityService: SteamCommunityService,
     private readonly steamReviewService: SteamReviewService,
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
-    private readonly batchStrategyService: SteamBatchStrategyService, // Phase 5: Batch Strategy
     private readonly existingGamesSnapshotService: ExistingGamesSnapshotService,
   ) {}
 
@@ -546,12 +543,27 @@ export class SteamDataPipelineService {
         (app) => options.existingGames!.get(app.appid)?.coming_soon === true,
       )
       .sort((a, b) => {
-        const dateA =
-          options.existingGames!.get(a.appid)?.release_date_date?.getTime() ??
-          Infinity;
-        const dateB =
-          options.existingGames!.get(b.appid)?.release_date_date?.getTime() ??
-          Infinity;
+        const releaseA =
+          options.existingGames!.get(a.appid)?.release_date_date ?? null;
+        const releaseB =
+          options.existingGames!.get(b.appid)?.release_date_date ?? null;
+
+        const parsedA =
+          releaseA instanceof Date
+            ? releaseA.getTime()
+            : releaseA
+            ? new Date(releaseA as any).getTime()
+            : NaN;
+        const parsedB =
+          releaseB instanceof Date
+            ? releaseB.getTime()
+            : releaseB
+            ? new Date(releaseB as any).getTime()
+            : NaN;
+
+        const dateA = Number.isFinite(parsedA) ? parsedA : Infinity;
+        const dateB = Number.isFinite(parsedB) ? parsedB : Infinity;
+
         return dateA - dateB;
       })
       .slice(0, nSoon);
@@ -761,103 +773,6 @@ export class SteamDataPipelineService {
   }
 
   /**
-   * 점진적 배치 수집 (Phase 5 성능 최적화)
-   * 15만 개 게임을 안전하게 단계적으로 수집
-   *
-   * ⚠️ 주의: 배치 진행 상태 업데이트는 Controller에서 저장 성공 후 수행
-   * @param limit - 사용자 지정 수집 개수 (옵셔널, 미지정 시 자동 배치 크기 사용)
-   * @returns 이번 배치에서 수집된 게임 데이터
-   */
-  async collectBatchData(limit?: number): Promise<ProcessedGameData[]> {
-    // 1. AppList 조회 및 전체 길이 파악
-    const allApps = await this.getOrCacheAppList();
-    const totalApps = allApps.length;
-
-    // 2. 다음 배치 정보 조회 (AppList 길이 기반)
-    const batch = await this.batchStrategyService.getNextBatch(
-      totalApps,
-      limit,
-    );
-
-    if (batch.isComplete) {
-      this.logger.log(
-        `🎉 [Batch Strategy] 전체 수집 완료! (${batch.totalTarget.toLocaleString()}개)`,
-      );
-      return [];
-    }
-
-    this.logger.log(
-      `🚀 [Batch Strategy] 배치 수집 시작: ${batch.startIndex}-${batch.endIndex} (${batch.batchSize}개)${limit ? ' [사용자 지정]' : ' [자동]'}`,
-    );
-
-    // 3. AppList 슬라이싱
-    const batchApps = allApps.slice(batch.startIndex, batch.endIndex);
-
-    this.logger.log(
-      `📥 [Batch Strategy] AppList 슬라이스: ${batchApps.length}개`,
-    );
-
-    // 4. 배치 데이터 수집
-    const total = batchApps.length;
-    const totalTarget = batch.totalTarget;
-    const results = await runWithConcurrency(
-      batchApps,
-      this.processingConcurrency,
-      async (app, index) => {
-        const globalIndex = batch.startIndex + index;
-        const startedAt = Date.now();
-
-        try {
-          this.logger.log(
-            `[${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 처리 중: ${app.name} (AppID: ${app.appid})`,
-          );
-
-          const gameData = await this.buildProcessedGameDataFromApp(app, {
-            index: globalIndex,
-            total: totalTarget,
-          });
-
-          const durationMs = Date.now() - startedAt;
-          if (gameData) {
-            this.logger.log(
-              `✅ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 완료: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
-            );
-            return gameData;
-          }
-
-          this.logger.warn(
-            `⚠️ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 스킵: ${app.name} (${(durationMs / 1000).toFixed(2)}초)`,
-          );
-          return null;
-        } catch (error: any) {
-          const durationMs = Date.now() - startedAt;
-          this.logger.error(
-            `❌ [${(globalIndex + 1).toLocaleString()}/${totalTarget.toLocaleString()}] 실패: ${app.name} (${(durationMs / 1000).toFixed(2)}초) - ${
-              error?.message ?? error
-            }`,
-          );
-          return null;
-        }
-      },
-    );
-
-    const processedData = results.filter(
-      (item): item is ProcessedGameData => item !== null,
-    );
-
-    const progress = ((batch.startIndex + total) / totalTarget) * 100;
-    this.logger.log(
-      `📊 [Batch Strategy] 전체 진행률: ${(batch.startIndex + total).toLocaleString()}/${totalTarget.toLocaleString()} (${progress.toFixed(2)}%)`,
-    );
-
-    this.logger.log(
-      `✨ [Batch Strategy] 배치 수집 완료: ${processedData.length}/${total}개`,
-    );
-
-    return processedData;
-  }
-
-  /**
    * 출시 윈도우(S 티어) 갱신 대상 수집 및 가공
    */
   async collectReleaseWindowRefreshData(limit: number): Promise<{
@@ -934,26 +849,6 @@ export class SteamDataPipelineService {
     );
 
     return { candidates, processed };
-  }
-
-  /**
-   * 배치 진행 상황 조회
-   */
-  async getBatchProgress(): Promise<{
-    totalProcessed: number;
-    totalTarget: number;
-    percentage: number;
-    estimatedRemaining: string;
-    currentStage: string;
-  }> {
-    return this.batchStrategyService.getProgressStats();
-  }
-
-  /**
-   * 배치 진행 상태 초기화 (재시작 시)
-   */
-  async resetBatchProgress(): Promise<void> {
-    await this.batchStrategyService.resetProgress();
   }
 
   private async findReleaseWindowCandidates(limit: number): Promise<Game[]> {

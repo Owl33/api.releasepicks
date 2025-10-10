@@ -13,6 +13,17 @@ export interface PipelineRunResult {
     dryRun: boolean;
     candidates: SteamRefreshCandidate[];
   };
+  steamNewSummary?: {
+    candidates: number;
+    inspected: number;
+    targetIds: number[];
+    created: number;
+    updated: number;
+    saved: number;
+    failed: number;
+    dryRun: boolean;
+    sample?: number[];
+  };
   rawgReport?: any;
 }
 
