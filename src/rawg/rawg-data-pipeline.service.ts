@@ -385,6 +385,106 @@ export class RawgDataPipelineService {
 
     return processedData;
   }
+  /**
+   * RAWG 단일 수집 (rawg_id 기준)
+   * - 성공: 해당 게임을 ProcessedGameData로 가공하여 반환
+   * - 미존재/실패: null
+   */
+  async collectOneByRawgId(rawgId: number): Promise<ProcessedGameData | null> {
+    if (!Number.isFinite(rawgId) || rawgId <= 0) {
+      this.logger.warn(`[RAWG:one] 잘못된 rawgId: ${rawgId}`);
+      return null;
+    }
+
+    const consoleIssues: string[] = [];
+
+    try {
+      // 1) 상세 조회
+      const details = await this.rawgApiService.getGameDetails(rawgId);
+      if (!details) {
+        this.logger.warn(`[RAWG:one] 게임을 찾을 수 없음 - rawgId=${rawgId}`);
+        return null;
+      }
+
+      // 2) 플랫폼 패밀리 계산 (pc 제외, 콘솔만)
+      const families = Array.from(
+        new Set(extractPlatformFamilies(details.platforms || [])),
+      ) as ConsoleFamily[];
+
+      if (!families.length) {
+        consoleIssues.push(
+          `[manual] 플랫폼 정보를 찾지 못했습니다: ${details.name}`,
+        );
+        this.logger.warn(
+          `⚠️ [RAWG:one] 플랫폼 정보 없음 - ${details.name} (rawgId=${rawgId})`,
+        );
+      }
+
+      // 3) DLC/부모 매핑
+      let isDlc = false;
+      let parentRawgId: number | undefined;
+      const parentCount = details?.parent_games_count ?? 0;
+      if (parentCount > 0) {
+        try {
+          const parents = await this.rawgApiService.getParentGames(rawgId);
+          if (parents?.length > 0) {
+            isDlc = true;
+            parentRawgId = parents[0].id;
+            this.logger.log(
+              `✅ [RAWG:one] DLC 확정 - ${details.name} → 부모: ${parents[0].name} (rawg_id: ${parentRawgId})`,
+            );
+          }
+        } catch (e) {
+          this.logger.warn(
+            `⚠️ [RAWG:one] 부모 게임 조회 실패 - ${details.name}: ${(e as Error).message}`,
+          );
+        }
+      }
+
+      // 4) RawgIntermediate 구성
+      const added =
+        typeof (details as any)?.added === 'number'
+          ? (details as any).added
+          : 0;
+
+      const intermediate: RawgIntermediate = {
+        rawgId,
+        slug: normalizeGameName(details.name), // 네가 쓰는 정규화 슬러그
+        name: details.name,
+        headerImage: (details as any)?.background_image ?? '',
+        screenshots:
+          (details as any)?.short_screenshots
+            ?.slice(0, 5)
+            .map((s: any) => s.image) ?? [],
+        released: (details as any)?.released ?? null,
+        platformFamilies: families,
+        added,
+        popularityScore: PopularityCalculator.calculateRawgPopularity(added),
+        isDlc,
+        parentRawgId,
+        sourceMonth: 'manual',
+      };
+
+      // 5) 최종 매핑 (mapToProcessedGameData 내부에서 디테일/스토어/유튜브 추가 조회 수행)
+      const processed = await this.mapToProcessedGameData(
+        intermediate,
+        consoleIssues,
+      );
+
+      // 정책적으로 RAWG가 pc를 다루지 않는 전제와도 일치( families 가 콘솔만 생성됨 )
+      return processed ?? null;
+    } catch (err: any) {
+      // 필요 시 레이트 리밋/404 등 세분화
+      if (err?.status === 404) {
+        this.logger.warn(`[RAWG:one] 404 Not Found - rawgId=${rawgId}`);
+        return null;
+      }
+      this.logger.error(
+        `[RAWG:one] 수집 실패 - rawgId=${rawgId} - ${err?.message ?? err}`,
+      );
+      throw err; // 상위에서 공통 에러 처리(재시도/실패 집계)
+    }
+  }
 
   /**
    * RAWG 원시 데이터를 ProcessedGameData 형식으로 변환

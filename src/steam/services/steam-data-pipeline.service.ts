@@ -686,7 +686,25 @@ export class SteamDataPipelineService {
 
     return map;
   }
-
+  async listAllSteamAppIdsV2(): Promise<number[]> {
+    // 이미 갖고 있는 AppList v2 fetcher를 thin wrapper로 노출
+    const list = await this.steamAppListService.fetchFullAppList(); // [{ appid, name }, ...]
+    return list
+      .map((x) => Number(x.appid))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+  async collectManyBySteamIds(
+    ids: number[],
+    opts: { mode: 'bootstrap' | 'operational' } = { mode: 'operational' },
+  ): Promise<ProcessedGameData[]> {
+    // 내부에서 기존 collectOneBySteamId를 재사용 — 동시성 제한은 서비스/컨트롤러 레벨에서
+    const results: ProcessedGameData[] = [];
+    for (const id of ids) {
+      const one = await this.collectOneBySteamId(id, opts);
+      if (one) results.push(one);
+    }
+    return results;
+  }
   /**
    * SteamApp을 ProcessedGameData로 가공
    * (기존 buildProcessedGameData를 대체)

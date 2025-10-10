@@ -50,7 +50,7 @@ import { SegmentedBatchDto } from './dto/segmented-batch.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
 import { RateLimitExceededError } from '../common/concurrency/rate-limit-monitor';
 import { buildSearchText } from './utils/search-text.util';
-import { SingleGameManualDto } from './dto/single-game-manual-dto ';
+import { SingleGameManualDto } from './dto/single-game-manual-dto';
 type SaveMetricsSummary = {
   totalItems: number;
   successRate: number;
@@ -259,6 +259,87 @@ export class PipelineController {
           `📊 [배치 진행 상태] attempted=${attemptedCount} (created:${createdCount}, updated:${updatedCount}, failed:${failedCount}) → 커서 +${attemptedCount}`,
         );
       }
+
+      // manual 실행 진입부에서
+      // if (phase === 'steam' && strategy === 'new') { ... }
+      if (phase === 'steam' && strategy === 'new') {
+        this.logger.log('🆕 [수동 파이프라인] Steam 신규 탐지 전략 시작');
+
+        // 1) DB에 있는 모든 steam_id 집합
+        const existingSteamIdsRaw = await this.gamesRepository
+          .createQueryBuilder('g')
+          .select('g.steam_id', 'steam_id')
+          .where('g.steam_id IS NOT NULL')
+          .getRawMany<{ steam_id: number }>();
+        const existing = new Set(
+          existingSteamIdsRaw.map((r) => Number(r.steam_id)),
+        );
+
+        // 2) AppList v2 전체
+        const allIds = await this.steamDataPipeline.listAllSteamAppIdsV2();
+
+        // 3) 차집합(=진짜 신규)
+        const newcomers = allIds.filter((id) => !existing.has(id));
+        this.logger.log(
+          `🧮 [신규 탐지] AppList=${allIds.length}, DB=${existing.size}, 신규=${newcomers.length}`,
+        );
+
+        // 4) limit가 있으면 상한 적용
+        const take = limit ?? 200;
+        const targets = newcomers.slice(0, take);
+
+        if (targets.length === 0) {
+          await this.completePipelineRun(
+            pipelineRun.id,
+            'completed',
+            'no-newcomers',
+            0,
+            0,
+            0,
+          );
+          return {
+            statusCode: 200,
+            message: '신규 Steam 게임이 없습니다.',
+            data: {
+              pipelineRunId: pipelineRun.id,
+              phase: 'steam',
+              totalProcessed: 0,
+              finishedAt: new Date(),
+            },
+          };
+        }
+
+        // 5) 상세 수집 → 저장
+        const collected = await this.steamDataPipeline.collectManyBySteamIds(
+          targets,
+          { mode },
+        );
+        const saveResult = await this.saveIntegratedData(
+          collected,
+          pipelineRun.id,
+        );
+
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          undefined,
+          collected.length,
+          saveResult.created + saveResult.updated,
+          saveResult.failed,
+        );
+
+        return {
+          statusCode: 200,
+          message: `Steam 신규 ${collected.length}건 처리 완료`,
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'steam',
+            totalProcessed: collected.length,
+            finishedAt: new Date(),
+          },
+        };
+      }
+
       const duration = Date.now() - startTime;
       const durationSeconds = (duration / 1000).toFixed(2);
 
@@ -560,65 +641,98 @@ export class PipelineController {
     @Query() params: SingleGameManualDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
     const startedAt = Date.now();
-    const gameId = Number(idParam);
-    const sources = params.sources ?? 'both';
-    const dryRun = params.dryRun ?? false;
+    const idKind = params.idKind ?? 'game';
+    const sources = params.sources ?? (idKind === 'game' ? 'both' : idKind); // game→both, steam→steam, rawg→rawg
     const mode = params.mode ?? 'operational';
+    const dryRun = params.dryRun ?? false;
 
     this.logger.log('🚀 [단일 파이프라인] 시작');
-    this.logger.log(`   - gameId: ${gameId}`);
+    this.logger.log(`   - id: ${idParam} (${idKind})`);
     this.logger.log(`   - sources: ${sources}`);
     this.logger.log(`   - mode: ${mode}`);
     this.logger.log(`   - dryRun: ${dryRun}`);
 
-    // 0) 대상 게임 조회
-    const game = await this.gamesRepository.findOne({ where: { id: gameId } });
-    if (!game) {
-      return {
-        statusCode: 404,
-        message: `게임을 찾을 수 없습니다: ${gameId}`,
-        data: undefined,
-      };
-    }
     const pipelineRun = await this.createPipelineRun(
       'manual',
       'full',
       'single_game_pipeline_manual',
     );
 
+    // 0) 식별 → DB 조회
+    let game: Game | null = null;
+    if (idKind === 'game') {
+      const gameId = Number(idParam);
+      if (!Number.isFinite(gameId)) {
+        return {
+          statusCode: 400,
+          message: '잘못된 game_id 입니다.',
+          data: undefined,
+        };
+      }
+      game = await this.gamesRepository.findOne({ where: { id: gameId } });
+      if (!game) {
+        return {
+          statusCode: 404,
+          message: `게임을 찾을 수 없습니다: ${gameId}`,
+          data: undefined,
+        };
+      }
+    } else if (idKind === 'steam') {
+      const steamId = Number(idParam);
+      if (!Number.isFinite(steamId)) {
+        return {
+          statusCode: 400,
+          message: '잘못된 steam_id 입니다.',
+          data: undefined,
+        };
+      }
+      game = await this.gamesRepository.findOne({
+        where: { steam_id: steamId },
+      });
+    } else if (idKind === 'rawg') {
+      const rawgId = Number(idParam);
+      if (!Number.isFinite(rawgId)) {
+        return {
+          statusCode: 400,
+          message: '잘못된 rawg_id 입니다.',
+          data: undefined,
+        };
+      }
+      game = await this.gamesRepository.findOne({ where: { rawg_id: rawgId } });
+    }
+
     try {
       const tasks: Promise<ProcessedGameData | null>[] = [];
 
-      // 1) Steam 단일 수집 (steam_id가 있는 경우)
-      if ((sources === 'steam' || sources === 'both') && game.steam_id) {
-        // ⬇️ 아래 메서드는 SteamDataPipelineService에 아주 얇게 추가(헬퍼)해둡니다.
-        tasks.push(
-          this.steamDataPipeline.collectOneBySteamId(game.steam_id, { mode }),
-        );
+      // 1) 수집 소스 결정
+      if (sources === 'steam' || sources === 'both') {
+        // game이 있으면 그 steam_id, 없으면 idParam(steam 케이스)
+        const steamId =
+          game?.steam_id ?? (idKind === 'steam' ? Number(idParam) : null);
+        if (steamId)
+          tasks.push(
+            this.steamDataPipeline.collectOneBySteamId(steamId, { mode }),
+          );
+      }
+      if (sources === 'rawg' || sources === 'both') {
+        const rawgId =
+          game?.rawg_id ?? (idKind === 'rawg' ? Number(idParam) : null);
+        if (rawgId)
+          tasks.push(this.rawgDataPipeline.collectOneByRawgId(rawgId));
       }
 
-      // 2) RAWG 단일 수집 (rawg_id가 있는 경우)
-      // if ((sources === 'rawg' || sources === 'both') && game.rawg_id) {
-      //   // ⬇️ 아래 메서드는 RawgDataPipelineService에 아주 얇게 추가(헬퍼)해둡니다.
-      //   tasks.push(this.rawgDataPipeline.collectOneByRawgId(game.rawg_id));
-      // }
-
-      // RAWG/Steam ID가 없는데 해당 소스를 요청한 경우 경고만 로그
-      if ((sources === 'steam' || sources === 'both') && !game.steam_id) {
-        this.logger.warn(
-          `⚠️ [단일 파이프라인] steam_id 없음 → Steam 수집 스킵 (gameId=${gameId})`,
-        );
-      }
-      if ((sources === 'rawg' || sources === 'both') && !game.rawg_id) {
-        this.logger.warn(
-          `⚠️ [단일 파이프라인] rawg_id 없음 → RAWG 수집 스킵 (gameId=${gameId})`,
-        );
+      if (tasks.length === 0) {
+        // 자동 추론 실패 시 안내
+        return {
+          statusCode: 400,
+          message: '수집할 소스/식별자가 없습니다.',
+          data: undefined,
+        };
       }
 
-      // 3) 수집 실행
       const raws = await Promise.all(tasks);
       const collected = raws.filter((x): x is ProcessedGameData => !!x);
-      console.log('결과', raws);
+
       if (collected.length === 0) {
         await this.completePipelineRun(
           pipelineRun.id,
@@ -630,8 +744,7 @@ export class PipelineController {
         );
         return {
           statusCode: 200,
-          message:
-            '수집할 데이터가 없습니다(해당 소스 ID 없음 또는 수집 실패).',
+          message: '수집할 데이터가 없습니다.',
           data: {
             pipelineRunId: pipelineRun.id,
             phase: 'full',
@@ -641,7 +754,6 @@ export class PipelineController {
         };
       }
 
-      // 4) dry-run: 저장 없이 리포트만
       if (dryRun) {
         await this.completePipelineRun(
           pipelineRun.id,
@@ -659,12 +771,11 @@ export class PipelineController {
             phase: 'full',
             totalProcessed: 0,
             finishedAt: new Date(),
-            // 필요시 미리보기 정보 일부만 첨부 가능
           },
         };
       }
 
-      // 5) 통합 저장 (POST+PATCH 자동 판별, Steam 보호/세맨틱은 내부 updateGame 로직이 처리)
+      // 2) 저장 — 여기서 “존재하면 업데이트/없으면 생성” 자동 수행
       const saveResult = await this.saveIntegratedData(
         collected,
         pipelineRun.id,
@@ -709,6 +820,31 @@ export class PipelineController {
    * POST + PATCH 자동 판별 저장
    * 각 게임은 독립적인 트랜잭션으로 처리
    */
+  private formatGameKey(g: ProcessedGameData): string {
+    const s = (v: unknown) =>
+      v === null || v === undefined || v === '' ? '-' : String(v);
+    return `steam:${s(g.steamId)} rawg:${s(g.rawgId)} slug:${s(g.slug)} og:${s(g.ogSlug)}`;
+  }
+  private inferMatchKey(
+    input: ProcessedGameData,
+    existing: Game,
+  ): 'steam_id' | 'rawg_id' | 'slug' | 'og_slug' | 'unknown' {
+    if (input.steamId && existing.steam_id === input.steamId) return 'steam_id';
+    if (input.rawgId && existing.rawg_id === input.rawgId) return 'rawg_id';
+    if (
+      input.slug &&
+      typeof existing.slug === 'string' &&
+      existing.slug.toLowerCase() === input.slug.toLowerCase()
+    )
+      return 'slug';
+    if (
+      input.ogSlug &&
+      typeof existing.og_slug === 'string' &&
+      existing.og_slug.toLowerCase() === input.ogSlug.toLowerCase()
+    )
+      return 'og_slug';
+    return 'unknown';
+  }
 
   private async saveIntegratedData(
     data: ProcessedGameData[],
@@ -791,9 +927,17 @@ export class PipelineController {
 
         activeWorkers++;
         const start = Date.now();
+        const identity = this.formatGameKey(item.data); // ✅ 로그용 식별자 문자열
 
         try {
           let operation: 'created' | 'updated' | null = null;
+          let targetGameId: number | null = null;
+          let matchedByKey:
+            | 'steam_id'
+            | 'rawg_id'
+            | 'slug'
+            | 'og_slug'
+            | 'unknown' = 'unknown';
           await this.dataSource.transaction(async (manager) => {
             const existingGame = await this.findExistingGame(
               item.data,
@@ -801,6 +945,8 @@ export class PipelineController {
             );
 
             if (existingGame) {
+              matchedByKey = this.inferMatchKey(item.data, existingGame); // ✅ 어떤 키로 매칭됐는지 추정
+
               await this.updateGame(existingGame.id, item.data, manager);
               await this.createPipelineItem(
                 pipelineRunId,
@@ -832,13 +978,77 @@ export class PipelineController {
 
           if (operation === 'created') {
             createdCount++;
+            this.logger.log(
+              `➕ [통합 저장] 생성 gameId=${targetGameId} (${identity}) name="${item.data.name}" ${durationMs}ms`,
+            );
           } else if (operation === 'updated') {
             updatedCount++;
+            this.logger.log(
+              `🛠️ [통합 저장] 업데이트 gameId=${targetGameId} by=${matchedByKey} (${identity}) name="${item.data.name}" ${durationMs}ms`,
+            );
           }
 
           processedCount++;
           emitProgress();
         } catch (error) {
+          const is23505 = (error as any)?.code === '23505';
+          const constraint = (error as any)?.constraint ?? '';
+          const detail = (error as any)?.detail as string | undefined;
+
+          if (is23505 && constraint === 'games_og_slug_key') {
+            // 같은 트랜잭션은 이미 abort 상태 → 새 트랜잭션으로만 처리
+            try {
+              const op: any | 'created' | 'updated' =
+                await this.dataSource.transaction(async (manager) => {
+                  // 1) 충돌한 og_slug를 우선 detail에서 추출
+                  const collidedOg =
+                    this.extractUniqueValueFromDetail(detail, 'og_slug') ??
+                    item.data.ogSlug ??
+                    item.data.ogName ??
+                    item.data.slug ??
+                    item.data.name;
+
+                  if (!collidedOg) {
+                    // 추정값조차 없으면 복구 불가 → 실패로 넘김
+                    throw error;
+                  }
+
+                  // 2) 해당 og_slug를 가진 기존 게임 조회 (대소문자 무시)
+                  const existing = await manager.findOne(Game, {
+                    where: { og_slug: ILike(collidedOg) },
+                  });
+                  if (!existing) {
+                    // 정말 예외적 케이스: 제약은 터졌는데 찾지 못함 → 실패로 넘김
+                    throw error;
+                  }
+
+                  // 3) 병합: updateGame은 Steam 보호/필드 세맨틱을 이미 준수
+                  await this.updateGame(existing.id, item.data, manager);
+                  await this.createPipelineItem(
+                    pipelineRunId,
+                    'game',
+                    existing.id,
+                    'updated',
+                    manager,
+                  );
+                  return 'updated';
+                });
+
+              // 통계 반영 & 다음 아이템으로 진행
+              retryHistogram.set(
+                item.attempt,
+                (retryHistogram.get(item.attempt) ?? 0) + 1,
+              );
+              if (op === 'created') createdCount++;
+              else updatedCount++;
+              processedCount++;
+              emitProgress();
+              continue; // ✅ while 루프의 다음 아이템
+            } catch (e2) {
+              // 복구 실패 시 이하의 일반 재시도/실패 처리로 폴백
+              error = e2;
+            }
+          }
           const { type, code } = this.classifySaveError(error);
           const normalized = this.normalizeError(error);
           const reasonKey =
@@ -1066,20 +1276,30 @@ export class PipelineController {
     manager: EntityManager,
   ): Promise<Game | null> {
     if (gameData.steamId) {
-      return manager.findOne(Game, {
+      const bySteam = await manager.findOne(Game, {
         where: { steam_id: gameData.steamId },
       });
+      if (bySteam) return bySteam;
     }
     if (gameData.rawgId) {
-      return manager.findOne(Game, {
+      const byRawg = await manager.findOne(Game, {
         where: { rawg_id: gameData.rawgId },
       });
+      if (byRawg) return byRawg;
     }
     if (gameData.slug) {
-      return manager.findOne(Game, {
+      const bySlug = await manager.findOne(Game, {
         where: { slug: ILike(gameData.slug) },
       });
+      if (bySlug) return bySlug;
     }
+    if (gameData.ogSlug) {
+      const g = await manager.findOne(Game, {
+        where: { og_slug: ILike(gameData.ogSlug) },
+      });
+      if (g) return g;
+    }
+
     return null;
   }
 
@@ -1094,6 +1314,8 @@ export class PipelineController {
     if (gameData.slug) {
       whereClauses.push({ slug: gameData.slug });
     }
+    if (gameData.ogSlug) whereClauses.push({ og_slug: gameData.ogSlug }); // ✅ 추가
+
     if (gameData.steamId) {
       whereClauses.push({ steam_id: gameData.steamId });
     }
@@ -1132,33 +1354,9 @@ export class PipelineController {
       followers_cache: gameData.followersCache ?? null,
     });
 
-    let savedGame: Game;
-    try {
-      savedGame = await manager.save(Game, game);
-    } catch (error) {
-      if (
-        error instanceof QueryFailedError &&
-        (error as QueryFailedError & { code?: string }).code === '23505'
-      ) {
-        const whereClauses: FindOptionsWhere<Game>[] = [{ slug: game.slug }];
-        if (typeof game.steam_id === 'number') {
-          whereClauses.push({ steam_id: game.steam_id });
-        }
-        if (typeof gameData.rawgId === 'number') {
-          whereClauses.push({ rawg_id: gameData.rawgId });
-        }
-
-        const fallback = await manager.findOne(Game, {
-          where: whereClauses,
-        });
-
-        if (fallback) {
-          await this.updateGame(fallback.id, gameData, manager);
-          return fallback;
-        }
-      }
-      throw this.normalizeError(error);
-    }
+    const savedGame = await manager.save(Game, game).catch((err) => {
+      throw this.normalizeError(err); // 또는 그냥 throw err;
+    });
 
     // ===== Phase 5.5: DLC는 details/releases 미생성 =====
     if (isDlc) {
@@ -1395,7 +1593,13 @@ export class PipelineController {
       };
 
       const existingRelease = await manager.findOne(GameRelease, { where });
-
+      if (releaseData.dataSource === 'rawg' && releaseData.platform === 'pc') {
+        // 개발 중에는 throw로 바로 잡고, 운영에서는 스킵만 하도록 옵션화 가능
+        this.logger.warn(
+          `RAWG 릴리스에 platform=pc가 감지되어 스킵했습니다: gameId=${gameId}, store=${releaseData.store}, appId=${releaseData.storeAppId}`,
+        );
+        continue;
+      }
       if (existingRelease) {
         // 업데이트
         await manager.update(GameRelease, existingRelease.id, {
@@ -1535,6 +1739,15 @@ export class PipelineController {
    * 회사명 → slug 변환
    * 예: "Bandai Namco Entertainment" → "bandai-namco-entertainment"
    */
+  private extractUniqueValueFromDetail(
+    detail?: string,
+    column = 'og_slug',
+  ): string | null {
+    if (!detail) return null;
+    const m = detail.match(new RegExp(`\\(${column}\\)=\\((.+?)\\)`));
+    return m ? m[1] : null;
+  }
+
   private generateCompanySlug(name: string): string {
     // ✅ 안전성 체크: name이 문자열이 아닐 경우 대응
     if (!name || typeof name !== 'string') {

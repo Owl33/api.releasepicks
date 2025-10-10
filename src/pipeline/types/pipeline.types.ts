@@ -175,7 +175,7 @@ export interface PrioritySelectionOptions {
 export interface SteamCollectOptions {
   mode: 'bootstrap' | 'operational';
   limit: number;
-  strategy?: 'latest' | 'priority';
+  strategy?: 'latest' | 'priority' | 'new';
 }
 
 /**

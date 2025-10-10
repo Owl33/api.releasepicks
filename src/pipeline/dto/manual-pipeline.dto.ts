@@ -50,5 +50,5 @@ export class ManualPipelineDto {
   @IsEnum(['latest', 'priority', 'batch'], {
     message: 'strategy는 latest, priority, batch 중 하나여야 합니다',
   })
-  strategy?: 'latest' | 'priority' | 'batch' = 'latest';
+  strategy?: 'latest' | 'priority' | 'new' | 'batch' = 'latest';
 }

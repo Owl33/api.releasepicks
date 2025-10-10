@@ -240,10 +240,7 @@ export function normalizeGameName(name: string, fallbackId?: number | null): str
     return fallbackId ? `unknown-game-${fallbackId}` : 'unknown-game';
   }
 
-  // 12. fallback ID 추가 (빈 slug 중복 방지)
-  if (fallbackId) {
-    return `${normalized}-${fallbackId}`;
-  }
+
 
   return normalized;
 }
