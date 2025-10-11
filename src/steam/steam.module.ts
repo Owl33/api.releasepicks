@@ -3,6 +3,7 @@ import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SteamController } from './steam.controller';
+import { AdminSteamExclusionController } from './admin-steam-exclusion.controller';
 
 // 엔티티
 import { Game } from '../entities/game.entity';
@@ -24,6 +25,7 @@ import { SteamExclusionService } from './services/exclusion/steam-exclusion.serv
 // YouTube 모듈 (Phase 4)
 import { YouTubeModule } from '../youtube/youtube.module';
 import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-persistence.module';
+import { ServiceRoleGuard } from '../common/guards/service-role.guard';
 
 /**
  * Steam API 모듈
@@ -62,9 +64,10 @@ import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-pers
     SteamCommunityService,
     SteamDataPipelineService,
     SteamReviewService,
+    ServiceRoleGuard,
     SteamExclusionService,
   ],
-  controllers: [SteamController],
+  controllers: [SteamController, AdminSteamExclusionController],
   exports: [
     SteamAppListService,
     SteamAppDetailsService,

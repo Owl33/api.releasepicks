@@ -12,6 +12,13 @@ export interface PipelineRunResult {
     failed: number;
     dryRun: boolean;
     candidates: SteamRefreshCandidate[];
+    failures?: {
+      steamId: number | null;
+      rawgId: number | null;
+      slug: string | null;
+      reason: string;
+      message: string;
+    }[];
   };
   steamNewSummary?: {
     candidates: number;
@@ -24,6 +31,27 @@ export interface PipelineRunResult {
     failed: number;
     dryRun: boolean;
     sample?: number[];
+    failures?: {
+      steamId: number | null;
+      rawgId: number | null;
+      slug: string | null;
+      reason: string;
+      message: string;
+    }[];
+  };
+  steamSummary?: {
+    created: number;
+    updated: number;
+    failed: number;
+    excludedByRegistry?: number;
+    total: number;
+    failures?: {
+      steamId?: number | null;
+      rawgId?: number | null;
+      slug?: string | null;
+      reason: string;
+      message: string;
+    }[];
   };
   rawgReport?: any;
 }

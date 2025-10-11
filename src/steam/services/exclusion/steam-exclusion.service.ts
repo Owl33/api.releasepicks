@@ -46,6 +46,15 @@ interface BucketState {
   dirty: boolean;
 }
 
+export interface BucketStatus {
+  bucketId: number;
+  total: number;
+  byReason: Record<SteamExclusionReason, number>;
+  sampleSteamIds: number[];
+  sampleTruncated: boolean;
+  updatedAt: Date | null;
+}
+
 @Injectable()
 export class SteamExclusionService {
   private readonly logger = new Logger(SteamExclusionService.name);
@@ -89,6 +98,36 @@ export class SteamExclusionService {
   async getExcludedIds(): Promise<Set<number>> {
     const bitmap = await this.loadBitmap();
     return bitmap.collectAsSet();
+  }
+
+  async getBucketStatusBySteamId(
+    steamId: number,
+    sampleLimit = 50,
+  ): Promise<BucketStatus> {
+    const bucketId = Math.floor(steamId / BUCKET_SIZE);
+    return this.getBucketStatus(bucketId, sampleLimit);
+  }
+
+  async getBucketStatus(
+    bucketId: number,
+    sampleLimit = 50,
+  ): Promise<BucketStatus> {
+    const bitmap = await this.loadBitmap();
+    const snapshot = bitmap.getBucketSnapshot(bucketId, sampleLimit);
+    const row = await this.exclusionRepository.findOne({
+      where: { bucket_id: bucketId },
+    });
+
+    const counts = snapshot?.byReason ?? buildEmptyReasonCounts();
+
+    return {
+      bucketId,
+      total: snapshot?.total ?? 0,
+      byReason: counts,
+      sampleSteamIds: snapshot?.steamIds ?? [],
+      sampleTruncated: snapshot?.truncated ?? false,
+      updatedAt: row?.last_updated_at ?? null,
+    };
   }
 
   /**
@@ -306,6 +345,42 @@ class SteamExclusionBitmap {
 
     this.dirtyBucketIds.clear();
     return exports;
+  }
+
+  getBucketSnapshot(
+    bucketId: number,
+    sampleLimit = 50,
+  ): {
+    bucketId: number;
+    total: number;
+    byReason: Record<SteamExclusionReason, number>;
+    steamIds: number[];
+    truncated: boolean;
+  } | null {
+    const bucket = this.buckets.get(bucketId);
+    if (!bucket) return null;
+
+    const sample: number[] = [];
+    let truncated = false;
+
+    for (let offset = 0; offset < BUCKET_SIZE; offset += 1) {
+      if (isBitSet(bucket.bitmap, offset)) {
+        const steamId = bucketId * BUCKET_SIZE + offset;
+        if (sample.length < sampleLimit) {
+          sample.push(steamId);
+        } else {
+          truncated = true;
+        }
+      }
+    }
+
+    return {
+      bucketId,
+      total: bucket.total,
+      byReason: { ...bucket.byReason },
+      steamIds: sample,
+      truncated,
+    };
   }
 
   private ensureBucket(

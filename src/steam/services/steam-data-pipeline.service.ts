@@ -367,7 +367,7 @@ export class SteamDataPipelineService {
           })),
         ],
         details:
-          popularityScore >= 40
+          popularityScore >= 40 || isDlc
             ? {
                 screenshots:
                   (steamDetails.screenshots as any[])?.slice(0, 5) || [],
@@ -389,7 +389,7 @@ export class SteamDataPipelineService {
               }
             : undefined,
         releases:
-          popularityScore >= 40
+          popularityScore >= 40 || isDlc
             ? [
                 {
                   platform: Platform.PC,

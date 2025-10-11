@@ -26,6 +26,8 @@ import { IntegratedPersistenceService } from './persistence/integrated-persisten
 import { SteamExclusionService } from '../steam/services/exclusion/steam-exclusion.service';
 
 import { ProcessedGameData, ApiResponse, PipelineRunResult } from '@pipeline/contracts';
+import { SaveFailureDetail } from './contracts/save-result.contract';
+import { PersistenceSaveResult } from './persistence/persistence.types';
 
 import { ManualPipelineDto } from './dto/manual-pipeline.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
@@ -160,40 +162,83 @@ export class PipelineController {
     const pipelineRun = await this.createPipelineRun('manual', phase);
 
     try {
-      let data: ProcessedGameData[] = [];
+      let steamData: ProcessedGameData[] = [];
+      let rawgData: ProcessedGameData[] = [];
       let rawgCount = 0;
 
       // Steam 데이터 수집
       if (phase === 'steam' || phase === 'full') {
         this.logger.log('📥 [수동 파이프라인] Steam 데이터 수집 시작');
 
-        const steamData = await this.steamDataPipeline.collectProcessedData({
+        const collectedSteam = await this.steamDataPipeline.collectProcessedData({
           mode,
           limit,
           strategy,
         });
         this.logger.log(
-          `✨ [수동 파이프라인] Steam: ${steamData.length}/${limit}개 수집 완료`,
+          `✨ [수동 파이프라인] Steam: ${collectedSteam.length}/${limit}개 수집 완료`,
         );
 
-        data = [...data, ...steamData];
+        steamData = collectedSteam;
       }
 
       // RAWG 데이터 수집
       if (phase === 'rawg' || phase === 'full') {
         this.logger.log('📥 [수동 파이프라인] RAWG 데이터 수집 시작');
-        const rawgData = await this.rawgDataPipeline.collectProcessedData();
-        data = [...data, ...rawgData];
+        rawgData = await this.rawgDataPipeline.collectProcessedData();
         rawgCount = rawgData.length;
         this.logger.log(`✨ [수동 파이프라인] RAWG: ${rawgCount}개 수집 완료`);
       }
 
       // 통합 저장
-      this.logger.log(`💾 [수동 파이프라인] ${data.length}개 게임 저장 시작`);
-      const saveResult = await this.persistence.saveProcessedGames(
-        data,
-        pipelineRun.id,
-      );
+      const totalProcessed = steamData.length + rawgData.length;
+      this.logger.log(`💾 [수동 파이프라인] ${totalProcessed}개 게임 저장 시작`);
+
+      let totalCreated = 0;
+      let totalUpdated = 0;
+      let totalFailed = 0;
+
+      let steamSummary: {
+        created: number;
+        updated: number;
+        failed: number;
+        total: number;
+        failures?: {
+          steamId: number | null;
+          rawgId: number | null;
+          slug: string | null;
+          reason: string;
+          message: string;
+        }[];
+      } | undefined;
+
+      if (steamData.length > 0) {
+        const steamResult = await this.persistence.saveProcessedGames(
+          steamData,
+          pipelineRun.id,
+        );
+        const steamFailures = this.mapFailureDetails(steamResult.failures);
+        steamSummary = {
+          created: steamResult.created,
+          updated: steamResult.updated,
+          failed: steamResult.failed,
+          total: steamData.length,
+          failures: steamFailures.length > 0 ? steamFailures : undefined,
+        };
+        totalCreated += steamResult.created;
+        totalUpdated += steamResult.updated;
+        totalFailed += steamResult.failed;
+      }
+
+      if (rawgData.length > 0) {
+        const rawgResult = await this.persistence.saveProcessedGames(
+          rawgData,
+          pipelineRun.id,
+        );
+        totalCreated += rawgResult.created;
+        totalUpdated += rawgResult.updated;
+        totalFailed += rawgResult.failed;
+      }
 
       // saveResult는 최소한 아래 형태라고 가정
       // type SaveResult = { created: number; updated: number; failed: number; failedItems?: any[] };
@@ -208,16 +253,16 @@ export class PipelineController {
         pipelineRun.id,
         'completed',
         undefined,
-        data.length,
-        saveResult.created + saveResult.updated,
-        saveResult.failed,
+        totalProcessed,
+        totalCreated + totalUpdated,
+        totalFailed,
       );
       this.logger.log(`✅ [수동 파이프라인] 완료`);
       this.logger.log(`   - 총 처리 시간: ${durationSeconds}초`);
       this.logger.log(
-        `   - 성공: ${saveResult.created + saveResult.updated}개`,
+        `   - 성공: ${totalCreated + totalUpdated}개`,
       );
-      this.logger.log(`   - 실패: ${saveResult.failed}개`);
+      this.logger.log(`   - 실패: ${totalFailed}개`);
 
       return {
         statusCode: 200,
@@ -225,8 +270,9 @@ export class PipelineController {
         data: {
           pipelineRunId: pipelineRun.id,
           phase,
-          totalProcessed: data.length,
+          totalProcessed,
           finishedAt: new Date(),
+          steamSummary: steamSummary ?? undefined,
           rawgReport: rawgReport ?? undefined,
         },
       };
@@ -366,6 +412,7 @@ export class PipelineController {
         collected,
         pipelineRun.id,
       );
+      const failureSummaries = this.mapFailureDetails(saveResult.failures);
 
       this.logger.log(
         `💾 [Steam 신규 탐지] 저장 결과 — created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
@@ -398,6 +445,8 @@ export class PipelineController {
             saved: saveResult.created + saveResult.updated,
             failed: saveResult.failed,
             dryRun: false,
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
           },
         },
       };
@@ -462,7 +511,19 @@ export class PipelineController {
         };
       }
 
-      let saveResult = { created: 0, updated: 0, failed: 0 };
+      let saveResult: PersistenceSaveResult = {
+        created: 0,
+        updated: 0,
+        failed: 0,
+        failures: [],
+      };
+      let failureSummaries: {
+        steamId: number | null;
+        rawgId: number | null;
+        slug: string | null;
+        reason: string;
+        message: string;
+      }[] = [];
 
       if (processed.length > 0) {
         this.logger.log(
@@ -472,6 +533,7 @@ export class PipelineController {
           processed,
           pipelineRun.id,
         );
+        failureSummaries = this.mapFailureDetails(saveResult.failures);
 
         const items = await this.pipelineItemsRepository.find({
           where: {
@@ -526,6 +588,8 @@ export class PipelineController {
             failed: saveResult.failed,
             dryRun: false,
             candidates,
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
           },
         },
       };
@@ -798,6 +862,27 @@ export class PipelineController {
     }
 
     await this.pipelineRunsRepository.update(runId, updatePayload);
+  }
+
+  private mapFailureDetails(failures: SaveFailureDetail[]): {
+    steamId: number | null;
+    rawgId: number | null;
+    slug: string | null;
+    reason: string;
+    message: string;
+  }[] {
+    if (!failures?.length) return [];
+    return failures.map((failure) => ({
+      steamId: failure.data.steamId ?? null,
+      rawgId: failure.data.rawgId ?? null,
+      slug:
+        failure.data.slug ??
+        failure.data.ogSlug ??
+        failure.data.name ??
+        null,
+      reason: failure.reason,
+      message: failure.message,
+    }));
   }
 
 }

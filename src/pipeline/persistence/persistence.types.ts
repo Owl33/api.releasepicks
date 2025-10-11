@@ -1,7 +1,10 @@
+import { SaveFailureDetail } from '../contracts/save-result.contract';
+
 export interface PersistenceSaveResult {
   created: number;
   updated: number;
   failed: number;
+  failures: SaveFailureDetail[];
 }
 
 export interface SaveMetricsSummary {

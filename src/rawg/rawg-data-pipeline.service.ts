@@ -164,7 +164,8 @@ export class RawgDataPipelineService {
 
           const added = typeof g.added === 'number' ? g.added : 0;
           if (added < RAWG_COLLECTION.minAdded) {
-            consoleIssues.push(
+            this.pushIssue(
+              consoleIssues,
               `[${monthKey}] added(${added}) < ${RAWG_COLLECTION.minAdded} → 스킵: ${g.name}`,
             );
             skippedByAdded++;
@@ -183,7 +184,8 @@ export class RawgDataPipelineService {
           ) as ConsoleFamily[];
 
           if (!families.length) {
-            consoleIssues.push(
+            this.pushIssue(
+              consoleIssues,
               `[${monthKey}] 플랫폼 정보를 찾지 못했습니다: ${g.name}`,
             );
             continue;
@@ -318,6 +320,8 @@ export class RawgDataPipelineService {
       `✅ [RAWG] 게임 메타 매핑 완료 — ${processedData.length}건`,
     );
 
+    const uniqueConsoleIssues = Array.from(new Set(consoleIssues));
+
     const report: RawgCollectionReport = {
       startedAt: new Date(startedAt).toISOString(),
       finishedAt: new Date().toISOString(),
@@ -325,7 +329,7 @@ export class RawgDataPipelineService {
       months: monthStats,
       failedMonths,
       retryLogs,
-      consoleIssues,
+      consoleIssues: uniqueConsoleIssues,
       monitorSnapshot: rawgMonitor.snapshot(),
     };
     this.lastReport = report;
@@ -360,7 +364,8 @@ export class RawgDataPipelineService {
       ) as ConsoleFamily[];
 
       if (!families.length) {
-        consoleIssues.push(
+        this.pushIssue(
+          consoleIssues,
           `[manual] 플랫폼 정보를 찾지 못했습니다: ${details.name}`,
         );
         this.logger.warn(
@@ -583,7 +588,8 @@ export class RawgDataPipelineService {
               }
             } catch (error) {
               const message = (error as Error).message;
-              consoleIssues.push(
+              this.pushIssue(
+                consoleIssues,
                 `[${raw.sourceMonth}] 스토어 조회 실패: ${raw.name} - ${message}`,
               );
               this.logger.warn(
@@ -613,7 +619,8 @@ export class RawgDataPipelineService {
           releases = raw.platformFamilies.map((family) => {
             const storeInfo = storeLookup[family];
             if (!storeInfo) {
-              consoleIssues.push(
+              this.pushIssue(
+                consoleIssues,
                 `[${raw.sourceMonth}] 스토어 링크 누락 (${family}) - ${raw.name}`,
               );
             }
@@ -695,6 +702,13 @@ export class RawgDataPipelineService {
     };
   }
 
+  private pushIssue(target: string[], message: string): void {
+    if (!message) return;
+    if (!target.includes(message)) {
+      target.push(message);
+    }
+  }
+
   private mapStoresByPlatform(
     stores: RawgGameStoreResult[],
     raw: RawgIntermediate,
@@ -719,7 +733,8 @@ export class RawgDataPipelineService {
     if (reportMissing) {
       for (const family of raw.platformFamilies) {
         if (!map[family]) {
-          consoleIssues.push(
+          this.pushIssue(
+            consoleIssues,
             `[${raw.sourceMonth}] 스토어 응답에 ${family} 항목이 없습니다: ${raw.name}`,
           );
         }

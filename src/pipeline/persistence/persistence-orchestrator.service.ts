@@ -13,10 +13,11 @@ import { Game } from '../../entities/game.entity';
 import { PipelineItem } from '../../entities/pipeline-item.entity';
 import { PipelineRun } from '../../entities/pipeline-run.entity';
 import { RateLimitExceededError } from '../../common/concurrency/rate-limit-monitor';
+import { PersistenceSaveResult, SaveMetricsSummary } from './persistence.types';
 import {
-  PersistenceSaveResult,
-  SaveMetricsSummary,
-} from './persistence.types';
+  SaveFailureDetail,
+  SaveFailureReason,
+} from '../contracts/save-result.contract';
 import { GamePersistenceService } from './services/game-persistence.service';
 import { GamePersistenceResult } from './services/game-persistence.service';
 
@@ -84,6 +85,7 @@ export class PersistenceOrchestratorService {
     const latencies: number[] = [];
     const retryHistogram = new Map<number, number>();
     const failureReasons = new Map<string, number>();
+    const failures: SaveFailureDetail[] = [];
 
     let activeWorkers = 0;
 
@@ -231,12 +233,6 @@ export class PersistenceOrchestratorService {
 
           const errorInfo = this.classifySaveError(error);
           const normalized = this.normalizeError(error);
-          failureReasons.set(
-            normalized.code ?? errorInfo.code ?? normalized.name ?? 'unknown',
-            (failureReasons.get(
-              normalized.code ?? errorInfo.code ?? normalized.name ?? 'unknown',
-            ) ?? 0) + 1,
-          );
 
           if (normalized instanceof RateLimitExceededError) {
             this.logger.warn(
@@ -252,6 +248,20 @@ export class PersistenceOrchestratorService {
               `❌ [통합 저장] 실패 (${item.attempt}/${maxAttempts}) - ${identity} - ${normalized.message}`,
               (normalized as Error).stack,
             );
+            const failureCode =
+              (normalized as { code?: string }).code ??
+              errorInfo.code ??
+              normalized.name ??
+              'unknown';
+            failureReasons.set(
+              failureCode,
+              (failureReasons.get(failureCode) ?? 0) + 1,
+            );
+            failures.push({
+              data: item.data,
+              reason: this.mapFailureReason(failureCode, normalized.message),
+              message: normalized.message,
+            });
             emitProgress();
           } else {
             item.attempt += 1;
@@ -309,6 +319,7 @@ export class PersistenceOrchestratorService {
       created: createdCount,
       updated: updatedCount,
       failed: failedCount,
+      failures,
     };
   }
 
@@ -450,6 +461,31 @@ export class PersistenceOrchestratorService {
       Math.max(0, Math.ceil(percentile * sorted.length) - 1),
     );
     return Math.round(sorted[rank]);
+  }
+
+  private mapFailureReason(
+    code: string,
+    message?: string,
+  ): SaveFailureReason {
+    const normalizedCode = code?.toUpperCase?.() ?? '';
+    const normalizedMessage = message?.toLowerCase?.() ?? '';
+
+    if (normalizedCode === '23505' || /duplicate|unique/.test(normalizedMessage)) {
+      return 'DUPLICATE_CONSTRAINT';
+    }
+    if (normalizedCode === '23502' || normalizedCode === '23514' || normalizedCode === '22P02') {
+      return 'VALIDATION_FAILED';
+    }
+    if (/steam/.test(normalizedMessage) && /not found|404/.test(normalizedMessage)) {
+      return 'STEAM_APP_NOT_FOUND';
+    }
+    if (/rawg/.test(normalizedMessage) && /not found|404/.test(normalizedMessage)) {
+      return 'RAWG_GAME_NOT_FOUND';
+    }
+    if (normalizedCode === 'RATE_LIMIT' || /rate limit/.test(normalizedMessage)) {
+      return 'RATE_LIMIT';
+    }
+    return 'UNKNOWN';
   }
 
   private normalizeError(error: unknown): Error & { code?: string } {
