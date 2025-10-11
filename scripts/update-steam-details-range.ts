@@ -4,7 +4,11 @@
  * - game_details.id BETWEEN 1 AND 6097 대상
  * - games.steam_id가 존재하는 row만 선정
  * - PipelineController.executeManualSingleGame 을 이용하여 Steam detail 재수집
- */
+ * 실행 예시:
+ *   npx ts-node scripts/update-steam-details-range.ts           # 실제 반영
+ *   npx ts-node scripts/update-steam-details-range.ts --dry-run # 미리보기
+ *   npx ts-node scripts/update-steam-details-range.ts --limit 200
+*/
 
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';

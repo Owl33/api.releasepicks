@@ -220,8 +220,8 @@ export class GameSearchService {
       );
     }
 
-    qb.orderBy('rank', 'DESC')
-      .addOrderBy('game.popularity_score', 'DESC')
+    qb.orderBy('game.popularity_score', 'DESC')
+      .addOrderBy('rank', 'DESC')
       .addOrderBy('game.release_date_date', 'DESC')
       .setParameters({
         qLower,

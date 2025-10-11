@@ -131,6 +131,14 @@ export class YouTubeService {
   private readonly cbCooldownMs = Number(
     process.env.YT_CB_COOLDOWN_MS ?? 60_000,
   );
+  private readonly minDurationSeconds = Math.max(
+    1,
+    Number(process.env.YT_MIN_DURATION_SEC ?? 45),
+  );
+  private readonly maxDurationSeconds = Math.max(
+    this.minDurationSeconds,
+    Number(process.env.YT_MAX_DURATION_SEC ?? 600),
+  );
 
   /** 레이트 리미터 */
   private readonly limiter = new TokenBucket(this.burst, this.rps);
@@ -514,6 +522,8 @@ export class YouTubeService {
             .map((r: any) => r?.text ?? '')
             .join('') || '';
 
+        const durationSeconds = this.parseDurationSeconds(duration);
+
         out.push({
           title,
           url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : '',
@@ -521,6 +531,7 @@ export class YouTubeService {
           publishedAt: published,
           viewCountText: viewsText,
           durationText: duration,
+          durationSeconds,
           description: desc,
         });
       }
@@ -553,6 +564,13 @@ export class YouTubeService {
     let best = 0;
 
     for (const it of items) {
+      const secs = it.durationSeconds ?? this.parseDurationSeconds(it.durationText);
+      if (!this.isDurationAcceptable(secs)) {
+        this.logger.debug(
+          `⏭️ [YouTube] 길이 조건 불만족(${secs ?? 'unknown'}s) → 스킵: ${it.url ?? it.title ?? ''}`,
+        );
+        continue;
+      }
       const s = this.score(it, slug, filters);
       if (s > best) {
         best = s;
@@ -607,6 +625,8 @@ export class YouTubeService {
       publishedAt: item.publishedAt || '',
       confidence,
       score,
+      durationSeconds: item.durationSeconds ?? null,
+      durationText: item.durationText,
     };
   }
 
@@ -659,5 +679,30 @@ export class YouTubeService {
     b?.addEventListener('abort', onAbort);
     if (a?.aborted || b?.aborted) controller.abort();
     return controller.signal;
+  }
+
+  private parseDurationSeconds(text?: string): number | null {
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    if (/live/i.test(trimmed)) return null;
+    const parts = trimmed.split(':').map((p) => Number(p.trim()));
+    if (parts.some((p) => Number.isNaN(p))) return null;
+    let seconds = 0;
+    if (parts.length === 3) {
+      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) {
+      seconds = parts[0] * 60 + parts[1];
+    } else if (parts.length === 1) {
+      seconds = parts[0];
+    } else {
+      return null;
+    }
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
+  public isDurationAcceptable(seconds?: number | null): boolean {
+    if (seconds == null) return false;
+    return seconds >= this.minDurationSeconds && seconds <= this.maxDurationSeconds;
   }
 }

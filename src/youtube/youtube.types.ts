@@ -15,6 +15,8 @@ export interface YouTubeSearchItem {
   viewCountText?: string;
   /** 길이 텍스트 (예: "2:31") */
   durationText?: string;
+  /** 길이(초) 파싱 값 - 없으면 null */
+  durationSeconds?: number | null;
   /** 설명(검색 결과 카드에 노출되는 스니펫) */
   description?: string;
 }
@@ -33,6 +35,8 @@ export interface PickedTrailer {
   publishedAt: string;
   confidence: ConfidenceLevel;
   score: number; // 0~1
+  durationSeconds?: number | null;
+  durationText?: string;
 }
 
 export interface GameTrailerResult {

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { SteamApp } from '../types';
 
 /**
  * Steam AppList 서비스
@@ -47,7 +48,7 @@ export class SteamAppListService {
       return validApps.map((app) => ({
         appid: app.appid,
         name: app.name?.trim() || '',
-      }));
+      } satisfies SteamApp));
     } catch (error) {
       this.logger.error(`❌ Steam AppList 수집 실패: ${error.message}`);
       throw new Error(`Steam AppList API 호출 실패: ${error.message}`);
@@ -126,12 +127,4 @@ export class SteamAppListService {
 
     return sortedApps.slice(0, limit);
   }
-}
-
-/**
- * Steam App 인터페이스
- */
-export interface SteamApp {
-  appid: number;
-  name: string;
 }

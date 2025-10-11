@@ -14,10 +14,16 @@ import {
   RawgGameSearchResult,
   RawgGameStoreResult,
 } from './rawg.types';
+import { ProcessedGameData } from '@pipeline/contracts';
 import {
-  ProcessedGameData,
-  CollectProcessedDataOptions,
-} from '@pipeline/contracts';
+  RawgIntermediate,
+  RawgMonthStat,
+  RawgRetryLog,
+  RawgCollectionReport,
+  StoreInfo,
+  ConsoleFamily,
+  RawgCollectorOptions,
+} from './types';
 import {
   GameType,
   ReleaseStatus,
@@ -26,63 +32,11 @@ import {
   Store,
 } from '../entities/enums';
 import { PopularityCalculator } from '../common/utils/popularity-calculator.util';
-import { rawgMonitor, RawgMonitorSnapshot } from './utils/rawg-monitor';
+import { rawgMonitor } from './utils/rawg-monitor';
 
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../youtube/youtube.service';
 import { normalizeGameName } from '../common/utils/game-name-normalizer.util';
-
-type ConsoleFamily = 'playstation' | 'xbox' | 'nintendo';
-
-interface RawgIntermediate {
-  rawgId: number;
-  slug: string;
-  name: string;
-  headerImage: string;
-  screenshots: string[];
-  released: string | null;
-  platformFamilies: ConsoleFamily[];
-  added: number;
-  popularityScore: number;
-  isDlc: boolean;
-  parentRawgId?: number;
-  sourceMonth: string;
-}
-
-interface RawgMonthStat {
-  month: string;
-  attempt: number;
-  requestCount: number;
-  gameCount: number;
-  durationMs: number;
-  success: boolean;
-  reason?: string;
-}
-
-interface RawgRetryLog {
-  month: string;
-  attempts: number;
-  status: 'requeued' | 'failed';
-  reason?: string;
-}
-
-interface RawgCollectionReport {
-  startedAt: string;
-  finishedAt: string;
-  totalGames: number;
-  months: RawgMonthStat[];
-  failedMonths: string[];
-  retryLogs: RawgRetryLog[];
-  consoleIssues: string[];
-  monitorSnapshot: RawgMonitorSnapshot;
-}
-
-interface StoreInfo {
-  store: Store;
-  storeAppId: string;
-  storeUrl: string | null;
-  family: ConsoleFamily;
-}
 
 @Injectable()
 export class RawgDataPipelineService {
@@ -104,7 +58,7 @@ export class RawgDataPipelineService {
    * @returns ProcessedGameData[] - 파이프라인 컨트롤러가 기대하는 표준 형식
    */
   async collectProcessedData(
-    opts: CollectProcessedDataOptions = {},
+    opts: RawgCollectorOptions = {},
   ): Promise<ProcessedGameData[]> {
     const startedAt = Date.now();
     const pastMonths = opts.monthsBack ?? RAWG_COLLECTION.pastMonths;

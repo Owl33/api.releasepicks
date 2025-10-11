@@ -8,6 +8,7 @@ import {
   IsDateString,
   IsBoolean,
   IsArray,
+  IsIn,
 } from 'class-validator';
 
 /**
@@ -127,6 +128,16 @@ export class GameFilterDto {
   @IsOptional()
   @IsString()
   sortOrder?: 'ASC' | 'DESC'; // 정렬 순서 (기본 ASC)
+
+  // ===== 게임 타입 필터 =====
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
+  @IsIn(['all', 'game', 'dlc'], {
+    message: "gameType은 'all', 'game', 'dlc' 중 하나여야 합니다",
+  })
+  gameType?: 'all' | 'game' | 'dlc';
 }
 
 /**
@@ -157,6 +168,7 @@ export interface FilteredGamesResponseDto {
     developers?: string[];
     publishers?: string[];
     platforms?: string[];
+    gameType?: 'all' | 'game' | 'dlc';
   };
   pagination: PaginationMeta;
   count: {

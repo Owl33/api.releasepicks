@@ -44,9 +44,9 @@ export class ExistingGamesSnapshotService {
       map.set(game.steam_id, {
         steam_id: game.steam_id,
         coming_soon: game.coming_soon,
-        release_date_date: game.release_date_date ?? undefined,
-        followers_cache: game.followers_cache ?? undefined,
-        popularity_score: game.popularity_score ?? undefined,
+        release_date_date: game.release_date_date ?? null,
+        followers_cache: game.followers_cache ?? null,
+        popularity_score: game.popularity_score ?? null,
       });
     };
 
@@ -111,9 +111,9 @@ export class ExistingGamesSnapshotService {
       map.set(game.steam_id, {
         steam_id: game.steam_id,
         coming_soon: game.coming_soon,
-        release_date_date: game.release_date_date ?? undefined,
-        followers_cache: game.followers_cache ?? undefined,
-        popularity_score: game.popularity_score ?? undefined,
+        release_date_date: game.release_date_date ?? null,
+        followers_cache: game.followers_cache ?? null,
+        popularity_score: game.popularity_score ?? null,
       });
     });
 

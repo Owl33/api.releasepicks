@@ -13,6 +13,7 @@ import {
   Store,
   Company,
   GameCompanyRole,
+  GameType,
 } from '../entities';
 import {
   CalendarResponseDto,
@@ -848,8 +849,15 @@ export class GamesService {
       .innerJoin('release.game', 'game')
       .leftJoin('game.details', 'detail');
 
-    // DLC 제외
-    base.andWhere("game.game_type <> 'dlc'");
+    const gameTypeFilter = (filters.gameType ?? 'game') as
+      | 'all'
+      | 'game'
+      | 'dlc';
+    if (gameTypeFilter === 'game') {
+      base.andWhere("game.game_type <> 'dlc'");
+    } else if (gameTypeFilter === 'dlc') {
+      base.andWhere("game.game_type = 'dlc'");
+    }
 
     // 인기도 필터 (기본: 40 ~ 100)
     const popularityScore = filters.popularityScore ?? 40;
@@ -967,8 +975,6 @@ export class GamesService {
     //    - pageGameIds 추출에는 platform 필터 사용
     //    - 하지만 실제 데이터 조회 시에는 해당 게임의 모든 플랫폼 정보 가져오기
     // ---------------------------------------------------------
-    const baseWithoutPlatform = base.clone();
-
     // 플랫폼 OR (release.platform)
     if (filters.platforms && filters.platforms.length > 0) {
       base.andWhere('release.platform IN (:...platforms)', {
@@ -1054,6 +1060,7 @@ export class GamesService {
           developers: filters.developers,
           publishers: filters.publishers,
           platforms: filters.platforms,
+          gameType: gameTypeFilter,
         },
         pagination,
         count: { total, filtered: 0 },
@@ -1064,10 +1071,11 @@ export class GamesService {
     // ---------------------------------------------------------
     // 3) 이 페이지의 게임들에 대한 "모든 릴리스 행"을 다시 로드(페이징 없음)
     //    ⚠️ pageGameIds의 순서를 유지해야 함 - 정렬 순서가 유지되어야 함
-    //    ⚠️ baseWithoutPlatform 사용: 해당 게임의 모든 플랫폼 정보 가져오기
     // ---------------------------------------------------------
-    const rows = await baseWithoutPlatform
-      .clone()
+    const rows = await this.gameReleaseRepository
+      .createQueryBuilder('release')
+      .innerJoin('release.game', 'game')
+      .leftJoin('game.details', 'detail')
       .select([
         'release.id AS release_id',
         'release.platform AS release_platform',
@@ -1077,7 +1085,7 @@ export class GamesService {
         'release.coming_soon AS release_coming_soon',
         'release.release_status AS release_status',
         'release.release_date_date AS release_date',
-        'release.release_date_raw AS release_date_raw', // ✅ raw
+        'release.release_date_raw AS release_date_raw',
         'release.current_price_cents AS release_current_price_cents',
 
         'game.id AS game_id',
@@ -1086,13 +1094,13 @@ export class GamesService {
         'game.og_name as game_og_name',
         'game.popularity_score AS game_popularity_score',
         'game.coming_soon AS game_coming_soon',
+        'game.game_type AS game_type',
 
         'detail.screenshots AS detail_screenshots',
         'detail.genres AS detail_genres',
         'detail.header_image as header_image',
       ])
-      .andWhere('game.id IN (:...ids)', { ids: pageGameIds })
-      // ⚠️ 정렬 제거 - 나중에 pageGameIds 순서대로 정렬할 것
+      .where('game.id IN (:...ids)', { ids: pageGameIds })
       .getRawMany();
 
     // ---------------------------------------------------------
@@ -1194,6 +1202,7 @@ export class GamesService {
         publishers: [],
         currentPrice,
         isFree,
+        gameType: (row.game_type as GameType) ?? GameType.GAME,
       };
 
       aggregateMap.set(aggregateKey, aggregate);
@@ -1251,6 +1260,7 @@ export class GamesService {
         developers: filters.developers,
         publishers: filters.publishers,
         platforms: filters.platforms,
+        gameType: gameTypeFilter,
       },
       pagination,
       count: {

@@ -1,7 +1,7 @@
-export { ExistingGamesMap } from './collector/shared';
-export {
+export type { ExistingGamesMap } from './collector/shared';
+export type {
   PrioritySelectionOptions,
   SteamCollectOptions,
   SteamRefreshCandidate,
 } from './collector/steam';
-export { CollectProcessedDataOptions } from './collector/rawg';
+export type { CollectProcessedDataOptions } from './collector/rawg';

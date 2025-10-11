@@ -26,11 +26,12 @@ import {
   ExistingGamesMap,
   SteamRefreshCandidate,
 } from '@pipeline/contracts';
-import { SteamApp } from './steam-applist.service';
+import { SteamApp } from '../types';
 
 // 유틸
 import { PopularityCalculator } from '../../common/utils/popularity-calculator.util';
 import { normalizeGameName } from '../../common/utils/game-name-normalizer.util';
+import { toTimestamp } from '../../common/collector/date.util';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../../youtube/youtube.service';
 
@@ -53,6 +54,9 @@ export class SteamDataPipelineService {
   private readonly processingConcurrency = Math.max(
     1,
     Number(process.env.STEAM_PIPELINE_CONCURRENCY ?? '4'),
+  );
+  private readonly youtubeFallbackPopularityThreshold = Number(
+    process.env.STEAM_YT_FALLBACK_POPULARITY ?? '55',
   );
 
   // AppList 캐시 (Phase 3 선행 구현)
@@ -132,6 +136,9 @@ export class SteamDataPipelineService {
       let totalReviews = 0;
       let reviewScoreDesc = '';
       let youtubeVideoUrl: string | undefined;
+      const steamTrailerUrl = Array.isArray(steamDetails.movies)
+        ? steamDetails.movies.find((m) => typeof m === 'string' && m.length > 0) ?? null
+        : null;
       const popularityScore = PopularityCalculator.calculateSteamPopularity(
         followers || 0,
       );
@@ -160,6 +167,9 @@ export class SteamDataPipelineService {
         }
       }
 
+      let youtubePickedUrl: string | null = null;
+      let youtubePickedDuration: number | null = null;
+
       if (popularityScore >= 40) {
         timers.youtubeStart = Date.now();
         try {
@@ -172,7 +182,8 @@ export class SteamDataPipelineService {
           );
           const picked = trailerResult?.picked;
           if (picked?.url) {
-            youtubeVideoUrl = picked.url;
+            youtubePickedUrl = picked.url;
+            youtubePickedDuration = picked.durationSeconds ?? null;
           }
           timers.youtubeDuration = Date.now() - timers.youtubeStart;
           this.logger.debug(
@@ -188,6 +199,38 @@ export class SteamDataPipelineService {
         this.logger.debug(
           `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
         );
+      }
+
+      if (youtubePickedUrl) {
+        const acceptable = this.youtubeService.isDurationAcceptable(
+          youtubePickedDuration,
+        );
+        if (acceptable) {
+          if (
+            popularityScore >= this.youtubeFallbackPopularityThreshold ||
+            !steamTrailerUrl
+          ) {
+            youtubeVideoUrl = youtubePickedUrl;
+          } else {
+            this.logger.debug(
+              `${prefix}YouTube 결과 길이 정상이나 인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
+            );
+            youtubeVideoUrl = steamTrailerUrl ?? youtubePickedUrl;
+          }
+        } else {
+          this.logger.debug(
+            `${prefix}YouTube 결과 길이 ${youtubePickedDuration ?? 'unknown'}s → Steam 비디오로 대체`,
+          );
+          if (steamTrailerUrl) {
+            youtubeVideoUrl = steamTrailerUrl;
+          }
+        }
+      } else if (steamTrailerUrl) {
+        youtubeVideoUrl = steamTrailerUrl;
+      }
+
+      if (!youtubeVideoUrl && steamTrailerUrl) {
+        youtubeVideoUrl = steamTrailerUrl;
       }
 
       const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
@@ -548,21 +591,8 @@ export class SteamDataPipelineService {
         const releaseB =
           options.existingGames!.get(b.appid)?.release_date_date ?? null;
 
-        const parsedA =
-          releaseA instanceof Date
-            ? releaseA.getTime()
-            : releaseA
-            ? new Date(releaseA as any).getTime()
-            : NaN;
-        const parsedB =
-          releaseB instanceof Date
-            ? releaseB.getTime()
-            : releaseB
-            ? new Date(releaseB as any).getTime()
-            : NaN;
-
-        const dateA = Number.isFinite(parsedA) ? parsedA : Infinity;
-        const dateB = Number.isFinite(parsedB) ? parsedB : Infinity;
+        const dateA = toTimestamp(releaseA, Infinity);
+        const dateB = toTimestamp(releaseB, Infinity);
 
         return dateA - dateB;
       })

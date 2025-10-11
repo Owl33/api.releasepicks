@@ -1,4 +1,4 @@
-import { Platform, ReleaseStatus, Store } from '../../entities';
+import { Platform, ReleaseStatus, Store, GameType } from '../../entities';
 
 export interface StoreLinkDto {
   store: Store;
@@ -21,6 +21,7 @@ export interface CalendarReleaseDto {
   storeLinks: StoreLinkDto[];
   comingSoon: boolean;
   releaseDateRaw?: string | null;
+  gameType: GameType;
 
   releaseStatus: ReleaseStatus | null;
   popularityScore: number;

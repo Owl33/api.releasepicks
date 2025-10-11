@@ -7,7 +7,7 @@ import {
   CompanyRole,
 } from '../../entities/enums';
 
-export { SteamRefreshCandidate } from './collector/steam';
+export type { SteamRefreshCandidate } from './collector/steam';
 
 /**
  * Collector → Orchestrator → Persistence 간에 공유되는 게임 기본 데이터 계약
