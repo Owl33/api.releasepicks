@@ -23,6 +23,7 @@ import { PipelineItem } from '../entities/pipeline-item.entity';
 import { SteamDataPipelineService } from '../steam/services/steam-data-pipeline.service';
 import { RawgDataPipelineService } from '../rawg/rawg-data-pipeline.service';
 import { IntegratedPersistenceService } from './persistence/integrated-persistence.service';
+import { SteamExclusionService } from '../steam/services/exclusion/steam-exclusion.service';
 
 import { ProcessedGameData, ApiResponse, PipelineRunResult } from '@pipeline/contracts';
 
@@ -53,6 +54,7 @@ export class PipelineController {
     @InjectRepository(PipelineItem)
     private readonly pipelineItemsRepository: Repository<PipelineItem>,
     private readonly persistence: IntegratedPersistenceService,
+    private readonly steamExclusionService: SteamExclusionService,
   ) {}
 
   /**
@@ -272,10 +274,15 @@ export class PipelineController {
       );
 
       const allIds = await this.steamDataPipeline.listAllSteamAppIdsV2();
-      const newcomers = allIds.filter((id) => !existing.has(id));
+      const exclusionBitmap = await this.steamExclusionService.loadBitmap();
+      const newcomers = allIds.filter(
+        (id) => !existing.has(id) && !exclusionBitmap.has(id),
+      );
+      const excludedByRegistry =
+        allIds.filter((id) => exclusionBitmap.has(id)).length;
 
       this.logger.log(
-        `🧮 [Steam 신규 탐지] 후보 집계 — AppList=${allIds.length}, DB=${existing.size}, 신규=${newcomers.length}`,
+        `🧮 [Steam 신규 탐지] 후보 집계 — AppList=${allIds.length}, DB=${existing.size}, 제외=${excludedByRegistry}, 신규=${newcomers.length}`,
       );
 
       if (newcomers.length === 0) {
@@ -299,6 +306,7 @@ export class PipelineController {
               candidates: 0,
               inspected: 0,
               targetIds: [],
+              excludedByRegistry,
               created: 0,
               updated: 0,
               saved: 0,
@@ -331,12 +339,13 @@ export class PipelineController {
             phase: 'steam',
             totalProcessed: 0,
             finishedAt: new Date(),
-            steamNewSummary: {
-              candidates: newcomers.length,
-              inspected: targets.length,
-              targetIds: targets,
-              created: 0,
-              updated: 0,
+              steamNewSummary: {
+                candidates: newcomers.length,
+                inspected: targets.length,
+                targetIds: targets,
+                excludedByRegistry,
+                created: 0,
+                updated: 0,
               saved: 0,
               failed: 0,
               dryRun: true,
@@ -383,6 +392,7 @@ export class PipelineController {
             candidates: newcomers.length,
             inspected: targets.length,
              targetIds: targets,
+             excludedByRegistry,
              created: saveResult.created,
              updated: saveResult.updated,
             saved: saveResult.created + saveResult.updated,

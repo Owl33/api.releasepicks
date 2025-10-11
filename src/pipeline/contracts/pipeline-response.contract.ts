@@ -17,6 +17,7 @@ export interface PipelineRunResult {
     candidates: number;
     inspected: number;
     targetIds: number[];
+    excludedByRegistry?: number;
     created: number;
     updated: number;
     saved: number;

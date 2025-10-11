@@ -12,6 +12,7 @@ import { DataSyncStatus } from '../entities/data-sync-status.entity';
 import { PipelineRun } from '../entities/pipeline-run.entity';
 import { PipelineItem } from '../entities/pipeline-item.entity';
 import { SystemEvent } from '../entities/system-event.entity';
+import { SteamExcludedRegistry } from './entities/steam-excluded-registry.entity';
 
 // 서비스
 import { SteamAppListService } from './services/steam-applist.service';
@@ -19,6 +20,7 @@ import { SteamAppDetailsService } from './services/steam-appdetails.service';
 import { SteamCommunityService } from './services/steam-community.service';
 import { SteamDataPipelineService } from './services/steam-data-pipeline.service';
 import { SteamReviewService } from './services/steam-review.service';
+import { SteamExclusionService } from './services/exclusion/steam-exclusion.service';
 // YouTube 모듈 (Phase 4)
 import { YouTubeModule } from '../youtube/youtube.module';
 import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-persistence.module';
@@ -50,6 +52,7 @@ import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-pers
       PipelineRun,
       PipelineItem,
       SystemEvent,
+      SteamExcludedRegistry,
     ]),
     PipelinePersistenceModule,
   ],
@@ -59,6 +62,7 @@ import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-pers
     SteamCommunityService,
     SteamDataPipelineService,
     SteamReviewService,
+    SteamExclusionService,
   ],
   controllers: [SteamController],
   exports: [
@@ -67,6 +71,7 @@ import { PipelinePersistenceModule } from '../pipeline/persistence/pipeline-pers
     SteamCommunityService,
     SteamDataPipelineService,
     SteamReviewService,
+    SteamExclusionService,
   ],
 })
 export class SteamModule {}

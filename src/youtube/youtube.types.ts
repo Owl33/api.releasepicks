@@ -13,6 +13,8 @@ export interface YouTubeSearchItem {
   publishedAt?: string;
   /** 조회수 텍스트 (예: "1,234,567 views") */
   viewCountText?: string;
+  /** 조회수 숫자 파싱 값 (없으면 null) */
+  viewCount?: number | null;
   /** 길이 텍스트 (예: "2:31") */
   durationText?: string;
   /** 길이(초) 파싱 값 - 없으면 null */
@@ -37,6 +39,7 @@ export interface PickedTrailer {
   score: number; // 0~1
   durationSeconds?: number | null;
   durationText?: string;
+  viewCount?: number | null;
 }
 
 export interface GameTrailerResult {

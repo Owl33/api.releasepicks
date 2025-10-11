@@ -481,16 +481,49 @@ export class RawgDataPipelineService {
         rawgDetails = await this.rawgApiService.getGameDetails(raw.rawgId);
 
         try {
+          const releaseYear = releaseDate?.getUTCFullYear();
+          const developerNames = Array.isArray(rawgDetails?.developers)
+            ? rawgDetails!.developers
+                .map((dev: any) =>
+                  typeof dev === 'string' ? dev : dev?.name ?? '',
+                )
+                .filter((name: string) => name && name.length <= 60)
+            : [];
+          const publisherNames = Array.isArray(rawgDetails?.publishers)
+            ? rawgDetails!.publishers
+                .map((pub: any) =>
+                  typeof pub === 'string' ? pub : pub?.name ?? '',
+                )
+                .filter((name: string) => name && name.length <= 60)
+            : [];
+          const youtubeKeywords = Array.from(
+            new Set([...developerNames, ...publisherNames]),
+          ).slice(0, 6);
+
           const trailerResult = await this.youtubeService.findOfficialTrailer(
             raw.name,
+            {
+              releaseYear,
+              keywords: youtubeKeywords,
+            },
           );
           const picked = trailerResult?.picked;
 
           if (picked?.url) {
-            youtubeVideoUrl = picked.url;
-            this.logger.debug(
-              `✨ [YouTube] 트레일러 발견 - ${raw.name}: ${youtubeVideoUrl}`,
+            const youtubeDuration = picked.durationSeconds ?? null;
+            const acceptable = this.youtubeService.isDurationAcceptable(
+              youtubeDuration,
             );
+            if (acceptable) {
+              youtubeVideoUrl = picked.url;
+              this.logger.debug(
+                `✨ [YouTube] 트레일러 선택 - ${raw.name}: ${youtubeVideoUrl} (confidence=${picked.confidence}, score=${picked.score.toFixed(3)}, views=${picked.viewCount ?? 'n/a'})`,
+              );
+            } else {
+              this.logger.debug(
+                `⏭️ [YouTube] 길이 조건 불만족(${youtubeDuration ?? 'unknown'}s) → 스킵: ${picked.url}`,
+              );
+            }
           }
         } catch (youtubeError) {
           this.logger.warn(

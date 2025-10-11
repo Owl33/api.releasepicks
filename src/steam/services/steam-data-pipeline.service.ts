@@ -39,6 +39,10 @@ import { runWithConcurrency } from '../../common/concurrency/promise-pool.util';
 import { getGlobalRateLimiter } from '../../common/concurrency/global-rate-limiter';
 import { RateLimitExceededError } from '../../common/concurrency/rate-limit-monitor';
 import { ExistingGamesSnapshotService } from '../../pipeline/persistence/services/existing-games-snapshot.service';
+import {
+  SteamExclusionReason,
+  SteamExclusionService,
+} from './exclusion/steam-exclusion.service';
 
 /**
  * Steam 데이터 파이프라인 서비스
@@ -57,6 +61,12 @@ export class SteamDataPipelineService {
   );
   private readonly youtubeFallbackPopularityThreshold = Number(
     process.env.STEAM_YT_FALLBACK_POPULARITY ?? '55',
+  );
+  private readonly youtubeHighConfidenceScore = Number(
+    process.env.STEAM_YT_HIGH_CONFIDENCE_SCORE ?? '0.85',
+  );
+  private readonly youtubeMinViewCount = Number(
+    process.env.STEAM_YT_MIN_VIEWCOUNT ?? '5000',
   );
 
   // AppList 캐시 (Phase 3 선행 구현)
@@ -85,6 +95,7 @@ export class SteamDataPipelineService {
     private readonly steamReviewService: SteamReviewService,
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
     private readonly existingGamesSnapshotService: ExistingGamesSnapshotService,
+    private readonly steamExclusionService: SteamExclusionService,
   ) {}
 
   private async buildProcessedGameDataFromApp(
@@ -114,6 +125,16 @@ export class SteamDataPipelineService {
 
       if (!steamDetails) {
         this.logger.debug(`${prefix}⚠️ AppDetails 없음 → 스킵: ${app.name}`);
+        await this.markExclusion(app.appid, 'NO_DETAILS', prefix);
+        return null;
+      }
+
+      const detailType = String(steamDetails.type ?? '').toLowerCase();
+      if (detailType && detailType !== 'game' && detailType !== 'dlc') {
+        this.logger.warn(
+          `${prefix}🚫 [비게임 타입] ${app.name} (${detailType}) → 제외 대상 등록`,
+        );
+        await this.markExclusion(app.appid, 'NON_GAME', prefix);
         return null;
       }
 
@@ -167,8 +188,16 @@ export class SteamDataPipelineService {
         }
       }
 
+      const parsed = parseSteamRelease(steamDetails?.release_date);
+      const releaseDate = parsed.releaseDate;
+      const releaseDateRaw = parsed.releaseDateRaw;
+      const releaseStatus = parsed.releaseStatus;
+
       let youtubePickedUrl: string | null = null;
       let youtubePickedDuration: number | null = null;
+      let youtubePickedConfidence: string | null = null;
+      let youtubePickedScore: number | null = null;
+      let youtubePickedViewCount: number | null = null;
 
       if (popularityScore >= 40) {
         timers.youtubeStart = Date.now();
@@ -177,13 +206,39 @@ export class SteamDataPipelineService {
             minDelayMs: 80,
             jitterMs: 40,
           });
+          const releaseYear = releaseDate?.getUTCFullYear();
+          const developerNames = Array.isArray(steamDetails.developers)
+            ? steamDetails.developers
+                .map((dev: any) =>
+                  typeof dev === 'string' ? dev : dev?.name ?? '',
+                )
+                .filter((name: string) => name && name.length <= 60)
+            : [];
+          const publisherNames = Array.isArray(steamDetails.publishers)
+            ? steamDetails.publishers
+                .map((pub: any) =>
+                  typeof pub === 'string' ? pub : pub?.name ?? '',
+                )
+                .filter((name: string) => name && name.length <= 60)
+            : [];
+          const youtubeKeywords = Array.from(
+            new Set([...developerNames, ...publisherNames]),
+          ).slice(0, 6);
+
           const trailerResult = await this.youtubeService.findOfficialTrailer(
-            app.name,
+            steamDetails.name || app.name,
+            {
+              releaseYear,
+              keywords: youtubeKeywords,
+            },
           );
           const picked = trailerResult?.picked;
           if (picked?.url) {
             youtubePickedUrl = picked.url;
             youtubePickedDuration = picked.durationSeconds ?? null;
+            youtubePickedConfidence = picked.confidence ?? null;
+            youtubePickedScore = picked.score ?? null;
+            youtubePickedViewCount = picked.viewCount ?? null;
           }
           timers.youtubeDuration = Date.now() - timers.youtubeStart;
           this.logger.debug(
@@ -206,11 +261,30 @@ export class SteamDataPipelineService {
           youtubePickedDuration,
         );
         if (acceptable) {
-          if (
+          const confidenceScore = youtubePickedScore ?? 0;
+          const confidenceLevel = (youtubePickedConfidence ?? 'low').toLowerCase();
+          const highConfidence =
+            confidenceLevel === 'high' || confidenceScore >= this.youtubeHighConfidenceScore;
+          const strongView =
+            (youtubePickedViewCount ?? 0) >= this.youtubeMinViewCount;
+
+          const shouldPreferYoutube =
             popularityScore >= this.youtubeFallbackPopularityThreshold ||
-            !steamTrailerUrl
-          ) {
+            !steamTrailerUrl ||
+            highConfidence ||
+            strongView;
+
+          if (shouldPreferYoutube) {
             youtubeVideoUrl = youtubePickedUrl;
+            if (!steamTrailerUrl) {
+              this.logger.debug(
+                `${prefix}YouTube 선택 (Steam 트레일러 없음, confidence=${confidenceLevel}, views=${youtubePickedViewCount ?? 'n/a'})`,
+              );
+            } else if (highConfidence || strongView) {
+              this.logger.debug(
+                `${prefix}YouTube 선택 (confidence=${confidenceLevel}, score=${confidenceScore.toFixed(3)}, views=${youtubePickedViewCount ?? 'n/a'})`,
+              );
+            }
           } else {
             this.logger.debug(
               `${prefix}YouTube 결과 길이 정상이나 인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
@@ -233,7 +307,7 @@ export class SteamDataPipelineService {
         youtubeVideoUrl = steamTrailerUrl;
       }
 
-      const isDlcType = steamDetails.type?.toLowerCase() === 'dlc';
+      const isDlcType = detailType === 'dlc';
       let parentSteamId: number | undefined;
       if (steamDetails.fullgame.appid) {
         const appidRaw = steamDetails.fullgame.appid;
@@ -263,12 +337,6 @@ export class SteamDataPipelineService {
           `${prefix}📦 [본편] ${app.name} → DLC ${childDlcSteamIds.length}개 발견`,
         );
       }
-
-      const parsed = parseSteamRelease(steamDetails?.release_date);
-
-      const releaseDate = parsed.releaseDate;
-      const releaseDateRaw = parsed.releaseDateRaw;
-      const releaseStatus = parsed.releaseStatus;
 
       const processedGame: ProcessedGameData = {
         name: steamDetails.name || app.name,
@@ -350,6 +418,9 @@ export class SteamDataPipelineService {
       this.logger.error(
         `❌ ${prefix}게임 데이터 빌드 실패 - ${app.name}: ${error?.message ?? error}`,
       );
+      if (error?.response?.status === 404) {
+        await this.markExclusion(app.appid, 'NO_DETAILS', prefix);
+      }
       return null;
     }
   }
@@ -480,6 +551,15 @@ export class SteamDataPipelineService {
       this.logger.log(
         `⚙️ [Steam Pipeline] 처리 동시성: ${this.processingConcurrency}개 워커`,
       );
+
+      const { filteredApps, excludedCount } =
+        await this.filterExcludedApps(selectedApps);
+      if (excludedCount > 0) {
+        this.logger.log(
+          `🚫 [Steam Pipeline] 제외 목록으로 ${excludedCount}개 후보 스킵`,
+        );
+      }
+      selectedApps = filteredApps;
 
       if (selectedApps.length === 0) {
         this.logger.warn('⚠️ [Steam Pipeline] 처리할 후보가 없습니다.');
@@ -683,13 +763,26 @@ export class SteamDataPipelineService {
     ids: number[],
     opts: { mode: 'bootstrap' | 'operational' } = { mode: 'operational' },
   ): Promise<ProcessedGameData[]> {
-    // 내부에서 기존 collectOneBySteamId를 재사용 — 동시성 제한은 서비스/컨트롤러 레벨에서
-    const results: ProcessedGameData[] = [];
-    for (const id of ids) {
-      const one = await this.collectOneBySteamId(id, opts);
-      if (one) results.push(one);
+    if (ids.length === 0) return [];
+
+    const exclusionBitmap = await this.steamExclusionService.loadBitmap();
+    const allowedIds = ids.filter((id) => !exclusionBitmap.has(id));
+    const skipped = ids.length - allowedIds.length;
+    if (skipped > 0) {
+      this.logger.log(
+        `🚫 [Steam Pipeline] 제외 목록과 충돌한 Steam ID ${skipped}건 스킵`,
+      );
     }
-    return results;
+
+    const results = await runWithConcurrency(
+      allowedIds,
+      this.processingConcurrency,
+      async (steamId) => this.collectOneBySteamId(steamId, opts),
+    );
+
+    return results.filter(
+      (result): result is ProcessedGameData => result !== null,
+    );
   }
   /**
    * SteamApp을 ProcessedGameData로 가공
@@ -826,11 +919,23 @@ export class SteamDataPipelineService {
       slug: game.slug,
     }));
 
+    const exclusionBitmap = await this.steamExclusionService.loadBitmap();
+    const filteredCandidates = candidates.filter(
+      (candidate) => !exclusionBitmap.has(candidate.steamId),
+    );
+    const excludedCount = candidates.length - filteredCandidates.length;
+
+    if (excludedCount > 0) {
+      this.logger.log(
+        `🚫 [Steam Refresh] 제외 목록으로 ${excludedCount}개 후보 제거`,
+      );
+    }
+
     this.logger.log(
       `🎯 [Steam Refresh] 후보 선정 완료: ${candidates.length}개`,
     );
 
-    const apps = candidates.map((candidate) => ({
+    const apps = filteredCandidates.map((candidate) => ({
       appid: candidate.steamId,
       name: candidate.name,
     }));
@@ -878,7 +983,7 @@ export class SteamDataPipelineService {
       `✨ [Steam Refresh] 가공 완료: ${processed.length}/${total}개`,
     );
 
-    return { candidates, processed };
+    return { candidates: filteredCandidates, processed };
   }
 
   private async findReleaseWindowCandidates(limit: number): Promise<Game[]> {
@@ -933,6 +1038,45 @@ export class SteamDataPipelineService {
 
   private formatDateString(date: Date): string {
     return date.toISOString().slice(0, 10);
+  }
+
+  private async markExclusion(
+    steamId: number,
+    reason: SteamExclusionReason,
+    prefix?: string,
+  ): Promise<void> {
+    try {
+      const changed = await this.steamExclusionService.markExcluded(
+        steamId,
+        reason,
+      );
+      if (changed) {
+        this.logger.debug(
+          `${prefix ?? ''}🚫 Steam ID ${steamId} → 제외(${reason}) 등록`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `${prefix ?? ''}⚠️ 제외 등록 실패 (Steam ID ${steamId}, reason=${reason}) - ${
+          (error as Error)?.message ?? error
+        }`,
+      );
+    }
+  }
+
+  private async filterExcludedApps(
+    apps: SteamApp[],
+  ): Promise<{ filteredApps: SteamApp[]; excludedCount: number }> {
+    if (apps.length === 0) {
+      return { filteredApps: apps, excludedCount: 0 };
+    }
+
+    const exclusionBitmap = await this.steamExclusionService.loadBitmap();
+    const filteredApps = apps.filter((app) => !exclusionBitmap.has(app.appid));
+    return {
+      filteredApps,
+      excludedCount: apps.length - filteredApps.length,
+    };
   }
 
   /**

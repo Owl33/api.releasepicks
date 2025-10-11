@@ -17,6 +17,7 @@ export { DataSyncStatus } from './data-sync-status.entity';
 export { PipelineRun } from './pipeline-run.entity';
 export { PipelineItem } from './pipeline-item.entity';
 export { SystemEvent } from './system-event.entity';
+export { SteamExcludedRegistry } from '../steam/entities/steam-excluded-registry.entity';
 
 // ===== Enum 타입 =====
 export {
@@ -38,6 +39,7 @@ import { DataSyncStatus } from './data-sync-status.entity';
 import { PipelineRun } from './pipeline-run.entity';
 import { PipelineItem } from './pipeline-item.entity';
 import { SystemEvent } from './system-event.entity';
+import { SteamExcludedRegistry } from '../steam/entities/steam-excluded-registry.entity';
 
 export const entities = [
   // 핵심 데이터 테이블
@@ -54,4 +56,5 @@ export const entities = [
   PipelineRun,
   PipelineItem,
   SystemEvent,
+  SteamExcludedRegistry,
 ];

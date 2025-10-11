@@ -133,11 +133,11 @@ export class YouTubeService {
   );
   private readonly minDurationSeconds = Math.max(
     1,
-    Number(process.env.YT_MIN_DURATION_SEC ?? 45),
+    Number(process.env.YT_MIN_DURATION_SEC ?? 20),
   );
   private readonly maxDurationSeconds = Math.max(
     this.minDurationSeconds,
-    Number(process.env.YT_MAX_DURATION_SEC ?? 600),
+    Number(process.env.YT_MAX_DURATION_SEC ?? 240),
   );
 
   /** 레이트 리미터 */
@@ -357,37 +357,68 @@ export class YouTubeService {
     const baseQuoted = `"${name}"`;
     const baseLoose = name;
 
-    const trailerTerms = [
+    const trailerPhrases = [
       'official trailer',
-      'gameplay trailer',
       'reveal trailer',
       'launch trailer',
+      'gameplay trailer',
       'announcement trailer',
+      'teaser trailer',
+      'teaser',
+    ];
+    const trailerTokens = [
+      'trailer',
+      'official',
+      'reveal',
+      'launch',
+      'gameplay',
+      'announcement',
       'teaser',
     ];
     const brandTerms = ['official', 'ps5', 'xbox', 'nintendo', 'pc', 'steam'];
 
+    const keywords = Array.from(
+      new Set(
+        (filters.keywords ?? [])
+          .filter((kw) => typeof kw === 'string')
+          .map((kw) => kw.trim())
+          .filter((kw) => kw.length > 0 && kw.length <= 60),
+      ),
+    ).slice(0, 6);
+
     const set = new Set<string>();
 
-    // 가장 강한 조합: "이름" + trailer term (+연도)
-    for (const t of trailerTerms) {
-      set.add(`${baseQuoted} ${t}${year ? ' ' + year : ''}`);
+    // 가장 강한 조합: "이름" + trailer phrase (+연도)
+    for (const phrase of trailerPhrases) {
+      set.add(`${baseQuoted} ${phrase}${year ? ' ' + year : ''}`.trim());
     }
 
-    // 브랜드/플랫폼 + trailer
-    for (const b of brandTerms) {
-      set.add(`${baseLoose} ${b} trailer`);
-      if (year) set.add(`${baseLoose} ${b} trailer ${year}`);
+    // 토큰 기반 조합 (단어별)
+    for (const token of trailerTokens) {
+      set.add(`${baseLoose} ${token}`.trim());
+      set.add(`${baseLoose} ${token} trailer`.trim());
+      if (year) set.add(`${baseLoose} ${token} ${year}`.trim());
     }
 
-    // 일반 trailer
-    set.add(`${baseLoose} trailer`);
-    if (year) set.add(`${baseLoose} trailer ${year}`);
+    // 브랜드/플랫폼 조합
+    for (const brand of brandTerms) {
+      set.add(`${baseLoose} ${brand} trailer`.trim());
+      if (year) set.add(`${baseLoose} ${brand} trailer ${year}`.trim());
+    }
 
-    // 추가 키워드가 있으면 최전방에 배치
-    const extra = (filters.keywords ?? [])
-      .filter(Boolean)
-      .map((k) => `${baseLoose} ${k}`);
+    // 키워드 기반 강화 (개발사/배급사 등)
+    for (const keyword of keywords) {
+      set.add(`${baseLoose} ${keyword} trailer`.trim());
+      set.add(`${keyword} ${baseLoose} trailer`.trim());
+      if (year) set.add(`${baseLoose} ${keyword} trailer ${year}`.trim());
+    }
+
+    // 일반 trailer 기본 쿼리
+    set.add(`${baseLoose} trailer`.trim());
+    if (year) set.add(`${baseLoose} trailer ${year}`.trim());
+
+    // 추가 키워드(최전방) - 원래 filters 키워드를 루즈하게 배치
+    const extra = keywords.map((kw) => `${baseLoose} ${kw}`.trim());
 
     // 최종 목록 (과도하게 길지 않게 상한)
     const queries = [...extra, ...Array.from(set)];
@@ -530,6 +561,7 @@ export class YouTubeService {
           channelTitle: channel,
           publishedAt: published,
           viewCountText: viewsText,
+          viewCount: this.parseViewCount(viewsText),
           durationText: duration,
           durationSeconds,
           description: desc,
@@ -584,7 +616,7 @@ export class YouTubeService {
   private score(
     item: YouTubeSearchItem,
     slug: string,
-    _filters: YouTubeSearchFilters,
+    filters: YouTubeSearchFilters,
   ): number {
     const name = this.normalizeSlug(slug).toLowerCase();
     const title = (item.title ?? '').toLowerCase();
@@ -605,6 +637,28 @@ export class YouTubeService {
 
     // Gameplay 약간 가산
     if (title.includes('gameplay')) s += 0.05;
+
+    // 추가 키워드(개발사/배급사 등) 반영
+    const keywordMatches = new Set<string>();
+    for (const kw of filters.keywords ?? []) {
+      const norm = kw?.toLowerCase().trim();
+      if (!norm || norm.length < 3) continue;
+      if (title.includes(norm) || desc.includes(norm)) {
+        keywordMatches.add(norm);
+        s += 0.05;
+      }
+      if (channel.includes(norm)) {
+        keywordMatches.add(norm);
+        s += 0.07;
+      }
+    }
+
+    // 조회수 반영 (log scale, 최대 0.2)
+    const viewCount = item.viewCount ?? this.parseViewCount(item.viewCountText);
+    if (viewCount != null) {
+      const viewScore = Math.min(0.2, Math.log10(viewCount + 1) / 10);
+      s += viewScore;
+    }
 
     if (s > 1) s = 1;
     return s;
@@ -627,6 +681,7 @@ export class YouTubeService {
       score,
       durationSeconds: item.durationSeconds ?? null,
       durationText: item.durationText,
+      viewCount: item.viewCount ?? null,
     };
   }
 
@@ -699,6 +754,36 @@ export class YouTubeService {
       return null;
     }
     return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
+  private parseViewCount(text?: string): number | null {
+    if (!text) return null;
+    const normalized = text
+      .toLowerCase()
+      .replace(/views?/g, '')
+      .replace(/watching now/g, '')
+      .replace(/[•,]/g, '')
+      .trim();
+
+    if (!normalized) return null;
+    if (/no views/.test(normalized)) return 0;
+
+    const suffix = normalized.slice(-1);
+    const hasSuffix = /[kmb]/.test(suffix);
+    const numberPart = hasSuffix ? normalized.slice(0, -1).trim() : normalized;
+
+    const value = Number(numberPart);
+    if (!Number.isFinite(value)) return null;
+
+    let multiplier = 1;
+    if (hasSuffix) {
+      if (suffix === 'k') multiplier = 1_000;
+      else if (suffix === 'm') multiplier = 1_000_000;
+      else if (suffix === 'b') multiplier = 1_000_000_000;
+    }
+
+    const result = value * multiplier;
+    return Number.isFinite(result) ? result : null;
   }
 
   public isDurationAcceptable(seconds?: number | null): boolean {
