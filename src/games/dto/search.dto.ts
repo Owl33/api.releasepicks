@@ -9,6 +9,15 @@ import {
 import { Transform } from 'class-transformer';
 
 /**
+ * 검색 제한 상수 (타입 안전성 강화)
+ */
+export const SEARCH_LIMIT_MIN = 1;
+export const SEARCH_LIMIT_MAX = 20;
+export const SEARCH_LIMIT_DEFAULT = 10;
+export const SEARCH_MIN_QUERY_LENGTH = 2;
+export const SEARCH_MIN_POPULARITY = 40;
+
+/**
  * 게임 검색 요청 DTO
  * 자동완성 검색에 사용
  */

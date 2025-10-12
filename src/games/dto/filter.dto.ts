@@ -12,6 +12,21 @@ import {
 } from 'class-validator';
 
 /**
+ * 게임 타입 필터 (타입 안전성 강화)
+ */
+export type GameTypeFilter = 'all' | 'game' | 'dlc';
+
+/**
+ * 정렬 기준 타입
+ */
+export type SortBy = 'releaseDate' | 'popularity' | 'name';
+
+/**
+ * 정렬 순서 타입
+ */
+export type SortOrder = 'ASC' | 'DESC';
+
+/**
  * 게임 필터 및 페이지네이션 요청 DTO
  * 캘린더 API와 전체 게임 조회 API 통합에 사용
  */
@@ -123,11 +138,17 @@ export class GameFilterDto {
   // ===== 정렬 =====
   @IsOptional()
   @IsString()
-  sortBy?: 'releaseDate' | 'popularity' | 'name'; // 정렬 기준 (기본 releaseDate)
+  @IsIn(['releaseDate', 'popularity', 'name'], {
+    message: "sortBy는 'releaseDate', 'popularity', 'name' 중 하나여야 합니다",
+  })
+  sortBy?: SortBy; // 정렬 기준 (기본 releaseDate)
 
   @IsOptional()
   @IsString()
-  sortOrder?: 'ASC' | 'DESC'; // 정렬 순서 (기본 ASC)
+  @IsIn(['ASC', 'DESC'], {
+    message: "sortOrder는 'ASC', 'DESC' 중 하나여야 합니다",
+  })
+  sortOrder?: SortOrder; // 정렬 순서 (기본 ASC)
 
   // ===== 게임 타입 필터 =====
   @IsOptional()
@@ -137,7 +158,7 @@ export class GameFilterDto {
   @IsIn(['all', 'game', 'dlc'], {
     message: "gameType은 'all', 'game', 'dlc' 중 하나여야 합니다",
   })
-  gameType?: 'all' | 'game' | 'dlc';
+  gameType?: GameTypeFilter;
 }
 
 /**
@@ -168,7 +189,7 @@ export interface FilteredGamesResponseDto {
     developers?: string[];
     publishers?: string[];
     platforms?: string[];
-    gameType?: 'all' | 'game' | 'dlc';
+    gameType?: GameTypeFilter; // ✅ 타입 명시화
   };
   pagination: PaginationMeta;
   count: {

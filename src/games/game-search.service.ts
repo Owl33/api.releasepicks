@@ -4,10 +4,18 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository } from 'typeorm';
 import { Game } from '../entities/game.entity';
 import { GameDetail } from '../entities/game-detail.entity';
+import { GameRelease } from '../entities/game-release.entity';
+import { GameCompanyRole } from '../entities/game-company-role.entity';
+import { Platform } from '../entities/enums';
 import {
   SearchGamesDto,
   SearchGameDto,
   SearchResponseDto,
+  SEARCH_LIMIT_MIN,
+  SEARCH_LIMIT_MAX,
+  SEARCH_LIMIT_DEFAULT,
+  SEARCH_MIN_QUERY_LENGTH,
+  SEARCH_MIN_POPULARITY,
 } from './dto/search.dto';
 
 @Injectable()
@@ -16,6 +24,10 @@ export class GameSearchService {
     @InjectRepository(Game) private readonly gameRepo: Repository<Game>,
     @InjectRepository(GameDetail)
     private readonly detailRepo: Repository<GameDetail>,
+    @InjectRepository(GameRelease)
+    private readonly releaseRepo: Repository<GameRelease>,
+    @InjectRepository(GameCompanyRole)
+    private readonly gcrRepo: Repository<GameCompanyRole>,
   ) {}
 
   private slugifyLoose(s: string): string {
@@ -46,9 +58,13 @@ export class GameSearchService {
 
   async searchGames(dto: SearchGamesDto): Promise<SearchResponseDto> {
     const rawQ = (dto.q ?? '').trim();
-    const limit = Math.min(Math.max(dto.limit ?? 10, 1), 50);
+    // ✅ 타입 안전성: 상수 사용
+    const limit = Math.min(
+      Math.max(dto.limit ?? SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MIN),
+      SEARCH_LIMIT_MAX,
+    );
 
-    if (rawQ.length < 2) {
+    if (rawQ.length < SEARCH_MIN_QUERY_LENGTH) {
       return { query: rawQ, count: 0, data: [] }; // 200 + 빈 결과
     }
 
@@ -77,7 +93,10 @@ export class GameSearchService {
         'game.followers_cache AS followers_cache',
         'detail.header_image AS header_image',
       ])
-      .where('game.popularity_score >= :minScore', { minScore: 40 });
+      // ✅ 성능 최적화: 상수 사용으로 쿼리 플랜 캐싱 활성화
+      .where('game.popularity_score >= :minScore', {
+        minScore: SEARCH_MIN_POPULARITY,
+      });
 
     // ① 후보 축소 — 반드시 인덱스를 타는 식만 사용
     qb.andWhere(
@@ -220,8 +239,9 @@ export class GameSearchService {
       );
     }
 
-    qb.orderBy('game.popularity_score', 'DESC')
-      .addOrderBy('rank', 'DESC')
+    // ✅ 정렬 최적화: 검색 관련성(rank)을 최우선으로, 인기도는 보조 정렬
+    qb.orderBy('rank', 'DESC')
+      .addOrderBy('game.popularity_score', 'DESC')
       .addOrderBy('game.release_date_date', 'DESC')
       .setParameters({
         qLower,
@@ -242,19 +262,119 @@ export class GameSearchService {
 
     const rows = await qb.getRawMany();
 
-    const data: SearchGameDto[] = rows.map((r) => ({
-      gameId: Number(r.game_id),
-      name: String(r.game_name ?? ''),
-      slug: String(r.game_slug ?? ''),
-      headerImage: r.header_image ?? null,
-      releaseDate: r.release_date ? new Date(r.release_date) : null,
-      popularityScore: Number(r.popularity_score ?? 0),
-      followersCache: r.followers_cache ? Number(r.followers_cache) : null,
-      platforms: [],
-      developers: [],
-      publishers: [],
-    }));
+    const gameIds = rows.map((r) => Number(r.game_id));
+
+    // ✅ 플랫폼 정보 일괄 로드
+    const platformsMap = await this.loadPlatformsForSearch(gameIds);
+
+    // ✅ 개발사/퍼블리셔 정보 일괄 로드
+    const companiesMap = await this.loadCompaniesForSearch(gameIds);
+
+    const data: SearchGameDto[] = rows.map((r) => {
+      const gameId = Number(r.game_id);
+      return {
+        gameId,
+        name: String(r.game_name ?? ''),
+        slug: String(r.game_slug ?? ''),
+        headerImage: r.header_image ?? null,
+        releaseDate: r.release_date ? new Date(r.release_date) : null,
+        popularityScore: Number(r.popularity_score ?? 0),
+        followersCache: r.followers_cache ? Number(r.followers_cache) : null,
+        platforms: platformsMap.get(gameId) ?? [],
+        developers: companiesMap.get(gameId)?.developers ?? [],
+        publishers: companiesMap.get(gameId)?.publishers ?? [],
+      };
+    });
 
     return { query: rawQ, count: data.length, data };
+  }
+
+  /**
+   * 검색 결과 게임들의 플랫폼 정보 일괄 로드
+   * @param gameIds 게임 ID 배열
+   * @returns Map<gameId, Platform[]>
+   */
+  private async loadPlatformsForSearch(
+    gameIds: number[],
+  ): Promise<Map<number, Platform[]>> {
+    if (!gameIds.length) {
+      return new Map();
+    }
+
+    const rows = await this.releaseRepo
+      .createQueryBuilder('release')
+      .select(['release.game_id AS game_id', 'release.platform AS platform'])
+      .where('release.game_id IN (:...ids)', { ids: gameIds })
+      .getRawMany();
+
+    const map = new Map<number, Platform[]>();
+
+    rows.forEach((row) => {
+      const gameId = Number(row.game_id);
+      const platform = row.platform as Platform;
+
+      if (!map.has(gameId)) {
+        map.set(gameId, []);
+      }
+
+      const platforms = map.get(gameId)!;
+      if (!platforms.includes(platform)) {
+        platforms.push(platform);
+      }
+    });
+
+    return map;
+  }
+
+  /**
+   * 검색 결과 게임들의 개발사/퍼블리셔 정보 일괄 로드
+   * @param gameIds 게임 ID 배열
+   * @returns Map<gameId, { developers: string[], publishers: string[] }>
+   */
+  private async loadCompaniesForSearch(
+    gameIds: number[],
+  ): Promise<Map<number, { developers: string[]; publishers: string[] }>> {
+    if (!gameIds.length) {
+      return new Map();
+    }
+
+    const rows = await this.gcrRepo
+      .createQueryBuilder('gcr')
+      .innerJoin('gcr.company', 'c')
+      .select([
+        'gcr.game_id AS game_id',
+        'c.name AS company_name',
+        'gcr.role AS role',
+      ])
+      .where('gcr.game_id IN (:...ids)', { ids: gameIds })
+      .getRawMany();
+
+    const map = new Map<
+      number,
+      { developers: string[]; publishers: string[] }
+    >();
+
+    rows.forEach((r) => {
+      const gameId = Number(r.game_id);
+      const name = String(r.company_name ?? '');
+
+      if (!map.has(gameId)) {
+        map.set(gameId, { developers: [], publishers: [] });
+      }
+
+      const entry = map.get(gameId)!;
+
+      if (r.role === 'developer') {
+        if (!entry.developers.includes(name)) {
+          entry.developers.push(name);
+        }
+      } else if (r.role === 'publisher') {
+        if (!entry.publishers.includes(name)) {
+          entry.publishers.push(name);
+        }
+      }
+    });
+
+    return map;
   }
 }

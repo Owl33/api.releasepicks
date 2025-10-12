@@ -26,6 +26,9 @@ import {
   GameFilterDto,
   FilteredGamesResponseDto,
   PaginationMeta,
+  GameTypeFilter,
+  SortBy,
+  SortOrder,
 } from './dto/filter.dto';
 
 import {
@@ -623,16 +626,29 @@ export class GamesService {
       return new Map();
     }
 
-    const rows = await this.gcrRepository
-      .createQueryBuilder('gcr')
-      .innerJoin('gcr.company', 'c')
-      .select([
-        'gcr.game_id AS game_id',
-        'c.name AS company_name',
-        'gcr.role AS role',
-      ])
-      .where('gcr.game_id IN (:...ids)', { ids: gameIds })
-      .getRawMany();
+    // ✅ 성능 최적화: 대량 ID 조회 시 IN 절 최적화를 위해 배치 처리
+    const maxBatchSize = 500; // PostgreSQL IN 절 최적 크기
+    const batches: number[][] = [];
+    for (let i = 0; i < gameIds.length; i += maxBatchSize) {
+      batches.push(gameIds.slice(i, i + maxBatchSize));
+    }
+
+    const allRows = await Promise.all(
+      batches.map((batch) =>
+        this.gcrRepository
+          .createQueryBuilder('gcr')
+          .innerJoin('gcr.company', 'c')
+          .select([
+            'gcr.game_id AS game_id',
+            'c.name AS company_name',
+            'gcr.role AS role',
+          ])
+          .where('gcr.game_id IN (:...ids)', { ids: batch })
+          .getRawMany(),
+      ),
+    );
+
+    const rows = allRows.flat();
 
     const map = new Map<
       number,
@@ -849,10 +865,8 @@ export class GamesService {
       .innerJoin('release.game', 'game')
       .leftJoin('game.details', 'detail');
 
-    const gameTypeFilter = (filters.gameType ?? 'game') as
-      | 'all'
-      | 'game'
-      | 'dlc';
+    // ✅ 타입 안전성 강화: GameTypeFilter 사용
+    const gameTypeFilter: GameTypeFilter = filters.gameType ?? 'game';
     if (gameTypeFilter === 'game') {
       base.andWhere("game.game_type <> 'dlc'");
     } else if (gameTypeFilter === 'dlc') {
@@ -990,37 +1004,34 @@ export class GamesService {
     //    - name 정렬 시 game.name
     //    - 항상 안정적인 tie-breaker (game.id ASC) 추가
     // ---------------------------------------------------------
-    const sortBy = filters.sortBy ?? 'releaseDate';
-    const sortOrder = (filters.sortOrder ?? 'ASC').toUpperCase() as
-      | 'ASC'
-      | 'DESC';
+    // ✅ 타입 안전성 강화: SortBy, SortOrder 사용
+    const sortBy: SortBy = filters.sortBy ?? 'releaseDate';
+    const sortOrder: SortOrder = (filters.sortOrder ?? 'ASC').toUpperCase() as SortOrder;
 
     const grouped = base
       .clone()
       .select('game.id', 'game_id')
       .addSelect('MIN(release.release_date_date)', 'first_release_date')
-      .addSelect('game.popularity_score', 'max_popularity') // ✅ MAX 제거 - popularity_score는 이미 게임 단위 값
-      .addSelect('game.name', 'game_name')
-      .groupBy('game.id')
-      .addGroupBy('game.name') // name 정렬 사용할 때 필요
-      .addGroupBy('game.popularity_score'); // ✅ GROUP BY에 추가
+      .addSelect('MAX(game.popularity_score)', 'max_popularity') // ✅ 집계 함수로 명시화
+      .addSelect('MAX(game.name)', 'game_name') // ✅ 집계 함수로 명시화
+      .groupBy('game.id'); // ✅ PK만 GROUP BY (PostgreSQL 최적화)
 
     // 정렬
     if (sortBy === 'releaseDate') {
       // 날짜 정렬(오름/내림) + NULLS LAST + 보조 정렬(popularity desc) + 최종 tie-breaker
       grouped
         .orderBy('MIN(release.release_date_date)', sortOrder, 'NULLS LAST')
-        .addOrderBy('game.popularity_score', 'DESC') // ✅ MAX 제거
+        .addOrderBy('MAX(game.popularity_score)', 'DESC') // ✅ 집계 함수 사용
         .addOrderBy('game.id', 'ASC');
     } else if (sortBy === 'popularity') {
       grouped
-        .orderBy('game.popularity_score', sortOrder) // ✅ MAX 제거
+        .orderBy('MAX(game.popularity_score)', sortOrder) // ✅ 집계 함수 사용
         .addOrderBy('MIN(release.release_date_date)', 'ASC', 'NULLS LAST')
         .addOrderBy('game.id', 'ASC');
     } else {
       // name
       grouped
-        .orderBy('game.name', sortOrder)
+        .orderBy('MAX(game.name)', sortOrder) // ✅ 집계 함수 사용
         .addOrderBy('MIN(release.release_date_date)', 'ASC', 'NULLS LAST')
         .addOrderBy('game.id', 'ASC');
     }
@@ -1069,9 +1080,11 @@ export class GamesService {
     }
 
     // ---------------------------------------------------------
-    // 3) 이 페이지의 게임들에 대한 "모든 릴리스 행"을 다시 로드(페이징 없음)
+    // 3) 이 페이지의 게임들에 대한 "모든 릴리스 행"을 다시 로드
     //    ⚠️ pageGameIds의 순서를 유지해야 함 - 정렬 순서가 유지되어야 함
+    //    ✅ 성능 최적화: 최대 릴리스 개수 제한 (pageSize * 10)
     // ---------------------------------------------------------
+    const maxReleases = Math.min(pageSize * 10, 2000); // 페이지당 최대 2000개 릴리스
     const rows = await this.gameReleaseRepository
       .createQueryBuilder('release')
       .innerJoin('release.game', 'game')
@@ -1101,6 +1114,7 @@ export class GamesService {
         'detail.header_image as header_image',
       ])
       .where('game.id IN (:...ids)', { ids: pageGameIds })
+      .limit(maxReleases) // ✅ 대량 데이터 방어: 최대 릴리스 개수 제한
       .getRawMany();
 
     // ---------------------------------------------------------
