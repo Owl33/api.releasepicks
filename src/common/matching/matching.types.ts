@@ -22,6 +22,11 @@ export interface MatchingWeights {
 export interface MatchingInputs {
   rawgName: NormalizedNameResult;
   steamName: NormalizedNameResult;
+  // 실제 DB slug 필드 (정확한 매칭을 위해 추가)
+  rawgSlug?: string;
+  rawgOgSlug?: string;
+  steamSlug?: string;
+  steamOgSlug?: string;
   rawgReleaseDate?: Date | null;
   steamReleaseDate?: Date | null;
   rawgCompanies?: CompanyData[];

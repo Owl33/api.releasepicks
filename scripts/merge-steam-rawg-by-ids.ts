@@ -26,7 +26,8 @@
  *  - loser(rawg_only) rawg_id NULL → keeper(steam_only) rawg_id 세팅
  *  - loser 삭제
  *  - keeper slug가 정확히 "-2"로 끝나면 꼬리 제거 시도(충돌 시 foo-3, foo-4...로 유니크 보장)
- */
+   npx ts-node scripts/merge-steam-rawg-by-ids --row-id 12667 --row-id 174393 --allowNameMismatch 
+*/
 
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';

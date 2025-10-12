@@ -72,7 +72,10 @@ export class MultiPlatformMatchingService {
 
     const scored = candidates
       .map((candidate) => {
-        const steamName = normalizeGameName(candidate.name);
+        // ✅ Steam 게임도 og_name 우선 사용 (영문 기준)
+        const steamName = normalizeGameName(
+          candidate.og_name || candidate.name,
+        );
         const steamReleaseDate = this.toDate(candidate.release_date_date);
         const steamCompanies = this.extractCompanyData(candidate);
         const steamGenres = candidate.details?.genres ?? [];
@@ -80,6 +83,11 @@ export class MultiPlatformMatchingService {
         const score = calcMatchingScore({
           rawgName,
           steamName,
+          // ✅ 실제 DB slug 필드 전달 (정확한 매칭을 위해)
+          rawgSlug: data.slug,
+          rawgOgSlug: data.ogSlug,
+          steamSlug: candidate.slug,
+          steamOgSlug: candidate.og_slug,
           rawgReleaseDate,
           steamReleaseDate,
           rawgCompanies,
@@ -124,15 +132,15 @@ export class MultiPlatformMatchingService {
     let reason = 'SCORE_REJECTED';
 
     // PC 포팅 고려: 임계값 완화
-    if (best.score.totalScore >= 0.3) {
+    if (best.score.totalScore >= 0.6) {
       outcome = 'matched';
       reason = 'AUTO_MATCH';
-    } else if (best.score.totalScore >= 0.01) {
+    } else if (best.score.totalScore >= 0.4) {
       outcome = 'pending';
       reason = 'SCORE_THRESHOLD_PENDING';
     }
     if (outcome == 'pending') {
-      console.log(`   📤 베스트 게임 (Source):`);
+      console.log(`   📤보류 게임 (Source):`);
       console.log(`      - 게임 ID: #${best.candidate.id}`);
       console.log(`      - 게임 이름: "${best.candidate.name}"`);
       console.log(`      - 슬러그: ${best.candidate.slug}`);
@@ -190,9 +198,10 @@ export class MultiPlatformMatchingService {
   ): Promise<Game[]> {
     const slugCandidates = this.buildSlugCandidates(data, context);
     const releaseDate = this.resolveReleaseDate(data);
+    // ✅ ogName 우선 사용 (영문 기준 토큰 추출)
     const nameTokens =
       context?.normalizedName?.tokens?.slice(0, 3) ??
-      normalizeGameName(data.name).tokens.slice(0, 3);
+      normalizeGameName(data.ogName || data.name).tokens.slice(0, 3);
     const candidateSteamIds = context?.candidateSteamIds ?? [];
 
     const qb = manager
@@ -237,10 +246,21 @@ export class MultiPlatformMatchingService {
 
             const tokenCondition = new Brackets((nameSub) => {
               // 텍스트 토큰: 필수 (AND)
+              // ✅ Steam의 name 또는 og_name 중 하나라도 매칭되면 후보로 조회
               textTokens.forEach((token, idx) => {
-                nameSub.andWhere(`LOWER(game.name) LIKE :textToken${idx}`, {
-                  [`textToken${idx}`]: `%${token.toLowerCase()}%`,
-                });
+                nameSub.andWhere(
+                  new Brackets((tokenSub) => {
+                    tokenSub.where(`LOWER(game.name) LIKE :textToken${idx}`, {
+                      [`textToken${idx}`]: `%${token.toLowerCase()}%`,
+                    });
+                    tokenSub.orWhere(
+                      `LOWER(COALESCE(game.og_name, '')) LIKE :ogTextToken${idx}`,
+                      {
+                        [`ogTextToken${idx}`]: `%${token.toLowerCase()}%`,
+                      },
+                    );
+                  }),
+                );
               });
 
               // 년도 토큰: 선택적 (있으면 보너스 점수, 없어도 OK)
@@ -284,13 +304,15 @@ export class MultiPlatformMatchingService {
       if (normalized) set.add(normalized);
     };
 
-    push(data.slug);
+    // ✅ 우선순위: ogSlug → ogName → slug → name (영문 우선)
     push(data.ogSlug);
-    push(data.name);
     push(data.ogName);
+    push(data.slug);
+    push(data.name);
     context?.candidateSlugs?.forEach((slug) => push(slug));
 
-    const normalized = normalizeGameName(data.name);
+    // ✅ ogName 우선 사용 (영문 기준)
+    const normalized = normalizeGameName(data.ogName || data.name);
     if (normalized.looseSlug) set.add(normalized.looseSlug);
 
     return [...set];
@@ -321,15 +343,20 @@ export class MultiPlatformMatchingService {
     const context = data.matchingContext?.normalizedName;
     if (context) {
       return {
-        original: data.name,
-        lowercase: context.lowercase ?? data.name.toLowerCase(),
+        original: data.ogName || data.name, // ✅ ogName 우선
+        lowercase:
+          context.lowercase ?? (data.ogName || data.name).toLowerCase(),
         tokens: context.tokens ?? [],
-        compact: context.compact ?? data.name.replace(/\s+/g, '').toLowerCase(),
-        looseSlug: context.looseSlug ?? normalizeSlugCandidate(data.name),
+        compact:
+          context.compact ??
+          (data.ogName || data.name).replace(/\s+/g, '').toLowerCase(),
+        looseSlug:
+          context.looseSlug ?? normalizeSlugCandidate(data.ogName || data.name),
       };
     }
 
-    return normalizeGameName(data.name);
+    // ✅ ogName 우선 사용 (영문 기준)
+    return normalizeGameName(data.ogName || data.name);
   }
 
   private resolveCompanies(data: ProcessedGameData): CompanyData[] {

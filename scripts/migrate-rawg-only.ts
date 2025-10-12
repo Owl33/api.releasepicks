@@ -224,9 +224,12 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function buildProcessedGameData(game: Game): ProcessedGameData {
-  const normalized = normalizeMatchingName(game.name);
+  // ✅ ogName 우선 사용 (영문 기준)
+  const normalized = normalizeMatchingName(game.og_name || game.name);
   const candidateSlugs = new Set<string>();
-  [game.slug, game.og_slug, game.name, game.og_name]
+
+  // ✅ 우선순위: og_slug → og_name → slug → name (영문 우선)
+  [game.og_slug, game.og_name, game.slug, game.name]
     .filter(
       (value): value is string => typeof value === 'string' && value.length > 0,
     )
