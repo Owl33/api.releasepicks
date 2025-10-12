@@ -86,7 +86,9 @@ class FixedWindowRateLimiter {
     if (this.count >= this.limit) {
       const waitMs = this.windowMs - (now - this.windowStart);
       const sec = Math.ceil(waitMs / 1000);
-      warn(`⏳ [Steam 리밋] 한도 도달. ${sec}초 대기${label ? ` (${label})` : ''}`);
+      warn(
+        `⏳ [Steam 리밋] 한도 도달. ${sec}초 대기${label ? ` (${label})` : ''}`,
+      );
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       this.windowStart = Date.now();
       this.count = 0;
@@ -99,7 +101,9 @@ class FixedWindowRateLimiter {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
-  log(`🚀 [DLC 백필 시작] limit=${args.limit || 'ALL'}, concurrency=${args.concurrency}, dryRun=${args.dryRun}`);
+  log(
+    `🚀 [DLC 백필 시작] limit=${args.limit || 'ALL'}, concurrency=${args.concurrency}, dryRun=${args.dryRun}`,
+  );
 
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['log', 'error', 'warn'],
@@ -157,26 +161,28 @@ async function main(): Promise<void> {
 
       const c = candidates[currentIndex];
       const info = `dlc=${c.id} (steam=${c.steam_id ?? '-'}, rawg=${c.rawg_id ?? '-'}, parentPopularity=${c.parent_popularity ?? '-'})`;
-      log(`🧵#${wid} ▶ 처리 시작: ${info} (progress=${currentIndex + 1}/${candidates.length})`);
+      log(
+        `🧵#${wid} ▶ 처리 시작: ${info} (progress=${currentIndex + 1}/${candidates.length})`,
+      );
 
-      if (c.rawg_id) {
-        log(`🧵#${wid} 🌐 RAWG 수집 시작: ${info}`);
-        try {
-          const res = await pipeline.executeManualSingleGame(String(c.id), {
-            idKind: 'game',
-            sources: 'rawg',
-            mode: 'operational',
-            dryRun: args.dryRun,
-          } as any);
-          okRawg += 1;
-          log(`🧵#${wid} ✅ RAWG 완료: ${info} — ${res?.message ?? '성공'} (누적=${okRawg})`);
-        } catch (e: any) {
-          failed += 1;
-          err(`🧵#${wid} RAWG 실패: ${info} — ${e?.message ?? e}`);
-        }
-      } else {
-        log(`🧵#${wid} ↷ RAWG 건너뜀: rawg_id 없음 — ${info}`);
-      }
+      // if (c.rawg_id) {
+      //   log(`🧵#${wid} 🌐 RAWG 수집 시작: ${info}`);
+      //   try {
+      //     const res = await pipeline.executeManualSingleGame(String(c.id), {
+      //       idKind: 'game',
+      //       sources: 'rawg',
+      //       mode: 'operational',
+      //       dryRun: args.dryRun,
+      //     } as any);
+      //     okRawg += 1;
+      //     log(`🧵#${wid} ✅ RAWG 완료: ${info} — ${res?.message ?? '성공'} (누적=${okRawg})`);
+      //   } catch (e: any) {
+      //     failed += 1;
+      //     err(`🧵#${wid} RAWG 실패: ${info} — ${e?.message ?? e}`);
+      //   }
+      // } else {
+      //   log(`🧵#${wid} ↷ RAWG 건너뜀: rawg_id 없음 — ${info}`);
+      // }
 
       if (c.steam_id) {
         await limiter.take(`steam_id=${c.steam_id}`);
@@ -189,7 +195,9 @@ async function main(): Promise<void> {
             dryRun: args.dryRun,
           } as any);
           okSteam += 1;
-          log(`🧵#${wid} ✅ Steam 완료: ${info} — ${res?.message ?? '성공'} (누적=${okSteam})`);
+          log(
+            `🧵#${wid} ✅ Steam 완료: ${info} — ${res?.message ?? '성공'} (누적=${okSteam})`,
+          );
         } catch (e: any) {
           failed += 1;
           err(`🧵#${wid} Steam 실패: ${info} — ${e?.message ?? e}`);
@@ -202,16 +210,25 @@ async function main(): Promise<void> {
     }
   };
 
-  log(`🏁 [실행 개요] 워커=${args.concurrency}, 후보=${candidates.length}, dryRun=${args.dryRun}`);
+  log(
+    `🏁 [실행 개요] 워커=${args.concurrency}, 후보=${candidates.length}, dryRun=${args.dryRun}`,
+  );
   const start = Date.now();
-  const workers = Array.from({ length: Math.max(1, args.concurrency) }, (_, i) => worker(i + 1));
+  const workers = Array.from(
+    { length: Math.max(1, args.concurrency) },
+    (_, i) => worker(i + 1),
+  );
   await Promise.all(workers);
   const sec = ((Date.now() - start) / 1000).toFixed(1);
 
   const snap = limiter.snapshot();
   log('────────────────────────────────────────');
-  log(`🏁 [요약] 총 대상=${candidates.length}, RAWG 성공=${okRawg}, Steam 성공=${okSteam}, 실패=${failed}`);
-  log(`⏱️ [소요 시간] ${sec}s | [Steam 창] 사용=${snap.used}/200, 남은=${snap.remaining}, 리셋까지≈${Math.ceil(snap.resetInMs / 1000)}초`);
+  log(
+    `🏁 [요약] 총 대상=${candidates.length}, RAWG 성공=${okRawg}, Steam 성공=${okSteam}, 실패=${failed}`,
+  );
+  log(
+    `⏱️ [소요 시간] ${sec}s | [Steam 창] 사용=${snap.used}/200, 남은=${snap.remaining}, 리셋까지≈${Math.ceil(snap.resetInMs / 1000)}초`,
+  );
   log('📒 자세한 저장 결과는 PipelineRun 로그를 참조하세요.');
   log('────────────────────────────────────────');
 

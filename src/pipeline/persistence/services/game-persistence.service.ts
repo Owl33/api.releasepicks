@@ -15,6 +15,7 @@ import { ReleasePersistenceService } from './release-persistence.service';
 import { CompanyRegistryService } from './company-registry.service';
 import { SLUG_POLICY } from '../slug/slug-policy.interface';
 import type { SlugPolicyPort } from '../slug/slug-policy.interface';
+import { MultiPlatformMatchingService } from './multi-platform-matching.service';
 
 export type GamePersistenceOperation = 'created' | 'updated';
 
@@ -35,6 +36,7 @@ export class GamePersistenceService {
   constructor(
     private readonly releasePersistence: ReleasePersistenceService,
     private readonly companyRegistry: CompanyRegistryService,
+    private readonly multiPlatformMatching: MultiPlatformMatchingService,
     @Inject(SLUG_POLICY)
     private readonly slugPolicy: SlugPolicyPort,
   ) {}
@@ -95,6 +97,26 @@ export class GamePersistenceService {
         where: { og_slug: ILike(data.ogSlug) },
       });
       if (byOgSlug) return byOgSlug;
+    }
+
+    const decision = await this.multiPlatformMatching.evaluate(data, manager);
+    if (decision.outcome === 'matched' && decision.game) {
+      const scoreText = decision.score
+        ? decision.score.totalScore.toFixed(3)
+        : 'unknown';
+      this.logger.log(
+        `🤝 [멀티 매칭] RAWG ${data.rawgId ?? '-'} → gameId=${decision.game.id} (score=${scoreText}) 자동 병합`,
+      );
+      return decision.game;
+    }
+    if (decision.outcome === 'pending') {
+      this.logger.warn(
+        `⏸️ [멀티 매칭] RAWG ${data.rawgId ?? '-'} 점수 보류 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'SCORE_THRESHOLD_PENDING'}, log=${decision.logPath ?? 'n/a'})`,
+      );
+    } else if (decision.outcome === 'rejected') {
+      this.logger.debug(
+        `🚫 [멀티 매칭] RAWG ${data.rawgId ?? '-'} 자동 병합 실패 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'NO_MATCH'}, log=${decision.logPath ?? 'n/a'})`,
+      );
     }
 
     return null;

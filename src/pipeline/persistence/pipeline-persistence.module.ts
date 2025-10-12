@@ -16,6 +16,7 @@ import { CompanyRegistryService } from './services/company-registry.service';
 import { SLUG_POLICY } from './slug/slug-policy.interface';
 import { SlugPolicyService } from './slug/slug-policy.service';
 import { ExistingGamesSnapshotService } from './services/existing-games-snapshot.service';
+import { MultiPlatformMatchingService } from './services/multi-platform-matching.service';
 
 /**
  * PipelinePersistenceModule
@@ -41,6 +42,7 @@ import { ExistingGamesSnapshotService } from './services/existing-games-snapshot
     CompanyRegistryService,
     SlugPolicyService,
     ExistingGamesSnapshotService,
+    MultiPlatformMatchingService,
     {
       provide: SLUG_POLICY,
       useExisting: SlugPolicyService,

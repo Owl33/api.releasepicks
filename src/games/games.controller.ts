@@ -41,8 +41,8 @@ export class GamesController {
     @Query('upcomingLimit') upcomingLimit?: string,
     @Query('popularLimit') popularLimit?: string,
   ): Promise<HighlightsResponseDto> {
-    const upcoming = this.parseLimit(upcomingLimit, 15, 'upcomingLimit');
-    const popular = this.parseLimit(popularLimit, 15, 'popularLimit');
+    const upcoming = this.parseLimit(upcomingLimit, 16, 'upcomingLimit');
+    const popular = this.parseLimit(popularLimit, 16, 'popularLimit');
 
     return this.gamesService.getHighlights(upcoming, popular);
   }

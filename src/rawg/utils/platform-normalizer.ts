@@ -1,8 +1,9 @@
 // src/services/platform/platform-normalizer.ts
-export type PlatformFamily = 'playstation' | 'xbox' | 'nintendo';
+export type PlatformFamily = 'pc' | 'playstation' | 'xbox' | 'nintendo';
 
 export function normalizePlatformSlug(slug: string): PlatformFamily | null {
   const s = (slug || '').toLowerCase();
+  if (s === 'pc' || s.includes('pc')) return 'pc';
   if (s.includes('playstation')) return 'playstation';
   if (s.includes('xbox')) return 'xbox';
   if (s.includes('nintendo')) return 'nintendo';

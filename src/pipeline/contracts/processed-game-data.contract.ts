@@ -48,6 +48,10 @@ export interface ProcessedGameData {
 
   // 플랫폼별 출시 정보 (본편만)
   releases?: GameReleaseData[];
+
+  // 멀티 플랫폼 매칭 힌트
+  matchingContext?: MatchingContextData;
+  matchingDecision?: MatchingDecisionData;
 }
 
 export interface CompanyData {
@@ -88,4 +92,37 @@ export interface GameReleaseData {
   reviewsTotal?: number;
   reviewScoreDesc?: string;
   dataSource: 'steam' | 'rawg';
+}
+
+/**
+ * Collector가 Persistence 계층에 전달하는 매칭 보조 정보
+ */
+export interface MatchingContextData {
+  source: 'steam' | 'rawg';
+  normalizedName?: {
+    lowercase: string;
+    tokens: string[];
+    compact: string;
+    looseSlug?: string;
+  };
+  releaseDateIso?: string | null;
+  companySlugs?: string[];
+  genreTokens?: string[];
+  candidateSlugs?: string[];
+  candidateSteamIds?: number[];
+  canonicalSteamId?: number;
+  existingRawgIds?: number[];
+}
+
+export type MatchingDecisionStatus = 'auto' | 'pending' | 'rejected';
+
+/**
+ * Persistence 계층이 Collector/CLI에 반환하는 매칭 결과 요약
+ */
+export interface MatchingDecisionData {
+  status: MatchingDecisionStatus;
+  matchedGameId?: number;
+  matchedScore?: number;
+  reason?: string;
+  logPath?: string;
 }

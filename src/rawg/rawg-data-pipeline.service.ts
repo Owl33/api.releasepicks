@@ -8,13 +8,13 @@ import {
   generateMonthRange,
   buildMonthlyParams,
 } from './utils/rawg-query-builder.util';
-import { extractPlatformFamilies } from './utils/platform-normalizer';
+import { extractPlatformFamilies, normalizePlatformSlug } from './utils/platform-normalizer';
 import {
   RawgGameDetails,
   RawgGameSearchResult,
   RawgGameStoreResult,
 } from './rawg.types';
-import { ProcessedGameData } from '@pipeline/contracts';
+import { ProcessedGameData, MatchingContextData } from '@pipeline/contracts';
 import {
   RawgIntermediate,
   RawgMonthStat,
@@ -37,6 +37,10 @@ import { rawgMonitor } from './utils/rawg-monitor';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../youtube/youtube.service';
 import { normalizeGameName } from '../common/utils/game-name-normalizer.util';
+import {
+  normalizeGameName as buildMatchingName,
+} from '../common/matching';
+import { normalizeSlugCandidate } from '../common/slug/slug-normalizer.util';
 
 @Injectable()
 export class RawgDataPipelineService {
@@ -83,11 +87,16 @@ export class RawgDataPipelineService {
     }));
     const maxAttempts = 3;
 
-    const unifiedPlatforms = [
+    const platformIds: number[] = [];
+    if (RAWG_COLLECTION.enablePcPlatform) {
+      platformIds.push(...RAWG_PLATFORM_IDS.pc);
+    }
+    platformIds.push(
       ...RAWG_PLATFORM_IDS.playstation,
       ...RAWG_PLATFORM_IDS.xbox,
       ...RAWG_PLATFORM_IDS.nintendo,
-    ].join(',');
+    );
+    const unifiedPlatforms = platformIds.join(',');
 
     const rawResults: RawgIntermediate[] = [];
     const seen = new Set<string>();
@@ -218,6 +227,11 @@ export class RawgDataPipelineService {
           // 해결: normalizeGameName()으로 통일된 slug 생성
           const normalizedSlug = normalizeGameName(g.name);
 
+          const platformDetails = (g.platforms || []).map((p: any) => ({
+            slug: p?.platform?.slug ?? undefined,
+            releasedAt: p?.released_at ?? null,
+          }));
+
           rawResults.push({
             rawgId: g.id,
             slug: normalizedSlug, // ⚠️ 변경: g.slug → normalizedSlug
@@ -227,6 +241,7 @@ export class RawgDataPipelineService {
               g.short_screenshots?.slice(0, 5).map((s: any) => s.image) || [],
             released: g.released ?? null,
             platformFamilies: families,
+            platformDetails,
             added,
             popularityScore,
             isDlc,
@@ -358,7 +373,7 @@ export class RawgDataPipelineService {
         return null;
       }
 
-      // 2) 플랫폼 패밀리 계산 (pc 제외, 콘솔만)
+      // 2) 플랫폼 패밀리 계산
       const families = Array.from(
         new Set(extractPlatformFamilies(details.platforms || [])),
       ) as ConsoleFamily[];
@@ -400,9 +415,14 @@ export class RawgDataPipelineService {
           ? (details as any).added
           : 0;
 
+      const platformDetails = (details.platforms || []).map((p: any) => ({
+        slug: p?.platform?.slug ?? undefined,
+        releasedAt: p?.released_at ?? null,
+      }));
+
       const intermediate: RawgIntermediate = {
         rawgId,
-        slug: normalizeGameName(details.name) ?? undefined, // 네가 쓰는 정규화 슬러그
+        slug: normalizeGameName(details.name) ?? undefined,
         name: details.name,
         headerImage: (details as any)?.background_image ?? '',
         screenshots:
@@ -411,6 +431,7 @@ export class RawgDataPipelineService {
             .map((s: any) => s.image) ?? [],
         released: (details as any)?.released ?? null,
         platformFamilies: families,
+        platformDetails,
         added,
         popularityScore: PopularityCalculator.calculateRawgPopularity(added),
         isDlc,
@@ -424,7 +445,6 @@ export class RawgDataPipelineService {
         consoleIssues,
       );
 
-      // 정책적으로 RAWG가 pc를 다루지 않는 전제와도 일치( families 가 콘솔만 생성됨 )
       return processed ?? null;
     } catch (err: any) {
       // 필요 시 레이트 리밋/404 등 세분화
@@ -449,10 +469,10 @@ export class RawgDataPipelineService {
     raw: RawgIntermediate,
     consoleIssues: string[],
   ): Promise<ProcessedGameData> {
-    // 출시일 파싱
-    const releaseDate = raw.released ? new Date(raw.released) : undefined;
-    const now = new Date();
-    const comingSoon = releaseDate ? releaseDate > now : false;
+    const releaseInfo = this.selectBestReleaseDate(raw);
+    const releaseDate = releaseInfo.date;
+    const comingSoon = releaseInfo.comingSoon;
+    const normalizedForMatching = buildMatchingName(raw.name);
 
     // 인기도 계산 (RAWG added 기반)
     const popularityScore =
@@ -461,14 +481,7 @@ export class RawgDataPipelineService {
         : PopularityCalculator.calculateRawgPopularity(raw.added);
 
     // 출시 상태 판단
-    let releaseStatus: ReleaseStatus;
-    if (!releaseDate) {
-      releaseStatus = ReleaseStatus.TBA;
-    } else if (comingSoon) {
-      releaseStatus = ReleaseStatus.COMING_SOON;
-    } else {
-      releaseStatus = ReleaseStatus.RELEASED;
-    }
+    const releaseStatus = releaseInfo.status;
 
     const meetsPopularityThreshold =
       popularityScore >= RAWG_COLLECTION.popularityThreshold;
@@ -617,12 +630,21 @@ export class RawgDataPipelineService {
           };
 
           releases = raw.platformFamilies.map((family) => {
-            const storeInfo = storeLookup[family];
-            if (!storeInfo) {
-              this.pushIssue(
-                consoleIssues,
-                `[${raw.sourceMonth}] 스토어 링크 누락 (${family}) - ${raw.name}`,
-              );
+          const storeInfo = storeLookup[family];
+          const platformInfo = raw.platformDetails.find((info) => {
+            if (!info.slug) return false;
+            const normalized = normalizePlatformSlug(info.slug);
+            return normalized === family;
+          });
+          const platformRaw = platformInfo?.releasedAt ?? raw.released ?? undefined;
+          const platformDate = platformRaw
+            ? this.safeParseDate(platformRaw) ?? releaseDate
+            : releaseDate;
+          if (!storeInfo) {
+            this.pushIssue(
+              consoleIssues,
+              `[${raw.sourceMonth}] 스토어 링크 누락 (${family}) - ${raw.name}`,
+            );
             }
             const fallback = this.storeFallbackForFamily(family, raw.name);
             const chosenStore = storeInfo?.store ?? fallback.store;
@@ -636,11 +658,11 @@ export class RawgDataPipelineService {
               platform: family as Platform,
               store: storeInfo?.store ?? fallback.store,
               storeAppId:
-                storeInfo?.storeAppId?.trim() ??
+              storeInfo?.storeAppId?.trim() ??
                 `${raw.rawgId}-${family.toLowerCase()}`,
               storeUrl,
-              releaseDateDate: releaseDate,
-              releaseDateRaw: raw.released ?? undefined,
+              releaseDateDate: platformDate ?? undefined,
+              releaseDateRaw: platformRaw,
               releaseStatus,
               comingSoon,
               currentPriceCents: undefined,
@@ -663,6 +685,49 @@ export class RawgDataPipelineService {
 
     const gameType = raw.isDlc ? GameType.DLC : GameType.GAME;
 
+    const companies = rawgDetails
+      ? [
+          ...(rawgDetails.developers || []).map((dev: any) => ({
+            name: typeof dev === 'string' ? dev : dev?.name || 'Unknown',
+            slug: typeof dev === 'object' && dev?.slug ? dev.slug : undefined,
+            role: CompanyRole.DEVELOPER,
+          })),
+          ...(rawgDetails.publishers || []).map((pub: any) => ({
+            name: typeof pub === 'string' ? pub : pub?.name || 'Unknown',
+            slug: typeof pub === 'object' && pub?.slug ? pub.slug : undefined,
+            role: CompanyRole.PUBLISHER,
+          })),
+        ]
+      : undefined;
+
+    const candidateSlugs = new Set<string>();
+    [raw.slug, raw.name, rawgDetails?.slug, rawgDetails?.name]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .forEach((value) => {
+        const normalized = normalizeSlugCandidate(value);
+        if (normalized) candidateSlugs.add(normalized);
+      });
+
+    const matchingContext: MatchingContextData = {
+      source: 'rawg',
+      normalizedName: {
+        lowercase: normalizedForMatching.lowercase,
+        tokens: normalizedForMatching.tokens,
+        compact: normalizedForMatching.compact,
+        looseSlug: normalizedForMatching.looseSlug,
+      },
+      releaseDateIso: releaseDate
+        ? releaseDate.toISOString().slice(0, 10)
+        : releaseInfo.raw ?? null,
+      companySlugs: companies
+        ?.map((company) => company.slug)
+        .filter((slug): slug is string => Boolean(slug)),
+      genreTokens: details?.genres?.map((genre) =>
+        genre.normalize('NFKC').toLowerCase(),
+      ),
+      candidateSlugs: candidateSlugs.size ? [...candidateSlugs] : undefined,
+    };
+
     return {
       name: raw.name,
       ogName: raw.name,
@@ -673,32 +738,21 @@ export class RawgDataPipelineService {
       parentRawgId: raw.isDlc ? raw.parentRawgId : undefined,
 
       releaseDate,
-      releaseDateRaw: raw.released ?? undefined,
+      releaseDateRaw: releaseInfo.raw,
       releaseStatus,
       comingSoon,
       popularityScore,
 
       // ===== 회사 정보 (개발사/퍼블리셔) =====
-      companies: rawgDetails
-        ? [
-            ...(rawgDetails.developers || []).map((dev: any) => ({
-              name: typeof dev === 'string' ? dev : dev?.name || 'Unknown',
-              slug: typeof dev === 'object' && dev?.slug ? dev.slug : undefined, // ✅ RAWG slug 직접 사용
-              role: CompanyRole.DEVELOPER,
-            })),
-            ...(rawgDetails.publishers || []).map((pub: any) => ({
-              name: typeof pub === 'string' ? pub : pub?.name || 'Unknown',
-              slug: typeof pub === 'object' && pub?.slug ? pub.slug : undefined, // ✅ RAWG slug 직접 사용
-              role: CompanyRole.PUBLISHER,
-            })),
-          ]
-        : undefined,
+      companies,
 
       // ✅ game_detail 전체 필드 포함
       details,
 
       // ✅ game_release 정보 포함
       releases,
+
+      matchingContext,
     };
   }
 
@@ -707,6 +761,65 @@ export class RawgDataPipelineService {
     if (!target.includes(message)) {
       target.push(message);
     }
+  }
+
+  private safeParseDate(value?: string | null): Date | null {
+    if (!value) return null;
+    const normalized = value.split('T')[0];
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private selectBestReleaseDate(
+    raw: RawgIntermediate,
+  ): {
+    date: Date | undefined;
+    raw: string | undefined;
+    status: ReleaseStatus;
+    comingSoon: boolean;
+  } {
+    const candidates: { raw: string; date: Date }[] = [];
+    const addCandidate = (value?: string | null) => {
+      if (!value) return;
+      const normalized = value.split('T')[0];
+      const parsed = this.safeParseDate(normalized);
+      if (parsed) {
+        candidates.push({ raw: normalized, date: parsed });
+      }
+    };
+
+    const pcDetail = raw.platformDetails?.find((info) => {
+      if (!info.slug) return false;
+      return normalizePlatformSlug(info.slug) === 'pc';
+    });
+    if (pcDetail?.releasedAt) {
+      addCandidate(pcDetail.releasedAt);
+    }
+
+    raw.platformDetails?.forEach((info) => addCandidate(info.releasedAt));
+    addCandidate(raw.released);
+
+    if (candidates.length === 0) {
+      return {
+        date: undefined,
+        raw: undefined,
+        status: ReleaseStatus.TBA,
+        comingSoon: false,
+      };
+    }
+
+    candidates.sort((a, b) => a.date.getTime() - b.date.getTime());
+    const chosen = candidates[0];
+    const now = new Date();
+    const comingSoon = chosen.date > now;
+    const status = comingSoon ? ReleaseStatus.COMING_SOON : ReleaseStatus.RELEASED;
+
+    return {
+      date: chosen.date,
+      raw: chosen.raw,
+      status,
+      comingSoon,
+    };
   }
 
   private mapStoresByPlatform(
@@ -779,6 +892,11 @@ export class RawgDataPipelineService {
     gameName: string,
   ): { store: Store; storeUrl?: string } {
     switch (family) {
+      case 'pc':
+        return {
+          store: Store.STEAM,
+          storeUrl: `https://store.steampowered.com/search/?term=${encodeURIComponent(gameName)}`,
+        };
       case 'playstation':
         return {
           store: 'psn' as Store,

@@ -2,7 +2,12 @@ import { RawgMonitorSnapshot } from '../utils/rawg-monitor';
 import { CollectProcessedDataOptions } from '@pipeline/contracts';
 import { Store } from '../../entities/enums';
 
-export type ConsoleFamily = 'playstation' | 'xbox' | 'nintendo';
+export type ConsoleFamily = 'pc' | 'playstation' | 'xbox' | 'nintendo';
+
+export interface RawgPlatformInfo {
+  slug?: string;
+  releasedAt?: string | null;
+}
 
 export interface RawgIntermediate {
   rawgId: number;
@@ -12,6 +17,7 @@ export interface RawgIntermediate {
   screenshots: string[];
   released: string | null;
   platformFamilies: ConsoleFamily[];
+  platformDetails: RawgPlatformInfo[];
   added: number;
   popularityScore: number;
   isDlc: boolean;

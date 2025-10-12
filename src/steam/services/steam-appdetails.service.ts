@@ -40,9 +40,13 @@ export class SteamAppDetailsService {
       this.configService.get<string>('STEAM_APPDETAILS_WINDOW_SECONDS') ??
         '310',
     );
+
+    // Rate Limiter에 spacing을 통합하여 완벽한 제어
+    // spacing은 Rate Limiter 내부에서 처리되므로 별도 sleep 불필요
     this.rateLimiter = new FixedWindowRateLimiter(
       maxPerWindow,
       windowSeconds * 1000,
+      this.spacingMs, // 최소 간격을 Rate Limiter에 전달
     );
   }
 
@@ -75,7 +79,7 @@ export class SteamAppDetailsService {
         );
         // 429 발생 시 더 긴 지연 적용 (1초 추가 대기)
         await sleep(1000);
-        this.globalLimiter.backoff('steam:details', 0.5, 30_000);
+        this.globalLimiter.backoff('steam:details', 1, 30_000);
 
         const { pauseMs, exceeded } = rateLimitMonitor.report429(
           'steam:details',
@@ -122,13 +126,11 @@ export class SteamAppDetailsService {
     opts: { cc: string; lang: string },
   ): Promise<SteamAppDetails | null> {
     await rateLimitMonitor.waitIfPaused('steam:details');
+
+    // Rate Limiter가 spacing + 윈도우 제한을 모두 처리
+    // 이제 별도의 sleep이 필요 없음
     await this.rateLimiter.take();
-    if (this.spacingMs > 0) {
-      const jitter = Math.floor(
-        Math.random() * Math.max(1, this.spacingMs / 2),
-      );
-      await sleep(this.spacingMs + jitter);
-    }
+
     const url = `${this.steamStoreUrl}/appdetails`;
     const requestStart = Date.now();
     const response = await firstValueFrom(

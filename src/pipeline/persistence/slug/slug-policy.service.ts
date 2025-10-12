@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
-import slugify from 'slugify';
+import { normalizeSlugCandidate } from '../../../common/slug/slug-normalizer.util';
 
 import { Game } from '../../../entities/game.entity';
 import {
@@ -76,24 +76,8 @@ export class SlugPolicyService implements SlugPolicyPort {
   }
 
   private normalize(value: string): string | null {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-
-    const base = slugify(trimmed, {
-      lower: true,
-      strict: false,
-      locale: 'ko',
-      remove: /[^a-zA-Z0-9가-힣\s-]/g,
-      replacement: '-',
-      trim: true,
-    })
-      .replace(/[^a-z0-9가-힣\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
-
-    if (!base) return null;
-    return base.slice(0, 120);
+    const normalized = normalizeSlugCandidate(value);
+    return normalized || null;
   }
 
   private async ensureUnique(

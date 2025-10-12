@@ -30,7 +30,9 @@ export class ExistingGamesSnapshotService {
       Number(process.env.STEAM_EXISTING_BUFFER ?? '150'),
     );
     const selectColumns: (keyof Game)[] = [
+      'id',
       'steam_id',
+      'rawg_id',
       'coming_soon',
       'release_date_date',
       'followers_cache',
@@ -43,6 +45,8 @@ export class ExistingGamesSnapshotService {
       if (!game.steam_id) return;
       map.set(game.steam_id, {
         steam_id: game.steam_id,
+        game_id: Number(game.id),
+        rawg_id: game.rawg_id ?? null,
         coming_soon: game.coming_soon,
         release_date_date: game.release_date_date ?? null,
         followers_cache: game.followers_cache ?? null,
@@ -97,7 +101,9 @@ export class ExistingGamesSnapshotService {
     const rows = await this.gameRepository.find({
       where: { steam_id: In(steamIds) },
       select: [
+        'id',
         'steam_id',
+        'rawg_id',
         'coming_soon',
         'release_date_date',
         'followers_cache',
@@ -110,6 +116,8 @@ export class ExistingGamesSnapshotService {
       if (!game.steam_id) return;
       map.set(game.steam_id, {
         steam_id: game.steam_id,
+        game_id: Number(game.id),
+        rawg_id: game.rawg_id ?? null,
         coming_soon: game.coming_soon,
         release_date_date: game.release_date_date ?? null,
         followers_cache: game.followers_cache ?? null,

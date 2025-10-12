@@ -6,6 +6,7 @@ export const RAWG_API_BASE_URL = 'https://api.rawg.io/api';
 // ⚠️ Switch 2가 RAWG에 추가되면 아래 nintendo 배열에 ID를 "수동으로" 추가하고
 // TECHNICAL-DESIGN.md Section 8, CURRENT-STATUS.md도 즉시 갱신할 것.
 export const RAWG_PLATFORM_IDS = {
+  pc: [4],
   playstation: [187, 18], // PS5, PS4
   xbox: [186, 1], // Series X|S, One
   nintendo: [7], // Switch (Switch 2 나오면 여기에 추가)
@@ -21,4 +22,6 @@ export const RAWG_COLLECTION = {
   minAdded: 3,
   requestDelayMs: 350,
   retry: { max: 5, baseDelayMs: 600 },
+  enablePcPlatform: true,
+  releaseDateToleranceDays: 3,
 };

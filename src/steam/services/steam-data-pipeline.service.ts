@@ -19,11 +19,12 @@ import { SteamAppDetailsService } from './steam-appdetails.service';
 import { SteamCommunityService } from './steam-community.service';
 import { SteamReviewService } from './steam-review.service';
 // 타입
-import {
+import type {
   ProcessedGameData,
   SteamCollectOptions,
   PrioritySelectionOptions,
   ExistingGamesMap,
+  ExistingGameSnapshot,
   SteamRefreshCandidate,
 } from '@pipeline/contracts';
 import { SteamApp } from '../types';
@@ -31,6 +32,8 @@ import { SteamApp } from '../types';
 // 유틸
 import { PopularityCalculator } from '../../common/utils/popularity-calculator.util';
 import { normalizeGameName } from '../../common/utils/game-name-normalizer.util';
+import { normalizeGameName as normalizeMatchingName } from '../../common/matching';
+import { normalizeSlugCandidate } from '../../common/slug/slug-normalizer.util';
 import { toTimestamp } from '../../common/collector/date.util';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../../youtube/youtube.service';
@@ -57,7 +60,7 @@ export class SteamDataPipelineService {
   private readonly globalLimiter = getGlobalRateLimiter();
   private readonly processingConcurrency = Math.max(
     1,
-    Number(process.env.STEAM_PIPELINE_CONCURRENCY ?? '4'),
+    Number(process.env.STEAM_PIPELINE_CONCURRENCY ?? '1'),
   );
   private readonly youtubeFallbackPopularityThreshold = Number(
     process.env.STEAM_YT_FALLBACK_POPULARITY ?? '55',
@@ -100,11 +103,10 @@ export class SteamDataPipelineService {
 
   private async buildProcessedGameDataFromApp(
     app: SteamApp,
-    context?: { index: number; total: number },
+    context: { index: number; total: number } = { index: 0, total: 1 },
+    existingSnapshot?: ExistingGameSnapshot,
   ): Promise<ProcessedGameData | null> {
-    const prefix = context
-      ? `[${(context.index + 1).toLocaleString()}/${context.total.toLocaleString()}] `
-      : '';
+    const prefix = `[${(context.index + 1).toLocaleString()}/${context.total.toLocaleString()}] `;
     try {
       const timers: { [key: string]: number } = {};
 
@@ -158,7 +160,9 @@ export class SteamDataPipelineService {
       let reviewScoreDesc = '';
       let youtubeVideoUrl: string | undefined;
       const steamTrailerUrl = Array.isArray(steamDetails.movies)
-        ? steamDetails.movies.find((m) => typeof m === 'string' && m.length > 0) ?? null
+        ? (steamDetails.movies.find(
+            (m) => typeof m === 'string' && m.length > 0,
+          ) ?? null)
         : null;
       const popularityScore = PopularityCalculator.calculateSteamPopularity(
         followers || 0,
@@ -210,14 +214,14 @@ export class SteamDataPipelineService {
           const developerNames = Array.isArray(steamDetails.developers)
             ? steamDetails.developers
                 .map((dev: any) =>
-                  typeof dev === 'string' ? dev : dev?.name ?? '',
+                  typeof dev === 'string' ? dev : (dev?.name ?? ''),
                 )
                 .filter((name: string) => name && name.length <= 60)
             : [];
           const publisherNames = Array.isArray(steamDetails.publishers)
             ? steamDetails.publishers
                 .map((pub: any) =>
-                  typeof pub === 'string' ? pub : pub?.name ?? '',
+                  typeof pub === 'string' ? pub : (pub?.name ?? ''),
                 )
                 .filter((name: string) => name && name.length <= 60)
             : [];
@@ -262,9 +266,12 @@ export class SteamDataPipelineService {
         );
         if (acceptable) {
           const confidenceScore = youtubePickedScore ?? 0;
-          const confidenceLevel = (youtubePickedConfidence ?? 'low').toLowerCase();
+          const confidenceLevel = (
+            youtubePickedConfidence ?? 'low'
+          ).toLowerCase();
           const highConfidence =
-            confidenceLevel === 'high' || confidenceScore >= this.youtubeHighConfidenceScore;
+            confidenceLevel === 'high' ||
+            confidenceScore >= this.youtubeHighConfidenceScore;
           const strongView =
             (youtubePickedViewCount ?? 0) >= this.youtubeMinViewCount;
 
@@ -410,6 +417,46 @@ export class SteamDataPipelineService {
               ]
             : [],
       };
+
+      const normalizedMatching = normalizeMatchingName(processedGame.name);
+      const candidateSlugs = new Set<string>();
+      if (typeof processedGame.slug === 'string') {
+        const normalizedSlug = normalizeSlugCandidate(processedGame.slug);
+        if (normalizedSlug) candidateSlugs.add(normalizedSlug);
+      }
+      if (typeof processedGame.ogSlug === 'string') {
+        const normalizedOgSlug = normalizeSlugCandidate(processedGame.ogSlug);
+        if (normalizedOgSlug) candidateSlugs.add(normalizedOgSlug);
+      }
+
+      processedGame.matchingContext = {
+        source: 'steam',
+        canonicalSteamId: app.appid,
+        normalizedName: {
+          lowercase: normalizedMatching.lowercase,
+          tokens: normalizedMatching.tokens,
+          compact: normalizedMatching.compact,
+          looseSlug: normalizedMatching.looseSlug,
+        },
+        releaseDateIso: releaseDate
+          ? releaseDate.toISOString().slice(0, 10)
+          : (releaseDateRaw ?? null),
+        candidateSlugs: candidateSlugs.size ? [...candidateSlugs] : undefined,
+        existingRawgIds:
+          existingSnapshot?.rawg_id && existingSnapshot.rawg_id > 0
+            ? [existingSnapshot.rawg_id]
+            : undefined,
+      };
+
+      if (existingSnapshot?.rawg_id && existingSnapshot.rawg_id > 0) {
+        processedGame.matchingDecision = {
+          status: 'auto',
+          matchedGameId: existingSnapshot.game_id ?? undefined,
+          matchedScore: 1,
+          reason: 'STEAM_CANONICAL',
+        };
+      }
+
       return processedGame;
     } catch (error: any) {
       if (error instanceof RateLimitExceededError) {
@@ -428,15 +475,33 @@ export class SteamDataPipelineService {
     steamId: number,
     opts?: { mode?: 'bootstrap' | 'operational'; fallbackName?: string },
   ): Promise<ProcessedGameData | null> {
-    // 이름 확보 (로그/슬러그 가독성용) — build 내부에서 AppDetails.name을 다시 우선 사용하므로 안전
+    const existingMap = await this.existingGamesSnapshotService.loadBySteamIds([
+      steamId,
+    ]);
+    return this.collectOneBySteamIdWithSnapshot(
+      steamId,
+      existingMap.get(steamId),
+      opts,
+    );
+  }
+
+  private async collectOneBySteamIdWithSnapshot(
+    steamId: number,
+    snapshot: ExistingGameSnapshot | undefined,
+    opts?: { mode?: 'bootstrap' | 'operational'; fallbackName?: string },
+    progress?: { index: number; total: number },
+  ): Promise<ProcessedGameData | null> {
     const cachedName = await this.lookupAppNameFromCache(steamId);
     const app: SteamApp = {
       appid: steamId,
       name: cachedName ?? opts?.fallbackName ?? `app-${steamId}`,
     };
 
-    // 동일 파이프라인 실행 (followers/reviews/YouTube/인기도/DLC 규칙 그대로)
-    return this.buildProcessedGameDataFromApp(app, { index: 0, total: 1 });
+    return this.buildProcessedGameDataFromApp(
+      app,
+      progress ?? { index: 0, total: 1 },
+      snapshot,
+    );
   }
 
   /** AppList 캐시에서 특정 appid의 이름을 찾아준다. (없으면 undefined) */
@@ -566,6 +631,28 @@ export class SteamDataPipelineService {
         return [];
       }
 
+      const existingHints =
+        await this.existingGamesSnapshotService.loadBySteamIds(
+          selectedApps.map((app) => app.appid),
+        );
+      const { apps: dedupedApps, skipped: matchedSkipCount } =
+        this.filterAlreadyMatchedApps(
+          selectedApps,
+          existingHints,
+          options.mode,
+        );
+      if (matchedSkipCount > 0) {
+        this.logger.log(
+          `🔁 [Steam Pipeline] 기존 RAWG 매칭과 중복된 후보 ${matchedSkipCount}개 스킵`,
+        );
+      }
+      selectedApps = dedupedApps;
+
+      if (selectedApps.length === 0) {
+        this.logger.warn('⚠️ [Steam Pipeline] 처리할 후보가 없습니다.');
+        return [];
+      }
+
       // ③ 각 게임의 상세정보 + 팔로워 + 인기도 계산
       this.logger.log(
         `🔄 [Steam Pipeline] 게임 데이터 가공 시작 (총 ${selectedApps.length}개)`,
@@ -582,10 +669,14 @@ export class SteamDataPipelineService {
             this.logger.debug(
               `${prefix} 처리 시작: ${app.name} (AppID: ${app.appid})`,
             );
-            const gameData = await this.buildProcessedGameDataFromApp(app, {
-              index,
-              total,
-            });
+            const gameData = await this.buildProcessedGameDataFromApp(
+              app,
+              {
+                index,
+                total,
+              },
+              existingHints.get(app.appid),
+            );
             const durationMs = Date.now() - start;
 
             if (gameData) {
@@ -761,7 +852,11 @@ export class SteamDataPipelineService {
   }
   async collectManyBySteamIds(
     ids: number[],
-    opts: { mode: 'bootstrap' | 'operational' } = { mode: 'operational' },
+    opts: {
+      mode: 'bootstrap' | 'operational';
+      progressOffset?: number;
+      progressTotal?: number;
+    } = { mode: 'operational' },
   ): Promise<ProcessedGameData[]> {
     if (ids.length === 0) return [];
 
@@ -774,10 +869,28 @@ export class SteamDataPipelineService {
       );
     }
 
+    const existingHints =
+      await this.existingGamesSnapshotService.loadBySteamIds(allowedIds);
+
+    // 전역 컨텍스트 사용 (청크 단위가 아닌 전체 진행률)
+    const globalOffset = opts.progressOffset ?? 0;
+    const globalTotal = opts.progressTotal ?? allowedIds.length;
+
+    const indexedIds = allowedIds.map((steamId, index) => ({
+      steamId,
+      index,
+    }));
+
     const results = await runWithConcurrency(
-      allowedIds,
+      indexedIds,
       this.processingConcurrency,
-      async (steamId) => this.collectOneBySteamId(steamId, opts),
+      async ({ steamId, index }) =>
+        this.collectOneBySteamIdWithSnapshot(
+          steamId,
+          existingHints.get(steamId),
+          opts,
+          { index: globalOffset + index, total: globalTotal },
+        ),
     );
 
     return results.filter(
@@ -940,6 +1053,11 @@ export class SteamDataPipelineService {
       name: candidate.name,
     }));
 
+    const existingHints =
+      await this.existingGamesSnapshotService.loadBySteamIds(
+        apps.map((app) => app.appid),
+      );
+
     const total = apps.length;
     this.logger.log(
       `🔄 [Steam Refresh] 후보 가공 시작 (총 ${total}개, 동시성 ${this.processingConcurrency})`,
@@ -952,10 +1070,14 @@ export class SteamDataPipelineService {
         const prefix = `[Refresh ${index + 1}/${total}]`;
         const startedAt = Date.now();
         try {
-          const processed = await this.buildProcessedGameDataFromApp(app, {
-            index,
-            total,
-          });
+          const processed = await this.buildProcessedGameDataFromApp(
+            app,
+            {
+              index,
+              total,
+            },
+            existingHints.get(app.appid),
+          );
           const durationMs = Date.now() - startedAt;
           if (processed) {
             this.logger.debug(`${prefix} 완료: ${app.name} (${durationMs}ms)`);
@@ -1062,6 +1184,31 @@ export class SteamDataPipelineService {
         }`,
       );
     }
+  }
+
+  private filterAlreadyMatchedApps(
+    apps: SteamApp[],
+    existingMap: ExistingGamesMap,
+    mode: 'bootstrap' | 'operational',
+  ): { apps: SteamApp[]; skipped: number } {
+    if (mode === 'bootstrap' || existingMap.size === 0) {
+      return { apps, skipped: 0 };
+    }
+
+    const filtered: SteamApp[] = [];
+    let skipped = 0;
+
+    apps.forEach((app) => {
+      const snapshot = existingMap.get(app.appid);
+      if (snapshot?.rawg_id && snapshot.rawg_id > 0) {
+        skipped += 1;
+        existingMap.delete(app.appid);
+        return;
+      }
+      filtered.push(app);
+    });
+
+    return { apps: filtered, skipped };
   }
 
   private async filterExcludedApps(

@@ -11,10 +11,7 @@
 
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Repository,
-  In,
-} from 'typeorm';
+import { Repository, In } from 'typeorm';
 
 import { Game } from '../entities/game.entity';
 import { PipelineRun } from '../entities/pipeline-run.entity';
@@ -25,7 +22,11 @@ import { RawgDataPipelineService } from '../rawg/rawg-data-pipeline.service';
 import { IntegratedPersistenceService } from './persistence/integrated-persistence.service';
 import { SteamExclusionService } from '../steam/services/exclusion/steam-exclusion.service';
 
-import { ProcessedGameData, ApiResponse, PipelineRunResult } from '@pipeline/contracts';
+import {
+  ProcessedGameData,
+  ApiResponse,
+  PipelineRunResult,
+} from '@pipeline/contracts';
 import { SaveFailureDetail } from './contracts/save-result.contract';
 import { PersistenceSaveResult } from './persistence/persistence.types';
 
@@ -170,11 +171,12 @@ export class PipelineController {
       if (phase === 'steam' || phase === 'full') {
         this.logger.log('📥 [수동 파이프라인] Steam 데이터 수집 시작');
 
-        const collectedSteam = await this.steamDataPipeline.collectProcessedData({
-          mode,
-          limit,
-          strategy,
-        });
+        const collectedSteam =
+          await this.steamDataPipeline.collectProcessedData({
+            mode,
+            limit,
+            strategy,
+          });
         this.logger.log(
           `✨ [수동 파이프라인] Steam: ${collectedSteam.length}/${limit}개 수집 완료`,
         );
@@ -192,25 +194,29 @@ export class PipelineController {
 
       // 통합 저장
       const totalProcessed = steamData.length + rawgData.length;
-      this.logger.log(`💾 [수동 파이프라인] ${totalProcessed}개 게임 저장 시작`);
+      this.logger.log(
+        `💾 [수동 파이프라인] ${totalProcessed}개 게임 저장 시작`,
+      );
 
       let totalCreated = 0;
       let totalUpdated = 0;
       let totalFailed = 0;
 
-      let steamSummary: {
-        created: number;
-        updated: number;
-        failed: number;
-        total: number;
-        failures?: {
-          steamId: number | null;
-          rawgId: number | null;
-          slug: string | null;
-          reason: string;
-          message: string;
-        }[];
-      } | undefined;
+      let steamSummary:
+        | {
+            created: number;
+            updated: number;
+            failed: number;
+            total: number;
+            failures?: {
+              steamId: number | null;
+              rawgId: number | null;
+              slug: string | null;
+              reason: string;
+              message: string;
+            }[];
+          }
+        | undefined;
 
       if (steamData.length > 0) {
         const steamResult = await this.persistence.saveProcessedGames(
@@ -259,9 +265,7 @@ export class PipelineController {
       );
       this.logger.log(`✅ [수동 파이프라인] 완료`);
       this.logger.log(`   - 총 처리 시간: ${durationSeconds}초`);
-      this.logger.log(
-        `   - 성공: ${totalCreated + totalUpdated}개`,
-      );
+      this.logger.log(`   - 성공: ${totalCreated + totalUpdated}개`);
       this.logger.log(`   - 실패: ${totalFailed}개`);
 
       return {
@@ -295,12 +299,15 @@ export class PipelineController {
     @Body() params: SteamNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
     const mode = params.mode ?? 'operational';
-    const limit = params.limit ?? 200;
+    const limit = params.limit ?? 2000;
     const dryRun = params.dryRun ?? false;
+
+    // ✅ 배치 저장 크기 (요구사항)
+    const SAVE_BATCH_SIZE = 1000;
 
     this.logger.log('🆕 [Steam 신규 탐지] 시작');
     this.logger.log(`   - mode: ${mode}`);
-    this.logger.log(`   - limit: ${limit}`);
+    this.logger.log(`   - limit: ${limit} (요청값: ${params.limit ?? 'undefined'})`);
     this.logger.log(`   - dryRun: ${dryRun}`);
 
     const pipelineRun = await this.createPipelineRun(
@@ -324,8 +331,9 @@ export class PipelineController {
       const newcomers = allIds.filter(
         (id) => !existing.has(id) && !exclusionBitmap.has(id),
       );
-      const excludedByRegistry =
-        allIds.filter((id) => exclusionBitmap.has(id)).length;
+      const excludedByRegistry = allIds.filter((id) =>
+        exclusionBitmap.has(id),
+      ).length;
 
       this.logger.log(
         `🧮 [Steam 신규 탐지] 후보 집계 — AppList=${allIds.length}, DB=${existing.size}, 제외=${excludedByRegistry}, 신규=${newcomers.length}`,
@@ -385,13 +393,13 @@ export class PipelineController {
             phase: 'steam',
             totalProcessed: 0,
             finishedAt: new Date(),
-              steamNewSummary: {
-                candidates: newcomers.length,
-                inspected: targets.length,
-                targetIds: targets,
-                excludedByRegistry,
-                created: 0,
-                updated: 0,
+            steamNewSummary: {
+              candidates: newcomers.length,
+              inspected: targets.length,
+              targetIds: targets,
+              excludedByRegistry,
+              created: 0,
+              updated: 0,
               saved: 0,
               failed: 0,
               dryRun: true,
@@ -401,49 +409,113 @@ export class PipelineController {
         };
       }
 
-        const collected = await this.steamDataPipeline.collectManyBySteamIds(
-          targets,
-          { mode },
-        );
-        this.logger.log(
-          `📦 [Steam 신규 탐지] 상세 수집 완료 — 수집 성공=${collected.length}/${targets.length}`,
-        );
-      const saveResult = await this.persistence.saveProcessedGames(
-        collected,
-        pipelineRun.id,
+      // ===== 1+2) 2,000개씩 수집 → 즉시 저장 (청크 단위 처리) =====
+      let totalCreated = 0;
+      let totalUpdated = 0;
+      let totalFailed = 0;
+      let totalCollected = 0;
+      const allFailures: typeof this.persistence.saveProcessedGames extends (
+        ...args: any
+      ) => infer R
+        ? R extends Promise<infer P>
+          ? P extends { failures: infer F }
+            ? F
+            : any[]
+          : any[]
+        : any[] = [];
+
+      const totalChunks = Math.ceil(targets.length / SAVE_BATCH_SIZE);
+      this.logger.log(
+        `🔄 [Steam 신규 탐지] ${targets.length}개를 ${totalChunks}개 청크(${SAVE_BATCH_SIZE}개씩)로 처리 시작`,
       );
-      const failureSummaries = this.mapFailureDetails(saveResult.failures);
+
+      for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx += 1) {
+        const chunkStart = chunkIdx * SAVE_BATCH_SIZE;
+        const chunkEnd = Math.min(chunkStart + SAVE_BATCH_SIZE, targets.length);
+        const chunkTargets = targets.slice(chunkStart, chunkEnd);
+
+        this.logger.log(
+          `📥 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — ${chunkTargets.length}개 게임 수집 시작 (ID 범위: ${chunkStart}-${chunkEnd - 1})`,
+        );
+
+        const collected = await this.steamDataPipeline.collectManyBySteamIds(
+          chunkTargets,
+          {
+            mode,
+            progressOffset: chunkStart,
+            progressTotal: targets.length,
+          },
+        );
+
+        this.logger.log(
+          `📦 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — 수집 완료: ${collected.length}/${chunkTargets.length}개`,
+        );
+
+        totalCollected += collected.length;
+
+        if (collected.length > 0) {
+          this.logger.log(
+            `💾 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — ${collected.length}개 저장 시작`,
+          );
+
+          const saveResult = await this.persistence.saveProcessedGames(
+            collected,
+            pipelineRun.id,
+          );
+
+          totalCreated += saveResult.created;
+          totalUpdated += saveResult.updated;
+          totalFailed += saveResult.failed;
+          if (saveResult.failures?.length) {
+            allFailures.push(...saveResult.failures);
+          }
+
+          this.logger.log(
+            `   ✅ 청크 ${chunkIdx + 1}/${totalChunks} 저장 완료: created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
+          );
+        } else {
+          this.logger.warn(
+            `   ⚠️ 청크 ${chunkIdx + 1}/${totalChunks} 수집된 데이터 없음 → 저장 스킵`,
+          );
+        }
+
+        this.logger.log(
+          `📊 [Steam 신규 탐지] 진행 상황: ${chunkIdx + 1}/${totalChunks} 청크 완료 (누적: 수집=${totalCollected}, 생성=${totalCreated}, 갱신=${totalUpdated}, 실패=${totalFailed})`,
+        );
+      }
+
+      const failureSummaries = this.mapFailureDetails(allFailures);
 
       this.logger.log(
-        `💾 [Steam 신규 탐지] 저장 결과 — created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
+        `✅ [Steam 신규 탐지] 전체 처리 완료 — 수집=${totalCollected}/${targets.length}, created=${totalCreated}, updated=${totalUpdated}, failed=${totalFailed}`,
       );
 
       await this.completePipelineRun(
         pipelineRun.id,
         'completed',
         undefined,
-        collected.length,
-        saveResult.created + saveResult.updated,
-        saveResult.failed,
+        totalCollected,
+        totalCreated + totalUpdated,
+        totalFailed,
       );
 
       return {
         statusCode: 200,
-        message: `Steam 신규 ${saveResult.created + saveResult.updated}건 처리 완료 (시도 ${targets.length}건)`,
+        message: `Steam 신규 ${totalCreated + totalUpdated}건 처리 완료 (수집 ${totalCollected}/${targets.length}건)`,
         data: {
           pipelineRunId: pipelineRun.id,
           phase: 'steam',
-          totalProcessed: collected.length,
+          totalProcessed: totalCollected,
           finishedAt: new Date(),
           steamNewSummary: {
             candidates: newcomers.length,
             inspected: targets.length,
-             targetIds: targets,
-             excludedByRegistry,
-             created: saveResult.created,
-             updated: saveResult.updated,
-            saved: saveResult.created + saveResult.updated,
-            failed: saveResult.failed,
+            targetIds: targets,
+            excludedByRegistry,
+            created: totalCreated,
+            updated: totalUpdated,
+            saved: totalCreated + totalUpdated,
+            failed: totalFailed,
             dryRun: false,
             failures:
               failureSummaries.length > 0 ? failureSummaries : undefined,
@@ -876,13 +948,9 @@ export class PipelineController {
       steamId: failure.data.steamId ?? null,
       rawgId: failure.data.rawgId ?? null,
       slug:
-        failure.data.slug ??
-        failure.data.ogSlug ??
-        failure.data.name ??
-        null,
+        failure.data.slug ?? failure.data.ogSlug ?? failure.data.name ?? null,
       reason: failure.reason,
       message: failure.message,
     }));
   }
-
 }

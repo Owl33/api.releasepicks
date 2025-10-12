@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, Max, Min, IsBoolean, IsEnum } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  Max,
+  Min,
+  IsBoolean,
+  IsEnum,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 /**
@@ -23,8 +30,8 @@ export class SteamNewDto {
   @Type(() => Number)
   @IsInt({ message: 'limit은 정수여야 합니다' })
   @Min(1, { message: 'limit은 최소 1 이상이어야 합니다' })
-  @Max(2000, { message: 'limit은 최대 2000 이하여야 합니다' })
-  limit?: number = 200;
+  @Max(50000, { message: 'limit은 최대 50000 이하여야 합니다' })
+  limit?: number;
 
   /**
    * Dry-run 여부 (수집/저장 없이 대상 목록만 계산)
