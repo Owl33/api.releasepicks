@@ -203,18 +203,18 @@ export class YouTubeService {
     if (cached !== undefined) return cached;
 
     if (this.isBreakerOpen()) {
-      this.logger.warn(
-        `[CB:OPEN] skip YouTube: '${slug}' until ${new Date(this.breakerOpenUntil).toISOString()}`,
-      );
+      // this.logger.warn(
+      //   `[CB:OPEN] skip YouTube: '${slug}' until ${new Date(this.breakerOpenUntil).toISOString()}`,
+      // );
       const res: GameTrailerResult = { slug, queryTried: [], picked: null };
       this.cache.set(cacheKey, res);
       return res;
     }
 
     const queries = this.planQueries(slug, filters);
-    this.logger.debug(
-      `🔍 [YouTube:${slug}] 총 ${queries.length}개 쿼리 생성 (배치 ${this.batchSize}, 동시 ${this.maxConcurrency})`,
-    );
+    // this.logger.debug(
+    //   `🔍 [YouTube:${slug}] 총 ${queries.length}개 쿼리 생성 (배치 ${this.batchSize}, 동시 ${this.maxConcurrency})`,
+    // );
 
     const tried: string[] = [];
     let best: YouTubeSearchItem | null = null;
@@ -254,9 +254,9 @@ export class YouTubeService {
     // 배치 단위로 작업 enqueue
     for (let i = 0; i < queries.length; i += this.batchSize) {
       const batch = queries.slice(i, i + this.batchSize);
-      this.logger.debug(
-        `  ▶️ 배치 ${Math.ceil((i + 1) / this.batchSize)}/${Math.ceil(queries.length / this.batchSize)} 시작 (${batch.length}개)`,
-      );
+      // this.logger.debug(
+      //   `  ▶️ 배치 ${Math.ceil((i + 1) / this.batchSize)}/${Math.ceil(queries.length / this.batchSize)} 시작 (${batch.length}개)`,
+      // );
 
       for (const q of batch) {
         enqueue(async () => {
@@ -264,9 +264,9 @@ export class YouTubeService {
 
           const qStart = Date.now();
           tried.push(q);
-          this.logger.debug(
-            `  ⏱️  쿼리: "${q.length > 80 ? q.slice(0, 77) + '...' : q}"`,
-          );
+          // this.logger.debug(
+          //   `  ⏱️  쿼리: "${q.length > 80 ? q.slice(0, 77) + '...' : q}"`,
+          // );
 
           try {
             await this.limiter.take(60, 120); // RPS 제어 + 지터
@@ -282,13 +282,13 @@ export class YouTubeService {
               if (score > bestScore) {
                 best = top;
                 bestScore = score;
-                this.logger.debug(
-                  `    🎯 새로운 최고 점수: ${score.toFixed(3)} - "${(top.title ?? '').slice(0, 50)}..."`,
-                );
+                // this.logger.debug(
+                //   `    🎯 새로운 최고 점수: ${score.toFixed(3)} - "${(top.title ?? '').slice(0, 50)}..."`,
+                // );
                 if (score >= this.highConfidenceCutoff) {
-                  this.logger.debug(
-                    `    ⚡ High confidence (${score.toFixed(3)} >= ${this.highConfidenceCutoff}) 발견! 조기 종료`,
-                  );
+                  // this.logger.debug(
+                  //   `    ⚡ High confidence (${score.toFixed(3)} >= ${this.highConfidenceCutoff}) 발견! 조기 종료`,
+                  // );
                   globalAbort.abort(); // 잔여 작업 취소
                 }
               }

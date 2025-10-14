@@ -146,9 +146,9 @@ export class SteamAppDetailsService {
     );
 
     const requestDuration = Date.now() - requestStart;
-    this.logger.debug(
-      `    ⏱️  HTTP 요청(${opts.cc}/${opts.lang}): ${requestDuration}ms`,
-    );
+    // this.logger.debug(
+    //   `    ⏱️  HTTP 요청(${opts.cc}/${opts.lang}): ${requestDuration}ms`,
+    // );
 
     const appData = response.data?.[appId];
     if (!appData?.success || !appData?.data) {

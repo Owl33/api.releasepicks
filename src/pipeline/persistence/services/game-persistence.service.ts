@@ -71,6 +71,7 @@ export class GamePersistenceService {
     data: ProcessedGameData,
     manager: EntityManager,
   ): Promise<Game | null> {
+    // 1. steam_id로 조회 (Steam 게임 우선)
     if (data.steamId) {
       const bySteam = await manager.findOne(Game, {
         where: { steam_id: data.steamId },
@@ -78,6 +79,7 @@ export class GamePersistenceService {
       if (bySteam) return bySteam;
     }
 
+    // 2. rawg_id로 조회 (RAWG 게임)
     if (data.rawgId) {
       const byRawg = await manager.findOne(Game, {
         where: { rawg_id: data.rawgId },
@@ -85,6 +87,7 @@ export class GamePersistenceService {
       if (byRawg) return byRawg;
     }
 
+    // 3. slug로 조회 (Steam/RAWG 공통)
     if (data.slug) {
       const bySlug = await manager.findOne(Game, {
         where: { slug: ILike(data.slug) },
@@ -92,6 +95,7 @@ export class GamePersistenceService {
       if (bySlug) return bySlug;
     }
 
+    // 4. og_slug로 조회 (Steam/RAWG 공통)
     if (data.ogSlug) {
       const byOgSlug = await manager.findOne(Game, {
         where: { og_slug: ILike(data.ogSlug) },
@@ -99,23 +103,33 @@ export class GamePersistenceService {
       if (byOgSlug) return byOgSlug;
     }
 
+    // 5. 멀티 플랫폼 매칭 (Steam/RAWG 모두 적용)
     const decision = await this.multiPlatformMatching.evaluate(data, manager);
     if (decision.outcome === 'matched' && decision.game) {
       const scoreText = decision.score
         ? decision.score.totalScore.toFixed(3)
         : 'unknown';
+      const sourceLabel = data.steamId
+        ? `Steam ${data.steamId}`
+        : `RAWG ${data.rawgId ?? '-'}`;
       this.logger.log(
-        `🤝 [멀티 매칭] RAWG ${data.rawgId ?? '-'} → gameId=${decision.game.id} (score=${scoreText}) 자동 병합`,
+        `🤝 [멀티 매칭] ${sourceLabel} → gameId=${decision.game.id} (score=${scoreText}) 자동 병합`,
       );
       return decision.game;
     }
     if (decision.outcome === 'pending') {
+      const sourceLabel = data.steamId
+        ? `Steam ${data.steamId}`
+        : `RAWG ${data.rawgId ?? '-'}`;
       this.logger.warn(
-        `⏸️ [멀티 매칭] RAWG ${data.rawgId ?? '-'} 점수 보류 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'SCORE_THRESHOLD_PENDING'}, log=${decision.logPath ?? 'n/a'})`,
+        `⏸️ [멀티 매칭] ${sourceLabel} 점수 보류 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'SCORE_THRESHOLD_PENDING'}, log=${decision.logPath ?? 'n/a'})`,
       );
     } else if (decision.outcome === 'rejected') {
+      const sourceLabel = data.steamId
+        ? `Steam ${data.steamId}`
+        : `RAWG ${data.rawgId ?? '-'}`;
       this.logger.debug(
-        `🚫 [멀티 매칭] RAWG ${data.rawgId ?? '-'} 자동 병합 실패 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'NO_MATCH'}, log=${decision.logPath ?? 'n/a'})`,
+        `🚫 [멀티 매칭] ${sourceLabel} 자동 병합 실패 (score=${decision.score?.totalScore.toFixed(3) ?? '0'}, reason=${decision.reason ?? 'NO_MATCH'}, log=${decision.logPath ?? 'n/a'})`,
       );
     }
 

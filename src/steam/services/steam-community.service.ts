@@ -232,9 +232,9 @@ export class SteamCommunityService implements OnModuleDestroy {
     this.logger.log(`📡 AppList API 호출: ${APP_LIST_URL}`);
     const { data } = await axios.get(APP_LIST_URL, { timeout: 60_000 });
     const apps = data?.applist?.apps ?? [];
-    this.logger.log(
-      `📥 AppList 로딩 완료: 총 ${apps.length.toLocaleString()}개`,
-    );
+    // this.logger.log(
+    //   `📥 AppList 로딩 완료: 총 ${apps.length.toLocaleString()}개`,
+    // );
     return apps;
   }
 
@@ -393,11 +393,11 @@ export class SteamCommunityService implements OnModuleDestroy {
     const retryAfterSec = Number(retryAfterHeader ?? 0);
     if (!Number.isNaN(retryAfterSec) && retryAfterSec > 0) {
       const wait = retryAfterSec * 1000 + Math.floor(Math.random() * 300);
-      this.logger.warn(`⏳ Retry-After 감지 → ${wait}ms 대기`);
+      // this.logger.warn(`⏳ Retry-After 감지 → ${wait}ms 대기`);
       await sleep(wait);
     } else {
       const wait = this.backoffMs(attempt, 700, 8000);
-      this.logger.warn(`⏳ 429 백오프 → ${wait}ms 대기`);
+      // this.logger.warn(`⏳ 429 백오프 → ${wait}ms 대기`);
       await sleep(wait);
     }
 
@@ -555,9 +555,9 @@ export class SteamCommunityService implements OnModuleDestroy {
             this.memberRegex.source,
           );
 
-          this.logger.debug(
-            `🧭 [Search] '${gameName}' (AppID=${appid}) 카드 ${out.totalCards}개 / 매칭 ${out.matchedCount}개`,
-          );
+          // this.logger.debug(
+          //   `🧭 [Search] '${gameName}' (AppID=${appid}) 카드 ${out.totalCards}개 / 매칭 ${out.matchedCount}개`,
+          // );
 
           if (out.firstMembers && Number.isFinite(out.firstMembers)) {
             this.logger.debug(

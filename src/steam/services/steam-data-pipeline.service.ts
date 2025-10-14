@@ -121,9 +121,9 @@ export class SteamDataPipelineService {
           : app.name;
 
       timers.appDetailsDuration = Date.now() - timers.appDetailsStart;
-      this.logger.debug(
-        `${prefix}⏱️ AppDetails ${(timers.appDetailsDuration / 1000).toFixed(2)}초`,
-      );
+      // this.logger.debug(
+      //   `${prefix}⏱️ AppDetails ${(timers.appDetailsDuration / 1000).toFixed(2)}초`,
+      // );
 
       if (!steamDetails) {
         this.logger.debug(`${prefix}⚠️ AppDetails 없음 → 스킵: ${app.name}`);
@@ -538,7 +538,7 @@ export class SteamDataPipelineService {
     // 캐시 유효하면 반환
     if (this.appListCache && now - this.appListCache.fetchedAt < TTL_MS) {
       const ageSeconds = Math.round((now - this.appListCache.fetchedAt) / 1000);
-      this.logger.debug(`[AppListCache] 캐시 히트 (경과: ${ageSeconds}초)`);
+      // this.logger.debug(`[AppListCache] 캐시 히트 (경과: ${ageSeconds}초)`);
       return this.appListCache.apps;
     }
 

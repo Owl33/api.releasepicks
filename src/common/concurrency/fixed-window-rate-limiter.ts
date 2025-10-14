@@ -40,9 +40,9 @@ export class FixedWindowRateLimiter {
       const timeSinceLastCall = now - this.lastCallTime;
       const spacingWait = this.minSpacingMs - timeSinceLastCall;
       if (spacingWait > 0) {
-        this.logger.debug(
-          `⏱️ Spacing 대기: ${spacingWait.toFixed(0)}ms (마지막 호출로부터 ${timeSinceLastCall.toFixed(0)}ms 경과)`,
-        );
+        // this.logger.debug(
+        //   `⏱️ Spacing 대기: ${spacingWait.toFixed(0)}ms (마지막 호출로부터 ${timeSinceLastCall.toFixed(0)}ms 경과)`,
+        // );
         await sleep(spacingWait);
       }
     }
@@ -65,9 +65,9 @@ export class FixedWindowRateLimiter {
     if (this.count < this.maxEvents) {
       this.count += 1;
       const windowElapsed = ((Date.now() - this.windowStart) / 1000).toFixed(1);
-      this.logger.debug(
-        `✅ 요청 허용: [${this.count}/${this.maxEvents}] (윈도우 경과: ${windowElapsed}초)`,
-      );
+      // this.logger.debug(
+      //   `✅ 요청 허용: [${this.count}/${this.maxEvents}] (윈도우 경과: ${windowElapsed}초)`,
+      // );
       this.lastCallTime = Date.now();
       return;
     }
