@@ -1,8 +1,15 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const BASE_URL = process.env.INTERNAL_BASE_URL ?? process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : 'http://localhost:3000';
+const normalizeBase = (value?: string | null): string | undefined => {
+  if (!value) return undefined;
+  return value.replace(/\/+$/, '');
+};
+
+const baseUrlFromEnv = normalizeBase(process.env.INTERNAL_BASE_URL);
+
+
+const BASE_URL =
+  baseUrlFromEnv ?? 'http://localhost:8080';
 
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 
