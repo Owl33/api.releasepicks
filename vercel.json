@@ -19,7 +19,7 @@
   ],
   "crons": [
     {
-      "path": "/api/cron/steam-maintenance",
+      "path": "/api/pipeline/cron/steam-maintenance",
       "schedule": "0 17 * * *"
     }
   ]

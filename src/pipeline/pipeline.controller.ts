@@ -7,9 +7,9 @@
   ValidationPipe,
   UsePipes,
   Param,
+  Get,
 } from '@nestjs/common';
 
-import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 
@@ -60,10 +60,6 @@ export class PipelineController {
     private readonly steamExclusionService: SteamExclusionService,
   ) {}
 
-  // /**
-  //  * Steam 일일 유지보수 (매일 02:00)
-  //  * 1) 출시 윈도우 갱신 → 2) 신규 탐지
-  //  */
   // @Cron('0 2 * * *', {
   //   name: 'steam-daily-maintenance',
   //   timeZone: 'Asia/Seoul',
@@ -93,6 +89,39 @@ export class PipelineController {
   //     throw err;
   //   }
   // }
+
+
+  @Get('cron/steam-maintenance')
+  async triggerSteamMaintenance(): Promise<
+    ApiResponse<{
+      refresh: ApiResponse<PipelineRunResult>;
+      steamNew: ApiResponse<PipelineRunResult>;
+    }>
+  > {
+    this.logger.log('🕒 [Cron] Steam 출시 윈도우 갱신 시작 (limit=1000)');
+    const refreshResult = await this.executeSteamRefresh({
+      limit: 1000,
+      dryRun: false,
+    });
+    this.logger.log('🕒 [Cron] Steam 출시 윈도우 갱신 완료');
+
+    this.logger.log('🕒 [Cron] Steam 신규 탐지 시작 (limit=1000)');
+    const steamNewResult = await this.executeSteamNew({
+      mode: 'operational',
+      limit: 1000,
+      dryRun: false,
+    });
+    this.logger.log('🕒 [Cron] Steam 신규 탐지 완료');
+
+    return {
+      statusCode: 200,
+      message: 'Steam maintenance completed',
+      data: {
+        refresh: refreshResult,
+        steamNew: steamNewResult,
+      },
+    };
+  }
 
   /**
    * 수동 실행 API (관리자 전용)
