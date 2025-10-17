@@ -78,8 +78,10 @@ export class GameSearchService {
     const qPrefix = `${qLower}%`;
     const qLike = `%${qLower}%`;
 
-    const NAME_MIN = len >= 8 ? 0.35 : len >= 5 ? 0.3 : 0.27;
-    const SLUG_MIN = len >= 8 ? 0.3 : len >= 5 ? 0.26 : 0.22;
+    const NAME_MIN =
+      len >= 12 ? 0.35 : len >= 8 ? 0.3 : len >= 5 ? 0.24 : 0.2;
+    const SLUG_MIN =
+      len >= 12 ? 0.3 : len >= 8 ? 0.27 : len >= 5 ? 0.22 : 0.18;
 
     const qb = this.gameRepo
       .createQueryBuilder('game')
@@ -127,7 +129,9 @@ export class GameSearchService {
             .orWhere(
               "regexp_replace(lower(game.og_name), '[\\s\\-_/]+', '', 'g') % :qCompact",
               { qCompact },
-            );
+            )
+            .orWhere('lower(game.name) LIKE :qPrefix', { qPrefix })
+            .orWhere('lower(game.og_name) LIKE :qPrefix', { qPrefix });
 
           if (useSlug) {
             b.orWhere('(game.slug::text) % :qSlug', { qSlug })

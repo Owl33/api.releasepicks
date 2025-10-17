@@ -92,7 +92,15 @@ export class GamePersistenceService {
       const bySlug = await manager.findOne(Game, {
         where: { slug: ILike(data.slug) },
       });
-      if (bySlug) return bySlug;
+      if (bySlug) {
+        if (this.isSteamIdConflict(bySlug, data)) {
+          this.logger.warn(
+            `⚠️ [GamePersistence] slug 충돌 감지 – existingSteam=${bySlug.steam_id ?? 'null'} vs incomingSteam=${data.steamId ?? 'null'} slug=${data.slug}`,
+          );
+        } else {
+          return bySlug;
+        }
+      }
     }
 
     // 4. og_slug로 조회 (Steam/RAWG 공통)
@@ -100,7 +108,15 @@ export class GamePersistenceService {
       const byOgSlug = await manager.findOne(Game, {
         where: { og_slug: ILike(data.ogSlug) },
       });
-      if (byOgSlug) return byOgSlug;
+      if (byOgSlug) {
+        if (this.isSteamIdConflict(byOgSlug, data)) {
+          this.logger.warn(
+            `⚠️ [GamePersistence] og_slug 충돌 감지 – existingSteam=${byOgSlug.steam_id ?? 'null'} vs incomingSteam=${data.steamId ?? 'null'} ogSlug=${data.ogSlug}`,
+          );
+        } else {
+          return byOgSlug;
+        }
+      }
     }
 
     // 5. 멀티 플랫폼 매칭 (Steam/RAWG 모두 적용)
@@ -148,9 +164,14 @@ export class GamePersistenceService {
 
     if (whereClauses.length > 0) {
       const existing = await manager.findOne(Game, { where: whereClauses });
-      if (existing) {
+      if (existing && !this.isSteamIdConflict(existing, data)) {
         await this.updateGame(existing, data, manager);
         return existing;
+      }
+      if (existing && this.isSteamIdConflict(existing, data)) {
+        this.logger.warn(
+          `⚠️ [GamePersistence] createGame 충돌 – existingSteam=${existing.steam_id ?? 'null'} vs incomingSteam=${data.steamId ?? 'null'} name="${existing.name}"`,
+        );
       }
     }
 
@@ -215,6 +236,12 @@ export class GamePersistenceService {
     data: ProcessedGameData,
     manager: EntityManager,
   ): Promise<void> {
+    if (this.isSteamIdConflict(existing, data)) {
+      this.logger.warn(
+        `⚠️ [GamePersistence] updateGame 충돌 – existingSteam=${existing.steam_id ?? 'null'} vs incomingSteam=${data.steamId ?? 'null'} name="${existing.name}"`,
+      );
+      return;
+    }
     const isSteamGame = existing.steam_id !== null && existing.steam_id > 0;
     const isRawgDataSource = data.rawgId !== null && !data.steamId;
     const resolved = await this.slugPolicy.resolve(manager, {
@@ -402,6 +429,12 @@ export class GamePersistenceService {
       return 'og_slug';
     }
     return 'unknown';
+  }
+
+  private isSteamIdConflict(existing: Game, data: ProcessedGameData): boolean {
+    if (!data.steamId) return false;
+    if (!existing.steam_id) return false;
+    return Number(existing.steam_id) !== Number(data.steamId);
   }
 
   private async syncReleases(

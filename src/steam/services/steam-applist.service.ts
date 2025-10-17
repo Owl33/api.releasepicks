@@ -45,10 +45,18 @@ export class SteamAppListService {
       const validApps = apps.filter((app) => this.isValidGameApp(app));
       this.logger.log(`✅ 유효한 게임 필터링: ${validApps.length}개`);
 
-      return validApps.map((app) => ({
-        appid: app.appid,
-        name: app.name?.trim() || '',
-      } satisfies SteamApp));
+      return validApps
+        .map((app) => {
+          const appid = Number(app.appid);
+          if (!Number.isFinite(appid) || appid <= 0) {
+            return null;
+          }
+          return {
+            appid,
+            name: app.name?.trim() || '',
+          } satisfies SteamApp | null;
+        })
+        .filter((app): app is SteamApp => app !== null);
     } catch (error) {
       this.logger.error(`❌ Steam AppList 수집 실패: ${error.message}`);
       throw new Error(`Steam AppList API 호출 실패: ${error.message}`);
@@ -67,28 +75,25 @@ export class SteamAppListService {
       return false;
     }
 
-    // 이름 기반 필터링 (DLC, 도구, 데모 등 제외)
     const name = app.name.toLowerCase();
 
-    // 제외할 키워드
-    const excludeKeywords = [
-      'soundtrack',
-      'ost',
-      'original sound track',
-      'wallpaper',
-      'screensaver',
-      'sdk',
-      'development kit',
-      'server',
-      'benchmark',
-      'test',
-      'sample',
-      'trailer',
-      'video',
+    const excludePatterns: RegExp[] = [
+      /\bsoundtrack\b/,
+      /\boriginal soundtrack\b/,
+      /\boriginal sound track\b/,
+      /\bwallpaper\b/,
+      /\bscreensaver\b/,
+      /\bsdk\b/,
+      /\bdevelopment kit\b/,
+      /\bserver\b/,
+      /\bbenchmark\b/,
+      /\btest\b/,
+      /\bsample\b/,
+      /\btrailer\b/,
+      /\bvideo\b/,
     ];
 
-    // 제외 키워드 포함시 false
-    if (excludeKeywords.some((keyword) => name.includes(keyword))) {
+    if (excludePatterns.some((pattern) => pattern.test(name))) {
       return false;
     }
 

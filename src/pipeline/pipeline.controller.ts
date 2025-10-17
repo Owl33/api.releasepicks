@@ -60,79 +60,39 @@ export class PipelineController {
     private readonly steamExclusionService: SteamExclusionService,
   ) {}
 
-  /**
-   * 통합 자동 스케줄링 (매주 화요일 02:00)
-   * Steam + RAWG 데이터를 병렬로 수집하고 통합 저장
-   */
-  @Cron('0 2 * * 2', {
-    name: 'automatic-pipeline',
-    timeZone: 'Asia/Seoul',
-  })
-  async executeAutomaticPipeline(): Promise<void> {
-    const startTime = Date.now();
+  // /**
+  //  * Steam 일일 유지보수 (매일 02:00)
+  //  * 1) 출시 윈도우 갱신 → 2) 신규 탐지
+  //  */
+  // @Cron('0 2 * * *', {
+  //   name: 'steam-daily-maintenance',
+  //   timeZone: 'Asia/Seoul',
+  // })
+  // async executeAutomaticPipeline(): Promise<void> {
+  //   this.logger.log('🚀 [자동 파이프라인] Steam 일일 유지보수 시작');
+  //   try {
+  //     this.logger.log('   ➤ 1/2 출시 윈도우 갱신 (limit=1000)');
+  //     await this.executeSteamRefresh({ limit: 1000, dryRun: false });
+  //     this.logger.log('   ✅ 출시 윈도우 갱신 완료');
 
-    this.logger.log('🚀 [자동 파이프라인] 시작');
-    this.logger.log('   - mode: operational');
-    this.logger.log('   - Steam limit: 5000 (priority 전략)');
-    this.logger.log('   - RAWG: 18개월 월별 수집');
+  //     this.logger.log('   ➤ 2/2 Steam 신규 탐지 (limit=1000)');
+  //     await this.executeSteamNew({
+  //       limit: 1000,
+  //       mode: 'operational',
+  //       dryRun: false,
+  //     });
+  //     this.logger.log('   ✅ Steam 신규 탐지 완료');
 
-    const pipelineRun = await this.createPipelineRun('automatic', 'full');
-
-    try {
-      // Steam + RAWG 병렬 수집
-      this.logger.log('📥 [자동 파이프라인] Steam + RAWG 데이터 수집 시작');
-      const [steamData, rawgData] = await Promise.all([
-        this.steamDataPipeline.collectProcessedData({
-          mode: 'operational',
-          limit: 5000,
-          strategy: 'priority',
-        }),
-        this.rawgDataPipeline.collectProcessedData(),
-      ]);
-
-      this.logger.log(
-        `✨ [자동 파이프라인] Steam: ${steamData.length}/5000개, RAWG: ${rawgData.length}개 수집 완료`,
-      );
-
-      // 통합 저장 (POST + PATCH 자동 판별)
-      this.logger.log(
-        `💾 [자동 파이프라인] ${steamData.length + rawgData.length}개 게임 저장 시작`,
-      );
-      const allData = [...steamData, ...rawgData];
-      const saveResult = await this.persistence.saveProcessedGames(
-        allData,
-        pipelineRun.id,
-      );
-
-      const duration = Date.now() - startTime;
-      const durationSeconds = (duration / 1000).toFixed(2);
-
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'completed',
-        undefined,
-        allData.length,
-        saveResult.created + saveResult.updated,
-        saveResult.failed,
-      );
-      this.logger.log('✅ [자동 파이프라인] 완료');
-      this.logger.log(`   - 총 처리 시간: ${durationSeconds}초`);
-      this.logger.log(
-        `   - 성공: ${saveResult.created + saveResult.updated}개`,
-      );
-      this.logger.log(`   - 실패: ${saveResult.failed}개`);
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      const durationSeconds = (duration / 1000).toFixed(2);
-      const err = this.normalizeError(error);
-
-      this.logger.error(`❌ [자동 파이프라인] 실패 (${durationSeconds}초)`);
-      this.logger.error(`   - 오류: ${err.message}`, err.stack);
-
-      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
-      throw err;
-    }
-  }
+  //     this.logger.log('✅ [자동 파이프라인] 일일 유지보수 완료');
+  //   } catch (error) {
+  //     const err = this.normalizeError(error);
+  //     this.logger.error(
+  //       `❌ [자동 파이프라인] 일일 유지보수 실패 - ${err.message}`,
+  //       err.stack,
+  //     );
+  //     throw err;
+  //   }
+  // }
 
   /**
    * 수동 실행 API (관리자 전용)

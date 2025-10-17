@@ -44,7 +44,12 @@ interface ReleaseAggregationSummary {
   comingSoon: boolean;
   currentPrice: number | null; // ✅ 추가: 페이지 내 대표 가격(스팀 우선)
   isFree: boolean; // ✅ 추가: 페이지 내 무료 여부(스팀 우선)
+  hasPcPriority: boolean;
 }
+
+type AggregateWorkingState = CalendarReleaseDto & {
+  hasPcPriority: boolean;
+};
 
 /**
  * 프론트엔드에서 사용하는 게임 조회 로직을 담당한다.
@@ -235,6 +240,9 @@ export class GamesService {
     if (!game) {
       throw new NotFoundException('요청한 게임을 찾을 수 없습니다.');
     }
+    if (game.details && game.details.sexual) {
+      throw new NotFoundException('요청한 게임을 찾을 수 없습니다.');
+    }
     const { developers, publishers } = await this.loadCompaniesByRole(game.id);
 
     const releases: ReleaseInfo[] = (game.releases ?? []).map((release) => ({
@@ -345,7 +353,7 @@ export class GamesService {
     const upcomingDetailsRows = upcomingIds.length
       ? await this.gameRepository
           .createQueryBuilder('game')
-          .innerJoin('game.details', 'detail') // 디테일 있는 게임만!
+          .innerJoin('game.details', 'detail', 'detail.sexual = false') // 디테일 있는 게임만!
           .select([
             'game.id AS game_id',
             'game.name AS game_name',
@@ -402,7 +410,7 @@ export class GamesService {
      */
     const popularRows = await this.gameRepository
       .createQueryBuilder('game')
-      .innerJoin('game.details', 'detail') // 디테일 있는 게임만!
+      .innerJoin('game.details', 'detail', 'detail.sexual = false') // 디테일 있는 게임만!
       .select([
         'game.id AS game_id',
         'game.name AS game_name',
@@ -495,6 +503,7 @@ export class GamesService {
         comingSoon: false,
         currentPrice: null, // ✅ 초기값
         isFree: false, // ✅ 초기값
+        hasPcPriority: false,
       };
 
       this.pushUnique(summary.releaseIds, Number(row.release_id));
@@ -506,26 +515,24 @@ export class GamesService {
           ? Number(row.release_current_price_cents)
           : null;
       const currentPrice = priceCents != null ? priceCents / 100 : null; // ✅ cents → 원화/달러 등
-      const isFree =
-        row.release_is_free === true
-          ? true
-          : row.release_is_free === false
-            ? false
-            : null; // ✅ 명시적 null 허용
-      // 가격
-      if (store === 'steam') {
-        // 스팀 값이 있으면 무조건 갱신
-        if (currentPrice !== null) summary.currentPrice = currentPrice;
-        // 무료 여부도 스팀 값이 있으면 우선 반영
-        if (isFree !== null) summary.isFree = isFree;
-      } else {
-        // 스팀이 아직 못 채웠다면, 첫 유효값을 채움
-        if (summary.currentPrice === null && currentPrice !== null) {
+      const isPcPlatform = platform === Platform.PC;
+      const freeFlag = row.release_is_free === true;
+
+      if (isPcPlatform) {
+        summary.hasPcPriority = true;
+        summary.currentPrice = currentPrice;
+        if (row.release_is_free !== null && row.release_is_free !== undefined) {
+          summary.isFree = freeFlag;
+        }
+      } else if (!summary.hasPcPriority) {
+        if (currentPrice !== null) {
           summary.currentPrice = currentPrice;
         }
-        if (summary.isFree === null && isFree !== null) {
-          summary.isFree = isFree;
+        if (freeFlag) {
+          summary.isFree = true;
         }
+      } else if (summary.hasPcPriority && freeFlag) {
+        summary.isFree = true;
       }
 
       map.set(gameId, summary);
@@ -864,6 +871,7 @@ export class GamesService {
       .createQueryBuilder('release')
       .innerJoin('release.game', 'game')
       .leftJoin('game.details', 'detail');
+    base.andWhere('(detail.id IS NULL OR detail.sexual = false)');
 
     // ✅ 타입 안전성 강화: GameTypeFilter 사용
     const gameTypeFilter: GameTypeFilter = filters.gameType ?? 'game';
@@ -1114,6 +1122,7 @@ export class GamesService {
         'detail.header_image as header_image',
       ])
       .where('game.id IN (:...ids)', { ids: pageGameIds })
+      .andWhere('(detail.id IS NULL OR detail.sexual = false)')
       .limit(maxReleases) // ✅ 대량 데이터 방어: 최대 릴리스 개수 제한
       .getRawMany();
 
@@ -1121,7 +1130,7 @@ export class GamesService {
     // 4) 집계 (기존 로직 유지)
     // ---------------------------------------------------------
     const gameIdsSet = new Set<number>();
-    const aggregateMap = new Map<string, CalendarReleaseDto>();
+    const aggregateMap = new Map<string, AggregateWorkingState>();
 
     for (const row of rows) {
       const gameId = Number(row.game_id);
@@ -1150,7 +1159,8 @@ export class GamesService {
         ? Number(row.release_current_price_cents)
         : null;
       const currentPrice = priceCents ? priceCents / 100 : null;
-      const isFree = row.release_is_free;
+      const isFreeFlag = row.release_is_free === true;
+      const isPcPlatform = platform === Platform.PC;
       const existing = aggregateMap.get(aggregateKey);
       if (existing) {
         this.pushUnique(existing.releaseIds, Number(row.release_id));
@@ -1183,20 +1193,28 @@ export class GamesService {
           (existing as any).releaseDateRaw = releaseDateRaw;
         }
 
-        // 가격 업데이트(스팀 우선)
-        if (existing.currentPrice === null && currentPrice !== null) {
+        if (isFreeFlag) {
+          existing.isFree = true;
+        }
+
+        if (isPcPlatform) {
+          existing.hasPcPriority = true;
           existing.currentPrice = currentPrice;
-        } else if (
-          currentPrice !== null &&
-          store === 'steam' &&
-          existing.currentPrice !== null
-        ) {
-          existing.currentPrice = currentPrice;
+        } else if (!existing.hasPcPriority) {
+          if (existing.currentPrice === null && currentPrice !== null) {
+            existing.currentPrice = currentPrice;
+          } else if (
+            currentPrice !== null &&
+            store === Store.STEAM &&
+            existing.currentPrice !== null
+          ) {
+            existing.currentPrice = currentPrice;
+          }
         }
         continue;
       }
 
-      const aggregate: CalendarReleaseDto = {
+      const aggregate: AggregateWorkingState = {
         releaseIds: [Number(row.release_id)],
         gameId,
         name: row.game_name,
@@ -1215,9 +1233,14 @@ export class GamesService {
         developers: [],
         publishers: [],
         currentPrice,
-        isFree,
+        isFree: isFreeFlag,
         gameType: (row.game_type as GameType) ?? GameType.GAME,
+        hasPcPriority: isPcPlatform,
       };
+
+      if (!aggregate.hasPcPriority && store === Store.STEAM && currentPrice !== null) {
+        aggregate.currentPrice = currentPrice;
+      }
 
       aggregateMap.set(aggregateKey, aggregate);
     }
@@ -1243,11 +1266,12 @@ export class GamesService {
       gameIdOrderMap.set(id, index);
     });
 
-    const data = Array.from(aggregateMap.values()).sort((a, b) => {
+    const orderedAggregates = Array.from(aggregateMap.values()).sort((a, b) => {
       const orderA = gameIdOrderMap.get(a.gameId) ?? Number.MAX_SAFE_INTEGER;
       const orderB = gameIdOrderMap.get(b.gameId) ?? Number.MAX_SAFE_INTEGER;
       return orderA - orderB;
     });
+    const data = orderedAggregates.map(({ hasPcPriority, ...rest }) => rest);
 
     // ---------------------------------------------------------
     // 7) 페이지네이션 메타 (고유 게임 수 기준)

@@ -140,17 +140,52 @@ export class SteamDataPipelineService {
         return null;
       }
 
-      const slugCandidate = normalizeGameName(steamDetails.name, app.appid);
-      const ogSlugCandidate = normalizeGameName(app.name, app.appid);
+      const fallbackName = `app-${app.appid}`;
+      const appListName = await this.lookupAppNameFromCache(app.appid);
+      let englishName: string | undefined;
+      if (!appListName) {
+        const englishDetails =
+          await this.steamAppDetailsService.fetchAppDetailsWithLanguage(
+            app.appid,
+            { cc: 'us', lang: 'english' },
+          );
+        englishName = englishDetails?.name?.trim();
+      }
+
+      const originalAppName =
+        (typeof appListName === 'string' && appListName.trim().length > 0
+          ? appListName
+          : null) ??
+        (typeof englishName === 'string' && englishName.length > 0
+          ? englishName
+          : null) ??
+        (typeof app.name === 'string' && app.name.trim().length > 0
+          ? app.name
+          : null) ??
+        steamDetails.name ??
+        fallbackName;
+      const canonicalName =
+        (typeof steamDetails.name === 'string' &&
+        steamDetails.name.trim().length > 0
+          ? steamDetails.name
+          : null) ?? originalAppName;
+
+      this.logger.debug(
+        `${prefix}📝 이름 확인 canonical="${canonicalName}" original="${originalAppName}" appList="${appListName ?? 'n/a'}"`,
+      );
+
+      const slugCandidate = normalizeGameName(canonicalName, app.appid);
+      const ogSlugCandidate = normalizeGameName(originalAppName, app.appid);
       timers.followersStart = Date.now();
       await this.globalLimiter.take('steam:followers', {
         minDelayMs: 120,
         jitterMs: 80,
       });
-      const followers = await this.steamCommunityService.scrapeFollowers(
-        app.appid,
-        app.name,
-      );
+      const followers =
+        (await this.steamCommunityService.scrapeFollowers(
+          app.appid,
+          originalAppName,
+        )) ?? 0;
       timers.followersDuration = Date.now() - timers.followersStart;
       this.logger.debug(
         `${prefix}⏱️ Followers ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
@@ -346,9 +381,9 @@ export class SteamDataPipelineService {
       }
 
       const processedGame: ProcessedGameData = {
-        name: steamDetails.name || app.name,
+        name: canonicalName,
         slug: slugCandidate ?? undefined,
-        ogName: app.name,
+        ogName: originalAppName,
         ogSlug: ogSlugCandidate ?? undefined,
         steamId: app.appid,
         rawgId: undefined,
@@ -511,8 +546,14 @@ export class SteamDataPipelineService {
     const apps = await this.getOrCacheAppList();
     // 선형 탐색 (한 번만 수행, 비용 미미)
     for (let i = 0; i < apps.length; i++) {
-      if (apps[i].appid === steamId) return apps[i].name;
+      const candidateId = Number(apps[i].appid);
+      if (Number.isFinite(candidateId) && candidateId === steamId) {
+        return apps[i].name;
+      }
     }
+    this.logger.debug(
+      `[AppListCache] steamId=${steamId} 이름 미발견 (cache size=${apps.length})`,
+    );
     return undefined;
   }
 

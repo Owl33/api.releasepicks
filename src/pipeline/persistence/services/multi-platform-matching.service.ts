@@ -148,6 +148,19 @@ export class MultiPlatformMatchingService {
       console.log(`      - 출시일: ${best.candidate.release_date_date}`);
     }
 
+    const hasSteamConflict =
+      data.steamId &&
+      best.candidate.steam_id &&
+      Number(best.candidate.steam_id) !== Number(data.steamId);
+
+    if (hasSteamConflict) {
+      this.logger.warn(
+        `⚠️ [멀티 매칭] Steam ID 충돌 – existing=${best.candidate.steam_id} incoming=${data.steamId} slug=${data.slug ?? data.ogSlug ?? data.name}`,
+      );
+      outcome = 'rejected';
+      reason = 'STEAM_ID_CONFLICT';
+    }
+
     const logPath = await this.recordLog(
       outcome === 'matched'
         ? 'matched'
@@ -170,17 +183,6 @@ export class MultiPlatformMatchingService {
       logPath,
       reason,
     });
-
-    if (outcome === 'matched') {
-      return {
-        outcome,
-        game: best.candidate,
-        score: best.score,
-        signals: best.signalCount,
-        logPath,
-        reason,
-      };
-    }
 
     return {
       outcome,

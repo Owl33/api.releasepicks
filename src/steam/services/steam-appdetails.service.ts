@@ -121,6 +121,20 @@ export class SteamAppDetailsService {
     }
   }
 
+  async fetchAppDetailsWithLanguage(
+    appId: number,
+    opts: { cc: string; lang: string },
+  ): Promise<SteamAppDetails | null> {
+    try {
+      return await this.requestAppDetails(appId, opts);
+    } catch (error: any) {
+      this.logger.warn(
+        `⚠️ Steam AppDetails 언어별 요청 실패 - AppID ${appId} (${opts.cc}/${opts.lang}): ${error?.message ?? error}`,
+      );
+      return null;
+    }
+  }
+
   private async requestAppDetails(
     appId: number,
     opts: { cc: string; lang: string },

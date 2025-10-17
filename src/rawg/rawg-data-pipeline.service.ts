@@ -538,9 +538,9 @@ export class RawgDataPipelineService {
                 `✨ [YouTube] 트레일러 선택 - ${raw.name}: ${youtubeVideoUrl} (confidence=${picked.confidence}, score=${picked.score.toFixed(3)}, views=${picked.viewCount ?? 'n/a'})`,
               );
             } else {
-              this.logger.debug(
-                `⏭️ [YouTube] 길이 조건 불만족(${youtubeDuration ?? 'unknown'}s) → 스킵: ${picked.url}`,
-              );
+              // this.logger.debug(
+              //   `⏭️ [YouTube] 길이 조건 불만족(${youtubeDuration ?? 'unknown'}s) → 스킵: ${picked.url}`,
+              // );
             }
           }
         } catch (youtubeError) {
