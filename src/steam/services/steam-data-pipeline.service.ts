@@ -46,6 +46,7 @@ import {
   SteamExclusionReason,
   SteamExclusionService,
 } from './exclusion/steam-exclusion.service';
+import { shouldExcludeSteamAppName } from '../utils/steam-app-filters.util';
 
 /**
  * Steam 데이터 파이프라인 서비스
@@ -173,6 +174,17 @@ export class SteamDataPipelineService {
       this.logger.debug(
         `${prefix}📝 이름 확인 canonical="${canonicalName}" original="${originalAppName}" appList="${appListName ?? 'n/a'}"`,
       );
+
+      if (
+        shouldExcludeSteamAppName(canonicalName) ||
+        shouldExcludeSteamAppName(originalAppName)
+      ) {
+        this.logger.log(
+          `${prefix}🚫 [Steam Pipeline] 제외 패턴 감지 → 스킵: ${canonicalName ?? originalAppName} (AppID: ${app.appid})`,
+        );
+        await this.markExclusion(app.appid, 'MANUAL', prefix);
+        return null;
+      }
 
       const slugCandidate = normalizeGameName(canonicalName, app.appid);
       const ogSlugCandidate = normalizeGameName(originalAppName, app.appid);

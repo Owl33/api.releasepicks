@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { SteamApp } from '../types';
+import { shouldExcludeSteamAppName } from '../utils/steam-app-filters.util';
 
 /**
  * Steam AppList 서비스
@@ -77,24 +78,7 @@ export class SteamAppListService {
 
     const name = app.name.toLowerCase();
 
-    const excludePatterns: RegExp[] = [
-      /\bsoundtrack\b/,
-      /\boriginal soundtrack\b/,
-      /\boriginal sound track\b/,
-      /\bwallpaper\b/,
-      /\bscreensaver\b/,
-      /\bsdk\b/,
-      /\bdevelopment kit\b/,
-      /\bserver\b/,
-      /\bbenchmark\b/,
-      /\btest\b/,
-      /\bsample\b/,
-      /\btrailer\b/,
-      /\bvideo\b/,
-      /\bvplaytest\b/,
-    ];
-
-    if (excludePatterns.some((pattern) => pattern.test(name))) {
+    if (shouldExcludeSteamAppName(name)) {
       return false;
     }
 

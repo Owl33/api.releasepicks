@@ -298,6 +298,7 @@ export class SteamAppDetailsService {
       'adult only',
       'nsfw',
       'r18',
+      'explicit sexual content',
     ]); // +3
     const STRONG_TAGS = new Set(['sexual content', 'nudity']); // 둘 다 있어도 총 +2
 
@@ -324,9 +325,14 @@ export class SteamAppDetailsService {
       /\badult\s+only\b/,
       /\br18\b/,
       /성인\s*전용/,
+      /성인\s*용/,
       /(r18|성인)\s*패치/,
       /무수정|무삭제/,
       /야애니/,
+      /포르노/,
+      /섹스\s*(?:시뮬레이터|게임|모드)/,
+      /노골적(?:인)?\s*성적\s*(?:콘텐츠|컨텐츠)/,
+      /에로\s*게임/,
     ];
     if (adultOnlySignals.some((rx) => rx.test(textBody))) return true;
 
@@ -337,9 +343,13 @@ export class SteamAppDetailsService {
       /\bnudes?\b/,
       /\bsex\s*(?:scenes?|acts?)\b/,
       /\blewd\b/,
-      /성(?:적)?\s*콘텐츠/,
+      /성(?:적)?\s*(?:콘텐츠|컨텐츠)/,
       /노출|누드/,
       /에로|야함|에치|에찌/,
+      /섹스/,
+      /포르노/,
+      /노골적(?:인)?\s*성적/,
+      /성인\s*용/,
     ];
     const WEAK_BODY: RegExp[] = [
       /\bsexy\b/,
@@ -356,8 +366,8 @@ export class SteamAppDetailsService {
     // ── 4) 근접 강화: 성적 키워드와 cg/패치/무수정/r18 등이 80자 내 동시 등장 시 +1 (※ 본문만)
     const proxPairs: [RegExp, RegExp][] = [
       [
-        /(sex|sexual|성적|에로|야함|hentai|lewd|노출|누드)/,
-        /(gallery|cg|패치|uncensored|무수정|r18)/,
+        /(sex|sexual|성적|에로|야함|hentai|lewd|노출|누드|섹스|포르노)/,
+        /(gallery|cg|패치|uncensored|무수정|r18|콘텐츠|컨텐츠)/,
       ],
     ];
     if (this.hasProximity(textBody, proxPairs, 80)) score += 1;
@@ -397,7 +407,9 @@ export class SteamAppDetailsService {
     // ── 10) notes + 본문 결합 트리거 (네가 명시한 규칙)
     // notes에 sexual/nudity 계열이 있고, "본문 강키워드 점수 ≥ 2"면 true
     const notesHasSexual =
-      /(sexual\s*content|nudity|노출|누드|성(?:적)?\s*콘텐츠)/.test(textNotes);
+      /(sexual\s*content|nudity|노출|누드|성(?:적)?\s*(?:콘텐츠|컨텐츠)|포르노|섹스)/.test(
+        textNotes,
+      );
     // strongHitsFromBody>0 일 때 +2를 이미 부여했으므로, 여기선 "강키워드가 1개 이상"이면 true로 봄
     if (notesHasSexual && strongHitsFromBody >= 1) return true;
 
