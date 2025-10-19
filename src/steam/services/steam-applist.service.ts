@@ -91,6 +91,7 @@ export class SteamAppListService {
       /\bsample\b/,
       /\btrailer\b/,
       /\bvideo\b/,
+      /\bvplaytest\b/,
     ];
 
     if (excludePatterns.some((pattern) => pattern.test(name))) {
