@@ -19,7 +19,8 @@ export class IntegratedPersistenceService {
   async saveProcessedGames(
     payload: ProcessedGameData[],
     pipelineRunId: number,
+    options?: { allowCreate?: boolean },
   ): Promise<PersistenceSaveResult> {
-    return this.orchestrator.saveBatch(payload, pipelineRunId);
+    return this.orchestrator.saveBatch(payload, pipelineRunId, options);
   }
 }

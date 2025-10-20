@@ -26,6 +26,8 @@ export interface YouTubeSearchItem {
 export interface YouTubeSearchFilters {
   /** 출시 연도(있으면 쿼리 프라이어리티 높임) */
   releaseYear?: number;
+  /** 실제 출시일(ISO 문자열 또는 Date) */
+  releaseDate?: string | Date;
   /** 추가 키워드 (앞쪽 로우에 우선 배치) */
   keywords?: string[];
 }

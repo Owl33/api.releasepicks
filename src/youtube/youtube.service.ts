@@ -139,6 +139,18 @@ export class YouTubeService {
     this.minDurationSeconds,
     Number(process.env.YT_MAX_DURATION_SEC ?? 240),
   );
+  private readonly scoreFreshBonusThresholdDays = Number(
+    process.env.YT_FRESH_WINDOW_DAYS ?? 365,
+  );
+  private readonly scoreFreshBonus = Number(
+    process.env.YT_FRESH_BONUS ?? 0.12,
+  );
+  private readonly scoreOldPenaltyThresholdDays = Number(
+    process.env.YT_OUTDATED_THRESHOLD_DAYS ?? 730,
+  );
+  private readonly scoreOldPenalty = Number(
+    process.env.YT_OUTDATED_PENALTY ?? 0.05,
+  );
 
   /** 레이트 리미터 */
   private readonly limiter = new TokenBucket(this.burst, this.rps);
@@ -295,9 +307,9 @@ export class YouTubeService {
             }
 
             const spent = Date.now() - qStart;
-            this.logger.debug(
-              `  ✅ 완료: ${items.length}개 결과 (소요: ${spent}ms)`,
-            );
+            // this.logger.debug(
+            //   `  ✅ 완료: ${items.length}개 결과 (소요: ${spent}ms)`,
+            // );
             this.noteSuccess();
           } catch (err: unknown) {
             if (globalAbort.signal.aborted) return; // 조용히 중단
@@ -337,8 +349,15 @@ export class YouTubeService {
 
   private cacheKey(slug: string, filters: YouTubeSearchFilters): string {
     // filters 순서/공백에 영향 안 받도록 정규화
+    const releaseDate =
+      typeof filters.releaseDate === 'string'
+        ? filters.releaseDate
+        : filters.releaseDate instanceof Date
+          ? filters.releaseDate.toISOString()
+          : undefined;
     const norm: YouTubeSearchFilters = {
       releaseYear: filters.releaseYear,
+      releaseDate,
       keywords: (filters.keywords ?? []).filter(Boolean),
     };
     return `${this.normalizeSlug(slug).toLowerCase()}::${JSON.stringify(norm)}`;
@@ -598,9 +617,9 @@ export class YouTubeService {
     for (const it of items) {
       const secs = it.durationSeconds ?? this.parseDurationSeconds(it.durationText);
       if (!this.isDurationAcceptable(secs)) {
-        this.logger.debug(
-          `⏭️ [YouTube] 길이 조건 불만족(${secs ?? 'unknown'}s) → 스킵: ${it.url ?? it.title ?? ''}`,
-        );
+        // this.logger.debug(
+        //   `⏭️ [YouTube] 길이 조건 불만족(${secs ?? 'unknown'}s) → 스킵: ${it.url ?? it.title ?? ''}`,
+        // );
         continue;
       }
       const s = this.score(it, slug, filters);
@@ -618,6 +637,9 @@ export class YouTubeService {
     slug: string,
     filters: YouTubeSearchFilters,
   ): number {
+    const releaseDate = this.normalizeReleaseDate(filters.releaseDate);
+    const publishedDate = this.parsePublishedAt(item.publishedAt);
+
     const name = this.normalizeSlug(slug).toLowerCase();
     const title = (item.title ?? '').toLowerCase();
     const desc = (item.description ?? '').toLowerCase();
@@ -660,7 +682,19 @@ export class YouTubeService {
       s += viewScore;
     }
 
+    if (releaseDate && publishedDate) {
+      const diffDays = Math.abs(
+        (publishedDate.getTime() - releaseDate.getTime()) / 86400000,
+      );
+      if (diffDays <= this.scoreFreshBonusThresholdDays) {
+        s += this.scoreFreshBonus;
+      } else if (diffDays >= this.scoreOldPenaltyThresholdDays) {
+        s -= this.scoreOldPenalty;
+      }
+    }
+
     if (s > 1) s = 1;
+    if (s < 0) s = 0;
     return s;
   }
 
@@ -734,6 +768,70 @@ export class YouTubeService {
     b?.addEventListener('abort', onAbort);
     if (a?.aborted || b?.aborted) controller.abort();
     return controller.signal;
+  }
+
+  private normalizeReleaseDate(
+    value?: string | Date,
+  ): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private parsePublishedAt(text?: string): Date | null {
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    const cleaned = trimmed
+      .replace(/^streamed live on\s+/i, '')
+      .replace(/^premiered\s+/i, '')
+      .replace(/^released on\s+/i, '')
+      .replace(/^published on\s+/i, '');
+
+    const absolute = Date.parse(cleaned);
+    if (!Number.isNaN(absolute)) {
+      return new Date(absolute);
+    }
+
+    const relMatch = cleaned.match(
+      /^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$/i,
+    );
+    if (relMatch) {
+      const amount = Number(relMatch[1]);
+      const unit = relMatch[2].toLowerCase();
+      if (Number.isFinite(amount)) {
+        const now = Date.now();
+        const unitMs: Record<string, number> = {
+          second: 1000,
+          minute: 60 * 1000,
+          hour: 60 * 60 * 1000,
+          day: 24 * 60 * 60 * 1000,
+          week: 7 * 24 * 60 * 60 * 1000,
+          month: 30 * 24 * 60 * 60 * 1000,
+          year: 365 * 24 * 60 * 60 * 1000,
+        };
+        const delta = unitMs[unit] ?? 0;
+        if (delta > 0) {
+          return new Date(now - amount * delta);
+        }
+      }
+    }
+
+    const relativeAlt = cleaned.match(/^(\d+)\s+(?:yrs?|years?)\s+ago$/i);
+    if (relativeAlt) {
+      const years = Number(relativeAlt[1]);
+      if (Number.isFinite(years)) {
+        const now = new Date();
+        now.setFullYear(now.getFullYear() - years);
+        return now;
+      }
+    }
+
+    return null;
   }
 
   private parseDurationSeconds(text?: string): number | null {

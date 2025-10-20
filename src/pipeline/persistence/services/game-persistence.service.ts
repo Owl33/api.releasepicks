@@ -44,13 +44,21 @@ export class GamePersistenceService {
   async upsertProcessedGame(
     data: ProcessedGameData,
     manager: EntityManager,
+    options?: { allowCreate?: boolean },
   ): Promise<GamePersistenceResult> {
+    const allowCreate = options?.allowCreate !== false;
     const existing = await this.findExistingGame(data, manager);
 
     if (existing) {
       const matchedBy = this.inferMatchKey(data, existing);
       await this.updateGame(existing, data, manager);
       return { operation: 'updated', gameId: existing.id, matchedBy };
+    }
+
+    if (!allowCreate) {
+      throw new Error(
+        `CREATE_NOT_ALLOWED: existing game not found (steamId=${data.steamId ?? 'null'}, rawgId=${data.rawgId ?? 'null'}, slug=${data.slug ?? data.name})`,
+      );
     }
 
     const created = await this.createGame(data, manager);

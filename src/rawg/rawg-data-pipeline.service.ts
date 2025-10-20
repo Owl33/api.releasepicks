@@ -522,6 +522,7 @@ export class RawgDataPipelineService {
             raw.name,
             {
               releaseYear,
+              releaseDate,
               keywords: youtubeKeywords,
             },
           );

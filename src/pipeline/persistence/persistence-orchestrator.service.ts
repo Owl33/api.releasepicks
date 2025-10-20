@@ -40,6 +40,7 @@ export class PersistenceOrchestratorService {
   async saveBatch(
     data: ProcessedGameData[],
     pipelineRunId: number,
+    options?: { allowCreate?: boolean },
   ): Promise<PersistenceSaveResult> {
     const concurrency = Math.max(
       1,
@@ -136,6 +137,7 @@ export class PersistenceOrchestratorService {
             const result = await this.gamePersistence.upsertProcessedGame(
               item.data,
               manager,
+              { allowCreate: options?.allowCreate ?? true },
             );
             operation = result.operation;
             targetGameId = result.gameId;
@@ -158,6 +160,11 @@ export class PersistenceOrchestratorService {
           );
 
           if (operation === 'created') {
+            if (options?.allowCreate === false) {
+              throw new Error(
+                `CREATE_NOT_ALLOWED: attempted to create new game (steamId=${item.data.steamId ?? 'null'}, slug=${item.data.slug ?? item.data.name})`,
+              );
+            }
             createdCount++;
             this.logger.log(
               `➕ [통합 저장] 생성 gameId=${targetGameId ?? '-'} (${identity}) name="${item.data.name}" ${durationMs}ms`,
@@ -344,7 +351,12 @@ export class PersistenceOrchestratorService {
       return { type: 'unknown', code };
     }
 
-    const message = this.normalizeError(error).message;
+    const normalized = this.normalizeError(error);
+    const message = normalized.message;
+
+    if (/CREATE_NOT_ALLOWED/i.test(message)) {
+      return { type: 'permanent', code: 'CREATE_NOT_ALLOWED' };
+    }
 
     if (/timeout|deadlock|connection/i.test(message)) {
       return { type: 'transient' };

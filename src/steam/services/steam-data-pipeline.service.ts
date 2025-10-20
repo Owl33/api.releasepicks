@@ -72,6 +72,9 @@ export class SteamDataPipelineService {
   private readonly youtubeMinViewCount = Number(
     process.env.STEAM_YT_MIN_VIEWCOUNT ?? '5000',
   );
+  private readonly youtubeScoreFallbackThreshold = Number(
+    process.env.STEAM_YT_MIN_SCORE ?? '0.5',
+  );
 
   // AppList 캐시 (Phase 3 선행 구현)
   private appListCache: {
@@ -280,6 +283,7 @@ export class SteamDataPipelineService {
             steamDetails.name || app.name,
             {
               releaseYear,
+              releaseDate: releaseDate ?? undefined,
               keywords: youtubeKeywords,
             },
           );
@@ -321,29 +325,43 @@ export class SteamDataPipelineService {
             confidenceScore >= this.youtubeHighConfidenceScore;
           const strongView =
             (youtubePickedViewCount ?? 0) >= this.youtubeMinViewCount;
+          const belowScoreThreshold =
+            steamTrailerUrl != null &&
+            confidenceScore < this.youtubeScoreFallbackThreshold;
 
-          const shouldPreferYoutube =
-            popularityScore >= this.youtubeFallbackPopularityThreshold ||
-            !steamTrailerUrl ||
-            highConfidence ||
-            strongView;
-
-          if (shouldPreferYoutube) {
-            youtubeVideoUrl = youtubePickedUrl;
-            if (!steamTrailerUrl) {
+          if (belowScoreThreshold) {
+            if (steamTrailerUrl) {
               this.logger.debug(
-                `${prefix}YouTube 선택 (Steam 트레일러 없음, confidence=${confidenceLevel}, views=${youtubePickedViewCount ?? 'n/a'})`,
+                `${prefix}YouTube 점수 ${confidenceScore.toFixed(3)} < ${this.youtubeScoreFallbackThreshold} → Steam 비디오 우선`,
               );
-            } else if (highConfidence || strongView) {
-              this.logger.debug(
-                `${prefix}YouTube 선택 (confidence=${confidenceLevel}, score=${confidenceScore.toFixed(3)}, views=${youtubePickedViewCount ?? 'n/a'})`,
-              );
+              youtubeVideoUrl = steamTrailerUrl;
+            } else {
+              youtubeVideoUrl = youtubePickedUrl;
             }
           } else {
-            this.logger.debug(
-              `${prefix}YouTube 결과 길이 정상이나 인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
-            );
-            youtubeVideoUrl = steamTrailerUrl ?? youtubePickedUrl;
+            const shouldPreferYoutube =
+              popularityScore >= this.youtubeFallbackPopularityThreshold ||
+              !steamTrailerUrl ||
+              highConfidence ||
+              strongView;
+
+            if (shouldPreferYoutube) {
+              youtubeVideoUrl = youtubePickedUrl;
+              if (!steamTrailerUrl) {
+                this.logger.debug(
+                  `${prefix}YouTube 선택 (Steam 트레일러 없음, confidence=${confidenceLevel}, views=${youtubePickedViewCount ?? 'n/a'})`,
+                );
+              } else if (highConfidence || strongView) {
+                this.logger.debug(
+                  `${prefix}YouTube 선택 (confidence=${confidenceLevel}, score=${confidenceScore.toFixed(3)}, views=${youtubePickedViewCount ?? 'n/a'})`,
+                );
+              }
+            } else {
+              this.logger.debug(
+                `${prefix}YouTube 결과 길이 정상이나 인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
+              );
+              youtubeVideoUrl = steamTrailerUrl ?? youtubePickedUrl;
+            }
           }
         } else {
           this.logger.debug(

@@ -33,7 +33,93 @@ import { PersistenceSaveResult } from './persistence/persistence.types';
 import { ManualPipelineDto } from './dto/manual-pipeline.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
 import { SteamNewDto } from './dto/steam-new.dto';
-import { SingleGameManualDto } from './dto/single-game-manual-dto';
+import {
+  SingleGameManualDto,
+  ModeEnum,
+  SourcesEnum,
+} from './dto/single-game-manual-dto';
+import { FullRefreshDto } from './dto/full-refresh.dto';
+
+type SteamBatchRunningTotals = {
+  collected: number;
+  created: number;
+  updated: number;
+  failed: number;
+};
+
+interface SteamBatchContextBase<TTarget> {
+  batchIndex: number;
+  batchCount: number;
+  targetStart: number;
+  targetEnd: number;
+  targetTotal: number;
+  targetSlice: readonly TTarget[];
+  steamIds: readonly number[];
+  steamProgressStart: number;
+  steamProgressEnd: number;
+  totalUniqueSteamIds: number;
+  dryRun: boolean;
+  runningTotals: SteamBatchRunningTotals;
+}
+
+interface SteamBatchCollectedContext<TTarget>
+  extends SteamBatchContextBase<TTarget> {
+  collected: readonly ProcessedGameData[];
+}
+
+interface SteamBatchSaveContext<TTarget>
+  extends SteamBatchCollectedContext<TTarget> {
+  saveChunkIndex: number;
+  saveChunkCount: number;
+  saveChunk: readonly ProcessedGameData[];
+}
+
+interface SteamBatchSaveResultContext<TTarget>
+  extends SteamBatchSaveContext<TTarget> {
+  saveResult: PersistenceSaveResult;
+  runningTotals: SteamBatchRunningTotals;
+}
+
+type SteamBatchSaveSkippedReason = 'dry-run' | 'empty';
+
+interface SteamBatchSaveSkippedContext<TTarget>
+  extends SteamBatchCollectedContext<TTarget> {
+  reason: SteamBatchSaveSkippedReason;
+  runningTotals: SteamBatchRunningTotals;
+}
+
+interface SteamBatchCompletedContext<TTarget>
+  extends SteamBatchCollectedContext<TTarget> {
+  batchCreated: number;
+  batchUpdated: number;
+  batchFailed: number;
+  totalCollectedSoFar: number;
+  totalCreatedSoFar: number;
+  totalUpdatedSoFar: number;
+  totalFailedSoFar: number;
+  runningTotals: SteamBatchRunningTotals;
+}
+
+interface SteamBatchHooks<TTarget> {
+  onBatchStart?: (
+    context: SteamBatchContextBase<TTarget>,
+  ) => void | Promise<void>;
+  onCollected?: (
+    context: SteamBatchCollectedContext<TTarget>,
+  ) => void | Promise<void>;
+  onBeforeSave?: (
+    context: SteamBatchSaveContext<TTarget>,
+  ) => void | Promise<void>;
+  onSaveResult?: (
+    context: SteamBatchSaveResultContext<TTarget>,
+  ) => void | Promise<void>;
+  onSaveSkipped?: (
+    context: SteamBatchSaveSkippedContext<TTarget>,
+  ) => void | Promise<void>;
+  onBatchComplete?: (
+    context: SteamBatchCompletedContext<TTarget>,
+  ) => void | Promise<void>;
+}
 /**
  * Pipeline Controller
  * 역할: Steam/RAWG 서비스에서 수집한 데이터를 데이터베이스에 저장
@@ -287,7 +373,10 @@ export class PipelineController {
   async executeSteamNew(
     @Body() params: SteamNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
-    const mode = params.mode ?? 'operational';
+    const mode =
+      params.mode === 'bootstrap'
+        ? ModeEnum.bootstrap
+        : ModeEnum.operational;
     const limit = params.limit ?? 2000;
     const dryRun = params.dryRun ?? false;
 
@@ -399,112 +488,108 @@ export class PipelineController {
       }
 
       // ===== 1+2) 2,000개씩 수집 → 즉시 저장 (청크 단위 처리) =====
-      let totalCreated = 0;
-      let totalUpdated = 0;
-      let totalFailed = 0;
-      let totalCollected = 0;
-      const allFailures: typeof this.persistence.saveProcessedGames extends (
-        ...args: any
-      ) => infer R
-        ? R extends Promise<infer P>
-          ? P extends { failures: infer F }
-            ? F
-            : any[]
-          : any[]
-        : any[] = [];
-
       const totalChunks = Math.ceil(targets.length / SAVE_BATCH_SIZE);
       this.logger.log(
         `🔄 [Steam 신규 탐지] ${targets.length}개를 ${totalChunks}개 청크(${SAVE_BATCH_SIZE}개씩)로 처리 시작`,
       );
 
-      for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx += 1) {
-        const chunkStart = chunkIdx * SAVE_BATCH_SIZE;
-        const chunkEnd = Math.min(chunkStart + SAVE_BATCH_SIZE, targets.length);
-        const chunkTargets = targets.slice(chunkStart, chunkEnd);
-
-        this.logger.log(
-          `📥 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — ${chunkTargets.length}개 게임 수집 시작 (ID 범위: ${chunkStart}-${chunkEnd - 1})`,
-        );
-
-        const collected = await this.steamDataPipeline.collectManyBySteamIds(
-          chunkTargets,
-          {
-            mode,
-            progressOffset: chunkStart,
-            progressTotal: targets.length,
+      const batchResult = await this.runSteamCollectionBatches<number>({
+        targets,
+        toSteamId: (id) => id,
+        mode,
+        pipelineRunId: pipelineRun.id,
+        dryRun,
+        fetchBatchSize: SAVE_BATCH_SIZE,
+        saveBatchSize: SAVE_BATCH_SIZE,
+        allowCreate: true,
+        hooks: {
+          onBatchStart: ({
+            batchIndex,
+            batchCount,
+            targetSlice,
+            targetStart,
+            targetEnd,
+          }) => {
+            this.logger.log(
+              `📥 [Steam 신규 탐지] 청크 ${batchIndex + 1}/${batchCount} — ${targetSlice.length}개 게임 수집 시작 (ID 범위: ${targetStart}-${targetEnd - 1})`,
+            );
           },
-        );
-
-        this.logger.log(
-          `📦 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — 수집 완료: ${collected.length}/${chunkTargets.length}개`,
-        );
-
-        totalCollected += collected.length;
-
-        if (collected.length > 0) {
-          this.logger.log(
-            `💾 [Steam 신규 탐지] 청크 ${chunkIdx + 1}/${totalChunks} — ${collected.length}개 저장 시작`,
-          );
-
-          const saveResult = await this.persistence.saveProcessedGames(
+          onCollected: ({
+            batchIndex,
+            batchCount,
+            steamIds,
             collected,
-            pipelineRun.id,
-          );
+          }) => {
+            this.logger.log(
+              `📦 [Steam 신규 탐지] 청크 ${batchIndex + 1}/${batchCount} — 수집 완료: ${collected.length}/${steamIds.length}개`,
+            );
+          },
+          onBeforeSave: ({ batchIndex, batchCount, saveChunk }) => {
+            if (saveChunk.length > 0) {
+              this.logger.log(
+                `💾 [Steam 신규 탐지] 청크 ${batchIndex + 1}/${batchCount} — ${saveChunk.length}개 저장 시작`,
+              );
+            }
+          },
+          onSaveResult: ({ batchIndex, batchCount, saveResult }) => {
+            this.logger.log(
+              `   ✅ 청크 ${batchIndex + 1}/${batchCount} 저장 완료: created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
+            );
+          },
+          onSaveSkipped: ({ batchIndex, batchCount, reason }) => {
+            if (reason === 'empty') {
+              this.logger.warn(
+                `   ⚠️ 청크 ${batchIndex + 1}/${batchCount} 수집된 데이터 없음 → 저장 스킵`,
+              );
+            }
+          },
+          onBatchComplete: ({
+            batchIndex,
+            batchCount,
+            totalCollectedSoFar,
+            totalCreatedSoFar,
+            totalUpdatedSoFar,
+            totalFailedSoFar,
+          }) => {
+            this.logger.log(
+              `📊 [Steam 신규 탐지] 진행 상황: ${batchIndex + 1}/${batchCount} 청크 완료 (누적: 수집=${totalCollectedSoFar}, 생성=${totalCreatedSoFar}, 갱신=${totalUpdatedSoFar}, 실패=${totalFailedSoFar})`,
+            );
+          },
+        },
+      });
 
-          totalCreated += saveResult.created;
-          totalUpdated += saveResult.updated;
-          totalFailed += saveResult.failed;
-          if (saveResult.failures?.length) {
-            allFailures.push(...saveResult.failures);
-          }
-
-          this.logger.log(
-            `   ✅ 청크 ${chunkIdx + 1}/${totalChunks} 저장 완료: created=${saveResult.created}, updated=${saveResult.updated}, failed=${saveResult.failed}`,
-          );
-        } else {
-          this.logger.warn(
-            `   ⚠️ 청크 ${chunkIdx + 1}/${totalChunks} 수집된 데이터 없음 → 저장 스킵`,
-          );
-        }
-
-        this.logger.log(
-          `📊 [Steam 신규 탐지] 진행 상황: ${chunkIdx + 1}/${totalChunks} 청크 완료 (누적: 수집=${totalCollected}, 생성=${totalCreated}, 갱신=${totalUpdated}, 실패=${totalFailed})`,
-        );
-      }
-
-      const failureSummaries = this.mapFailureDetails(allFailures);
+      const failureSummaries = this.mapFailureDetails(batchResult.failures);
 
       this.logger.log(
-        `✅ [Steam 신규 탐지] 전체 처리 완료 — 수집=${totalCollected}/${targets.length}, created=${totalCreated}, updated=${totalUpdated}, failed=${totalFailed}`,
+        `✅ [Steam 신규 탐지] 전체 처리 완료 — 수집=${batchResult.totalCollected}/${targets.length}, created=${batchResult.totalCreated}, updated=${batchResult.totalUpdated}, failed=${batchResult.totalFailed}`,
       );
 
       await this.completePipelineRun(
         pipelineRun.id,
         'completed',
         undefined,
-        totalCollected,
-        totalCreated + totalUpdated,
-        totalFailed,
+        batchResult.totalCollected,
+        batchResult.totalCreated + batchResult.totalUpdated,
+        batchResult.totalFailed,
       );
 
       return {
         statusCode: 200,
-        message: `Steam 신규 ${totalCreated + totalUpdated}건 처리 완료 (수집 ${totalCollected}/${targets.length}건)`,
+        message: `Steam 신규 ${batchResult.totalCreated + batchResult.totalUpdated}건 처리 완료 (수집 ${batchResult.totalCollected}/${targets.length}건)`,
         data: {
           pipelineRunId: pipelineRun.id,
           phase: 'steam',
-          totalProcessed: totalCollected,
+          totalProcessed: batchResult.totalCollected,
           finishedAt: new Date(),
           steamNewSummary: {
             candidates: newcomers.length,
             inspected: targets.length,
             targetIds: targets,
             excludedByRegistry,
-            created: totalCreated,
-            updated: totalUpdated,
-            saved: totalCreated + totalUpdated,
-            failed: totalFailed,
+            created: batchResult.totalCreated,
+            updated: batchResult.totalUpdated,
+            saved: batchResult.totalCreated + batchResult.totalUpdated,
+            failed: batchResult.totalFailed,
             dryRun: false,
             failures:
               failureSummaries.length > 0 ? failureSummaries : undefined,
@@ -666,6 +751,231 @@ export class PipelineController {
     }
   }
 
+  @Post('steam/full-refresh')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async executeFullGamesRefresh(
+    @Body() params: FullRefreshDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const mode = params.mode ?? ModeEnum.operational;
+    const dryRun = params.dryRun ?? false;
+    const batchSize = params.batchSize ?? 1000;
+    const SAVE_BATCH_SIZE = 1000;
+
+    this.logger.log('♻️ [Steam 전체 갱신] 시작');
+    this.logger.log(`   - mode: ${mode}`);
+    this.logger.log(`   - dryRun: ${dryRun}`);
+    this.logger.log(`   - batchSize: ${batchSize}`);
+
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'full',
+      'full_refresh_games_manual',
+    );
+
+    try {
+      const rawTargets = await this.gamesRepository
+        .createQueryBuilder('game')
+        .innerJoin('game.details', 'detail')
+        .innerJoin('game.releases', 'release')
+        .select(['game.id AS game_id', 'game.steam_id AS steam_id'])
+        .where('game.steam_id IS NOT NULL')
+        .distinct(true)
+        .getRawMany<{
+          game_id: string;
+          steam_id: number | null;
+        }>();
+
+      const targets = rawTargets.map((row) => ({
+        gameId: Number(row.game_id),
+        steamId:
+          row.steam_id !== null && Number.isFinite(Number(row.steam_id))
+            ? Number(row.steam_id)
+            : null,
+      }));
+
+      const totalGames = targets.length;
+      if (totalGames === 0) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'no-targets',
+          0,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message: '갱신할 게임이 없습니다.',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'full',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            fullRefreshSummary: {
+              totalGames: 0,
+              processedGames: 0,
+              steamRequested: 0,
+              collected: 0,
+              updated: 0,
+              failed: 0,
+              dryRun,
+            },
+          },
+        };
+      }
+
+      const steamIdSet = new Set<number>();
+      targets.forEach((t) => {
+        if (t.steamId && t.steamId > 0) steamIdSet.add(t.steamId);
+      });
+
+      const totalSteamIds = steamIdSet.size;
+
+      this.logger.log(
+        `📊 [Steam 전체 갱신] 대상 ${totalGames}건 (Steam=${totalSteamIds})`,
+      );
+
+      const totalBatches = Math.ceil(totalGames / batchSize);
+      this.logger.log(
+        `🧮 [Steam 전체 갱신] ${totalGames}건을 ${totalBatches}개 배치(${batchSize}개 기준)로 처리`,
+      );
+
+      let processedGames = 0;
+      const batchResult = await this.runSteamCollectionBatches<
+        (typeof targets)[number]
+      >({
+        targets,
+        toSteamId: (target) =>
+          typeof target.steamId === 'number' ? target.steamId : null,
+        mode,
+        pipelineRunId: pipelineRun.id,
+        dryRun,
+        fetchBatchSize: batchSize,
+        saveBatchSize: SAVE_BATCH_SIZE,
+        allowCreate: false,
+        progressTotal: totalSteamIds > 0 ? totalSteamIds : undefined,
+        hooks: {
+          onBatchStart: ({
+            batchIndex,
+            batchCount,
+            targetStart,
+            targetEnd,
+            targetTotal,
+            steamIds,
+            steamProgressStart,
+            steamProgressEnd,
+            totalUniqueSteamIds,
+          }) => {
+            this.logger.log(
+              `🔁 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 시작 — 게임 ${targetStart + 1}-${targetEnd}/${targetTotal}`,
+            );
+            if (steamIds.length > 0) {
+              const totalSteam =
+                totalUniqueSteamIds > 0 ? totalUniqueSteamIds : steamIds.length;
+              this.logger.log(
+                `   🔄 Steam 수집 시작 — ${steamIds.length}건 (누적 ${steamProgressStart + 1}-${steamProgressEnd}/${totalSteam})`,
+              );
+            } else {
+              this.logger.log('   ℹ️ Steam 대상 없음 (배치)');
+            }
+          },
+          onCollected: ({ steamIds, collected }) => {
+            if (steamIds.length > 0) {
+              this.logger.log(
+                `   ✅ Steam 수집 완료 — ${collected.length}/${steamIds.length}건`,
+              );
+            }
+          },
+          onBeforeSave: ({ saveChunkIndex, saveChunkCount, saveChunk }) => {
+            if (dryRun || saveChunk.length === 0) return;
+            this.logger.log(
+              `   💾 저장 ${saveChunkIndex + 1}/${saveChunkCount} — ${saveChunk.length}건`,
+            );
+          },
+          onSaveResult: ({ saveResult }) => {
+            this.logger.log(
+              `      ↳ 결과 updated=${saveResult.updated}, failed=${saveResult.failed}`,
+            );
+          },
+          onSaveSkipped: ({ reason }) => {
+            if (reason === 'empty' && !dryRun) {
+              this.logger.warn(
+                '   ⚠️ 수집된 데이터가 없어 저장을 건너뜁니다.',
+              );
+            }
+          },
+          onBatchComplete: ({
+            batchIndex,
+            batchCount,
+            targetSlice,
+            totalUpdatedSoFar,
+            totalFailedSoFar,
+          }) => {
+            processedGames += targetSlice.length;
+            this.logger.log(
+              `📈 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 완료 — 누적 처리 ${processedGames}/${totalGames}, 업데이트 ${totalUpdatedSoFar}, 실패 ${totalFailedSoFar}`,
+            );
+          },
+        },
+      });
+
+      const failureSummaries = this.mapFailureDetails(batchResult.failures);
+
+      if (dryRun) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'dry-run',
+          batchResult.totalCollected,
+          batchResult.totalUpdated,
+          0,
+        );
+      } else {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          undefined,
+          batchResult.totalCollected,
+          batchResult.totalUpdated,
+          batchResult.totalFailed,
+        );
+      }
+
+      this.logger.log(
+        `✅ [Steam 전체 갱신] 완료 — 대상=${totalGames}, 수집=${batchResult.totalCollected}, 업데이트=${batchResult.totalUpdated}, 실패=${batchResult.totalFailed}, dryRun=${dryRun}`,
+      );
+
+      return {
+        statusCode: 200,
+        message: dryRun
+          ? 'Steam 전체 갱신 드라이런 완료'
+          : 'Steam 전체 갱신 완료',
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'full',
+          totalProcessed: batchResult.totalCollected,
+          finishedAt: new Date(),
+          fullRefreshSummary: {
+            totalGames,
+            processedGames,
+            steamRequested: batchResult.totalRequestedSteamIds,
+            collected: batchResult.totalCollected,
+            updated: batchResult.totalUpdated,
+            failed: batchResult.totalFailed,
+            dryRun,
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
+          },
+        },
+      };
+    } catch (error) {
+      const err = this.normalizeError(error);
+      this.logger.error(`❌ [Steam 전체 갱신] 실패 - ${err.message}`);
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
+    }
+  }
+
   @Post('manual/game/:id')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   async executeManualSingleGame(
@@ -675,7 +985,7 @@ export class PipelineController {
     const startedAt = Date.now();
     const idKind = params.idKind ?? 'game';
     const sources = params.sources ?? (idKind === 'game' ? 'both' : idKind); // game→both, steam→steam, rawg→rawg
-    const mode = params.mode ?? 'operational';
+    const mode = params.mode ?? ModeEnum.operational;
     const dryRun = params.dryRun ?? false;
 
     this.logger.log('🚀 [단일 파이프라인] 시작');
@@ -846,6 +1156,222 @@ export class PipelineController {
       await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
       throw err;
     }
+  }
+
+  private async runSteamCollectionBatches<TTarget>(params: {
+    targets: readonly TTarget[];
+    toSteamId: (target: TTarget) => number | null | undefined;
+    mode: ModeEnum;
+    pipelineRunId: number;
+    dryRun: boolean;
+    fetchBatchSize: number;
+    saveBatchSize: number;
+    allowCreate: boolean;
+    progressOffset?: number;
+    progressTotal?: number;
+    hooks?: SteamBatchHooks<TTarget>;
+  }): Promise<{
+    totalCollected: number;
+    totalCreated: number;
+    totalUpdated: number;
+    totalFailed: number;
+    failures: SaveFailureDetail[];
+    totalRequestedSteamIds: number;
+    totalTargets: number;
+    totalUniqueSteamIds: number;
+  }> {
+    const {
+      targets,
+      toSteamId,
+      mode,
+      pipelineRunId,
+      dryRun,
+      fetchBatchSize,
+      saveBatchSize,
+      allowCreate,
+      progressOffset,
+      progressTotal,
+      hooks,
+    } = params;
+
+    const totalTargets = targets.length;
+    if (totalTargets === 0) {
+      return {
+        totalCollected: 0,
+        totalCreated: 0,
+        totalUpdated: 0,
+        totalFailed: 0,
+        failures: [],
+        totalRequestedSteamIds: 0,
+        totalTargets: 0,
+        totalUniqueSteamIds: 0,
+      };
+    }
+
+    const effectiveFetchBatchSize = Math.max(1, fetchBatchSize);
+    const effectiveSaveBatchSize = Math.max(1, saveBatchSize);
+
+    const uniqueSteamIds = new Set<number>();
+    targets.forEach((target) => {
+      const id = toSteamId(target);
+      if (typeof id === 'number' && Number.isFinite(id) && id > 0) {
+        uniqueSteamIds.add(id);
+      }
+    });
+    const totalUniqueSteamIds = uniqueSteamIds.size;
+    const computedProgressTotal =
+      progressTotal ??
+      (totalUniqueSteamIds > 0 ? totalUniqueSteamIds : totalTargets);
+
+    const batchCount = Math.ceil(totalTargets / effectiveFetchBatchSize);
+    const runningTotals: SteamBatchRunningTotals = {
+      collected: 0,
+      created: 0,
+      updated: 0,
+      failed: 0,
+    };
+    const failures: SaveFailureDetail[] = [];
+
+    let steamProgress = progressOffset ?? 0;
+    let totalRequestedSteamIds = 0;
+
+    for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+      const targetStart = batchIndex * effectiveFetchBatchSize;
+      const targetEnd = Math.min(targetStart + effectiveFetchBatchSize, totalTargets);
+      const targetSlice = targets.slice(targetStart, targetEnd);
+      const steamIds = targetSlice
+        .map(toSteamId)
+        .filter((id): id is number => typeof id === 'number' && Number.isFinite(id) && id > 0);
+
+      const baseContext: SteamBatchContextBase<TTarget> = {
+        batchIndex,
+        batchCount,
+        targetStart,
+        targetEnd,
+        targetTotal: totalTargets,
+        targetSlice,
+        steamIds,
+        steamProgressStart: steamProgress,
+        steamProgressEnd: steamProgress + steamIds.length,
+        totalUniqueSteamIds,
+        dryRun,
+        runningTotals: { ...runningTotals },
+      };
+
+      await hooks?.onBatchStart?.(baseContext);
+
+      let collected: ProcessedGameData[] = [];
+      if (steamIds.length > 0) {
+        collected = await this.steamDataPipeline.collectManyBySteamIds(
+          steamIds,
+          {
+            mode,
+            progressOffset: steamProgress,
+            progressTotal: computedProgressTotal,
+          },
+        );
+      }
+
+      steamProgress += steamIds.length;
+      totalRequestedSteamIds += steamIds.length;
+      runningTotals.collected += collected.length;
+
+      const collectedContext: SteamBatchCollectedContext<TTarget> = {
+        ...baseContext,
+        collected,
+        steamProgressStart: baseContext.steamProgressStart,
+        steamProgressEnd: steamProgress,
+        runningTotals: { ...runningTotals },
+      };
+
+      await hooks?.onCollected?.(collectedContext);
+
+      let batchCreated = 0;
+      let batchUpdated = 0;
+      let batchFailed = 0;
+
+      if (!dryRun && collected.length > 0) {
+        const saveChunkCount = Math.ceil(
+          collected.length / effectiveSaveBatchSize,
+        );
+        for (
+          let saveChunkIndex = 0;
+          saveChunkIndex < saveChunkCount;
+          saveChunkIndex += 1
+        ) {
+          const chunkStart = saveChunkIndex * effectiveSaveBatchSize;
+          const chunkEnd = Math.min(
+            chunkStart + effectiveSaveBatchSize,
+            collected.length,
+          );
+          const saveChunk = collected.slice(chunkStart, chunkEnd);
+
+          const saveContext: SteamBatchSaveContext<TTarget> = {
+            ...collectedContext,
+            saveChunkIndex,
+            saveChunkCount,
+            saveChunk,
+          };
+          await hooks?.onBeforeSave?.(saveContext);
+
+          const saveResult = await this.persistence.saveProcessedGames(
+            saveChunk,
+            pipelineRunId,
+            allowCreate ? undefined : { allowCreate: false },
+          );
+
+          batchCreated += saveResult.created;
+          batchUpdated += saveResult.updated;
+          batchFailed += saveResult.failed;
+
+          runningTotals.created += saveResult.created;
+          runningTotals.updated += saveResult.updated;
+          runningTotals.failed += saveResult.failed;
+
+          if (saveResult.failures?.length) {
+            failures.push(...saveResult.failures);
+          }
+
+          const saveResultContext: SteamBatchSaveResultContext<TTarget> = {
+            ...saveContext,
+            saveResult,
+            runningTotals: { ...runningTotals },
+          };
+          await hooks?.onSaveResult?.(saveResultContext);
+        }
+      } else {
+        const skippedContext: SteamBatchSaveSkippedContext<TTarget> = {
+          ...collectedContext,
+          reason: dryRun ? 'dry-run' : 'empty',
+          runningTotals: { ...runningTotals },
+        };
+        await hooks?.onSaveSkipped?.(skippedContext);
+      }
+
+      const completedContext: SteamBatchCompletedContext<TTarget> = {
+        ...collectedContext,
+        batchCreated,
+        batchUpdated,
+        batchFailed,
+        totalCollectedSoFar: runningTotals.collected,
+        totalCreatedSoFar: runningTotals.created,
+        totalUpdatedSoFar: runningTotals.updated,
+        totalFailedSoFar: runningTotals.failed,
+        runningTotals: { ...runningTotals },
+      };
+      await hooks?.onBatchComplete?.(completedContext);
+    }
+
+    return {
+      totalCollected: runningTotals.collected,
+      totalCreated: runningTotals.created,
+      totalUpdated: runningTotals.updated,
+      totalFailed: runningTotals.failed,
+      failures,
+      totalRequestedSteamIds,
+      totalTargets,
+      totalUniqueSteamIds,
+    };
   }
 
   private normalizeError(error: unknown): Error & { code?: string } {

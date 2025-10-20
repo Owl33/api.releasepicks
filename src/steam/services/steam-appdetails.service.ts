@@ -24,29 +24,65 @@ export class SteamAppDetailsService {
   private readonly steamStoreUrl = 'https://store.steampowered.com/api';
   private readonly globalLimiter = getGlobalRateLimiter();
   private readonly spacingMs: number;
+  private readonly windowMs: number;
+  private readonly maxEvents: number;
   private readonly rateLimiter: FixedWindowRateLimiter;
 
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {
-    this.spacingMs = Number(
-      this.configService.get<string>('STEAM_APPDETAILS_SPACING_MS') ?? '150',
-    );
-    const maxPerWindow = Number(
+    const configuredMax = Number(
       this.configService.get<string>('STEAM_APPDETAILS_WINDOW_MAX') ?? '200',
     );
-    const windowSeconds = Number(
+    const maxPerWindow =
+      Number.isFinite(configuredMax) && configuredMax > 0
+        ? Math.min(configuredMax, 200)
+        : 200;
+    if (Number.isFinite(configuredMax) && configuredMax > 200) {
+      this.logger.warn(
+        `⚠️ AppDetails 최대 호출 수(${configuredMax})가 5분 200회 제한을 초과하여 200으로 보정합니다.`,
+      );
+    }
+    this.maxEvents = maxPerWindow;
+
+    const configuredWindowSeconds = Number(
       this.configService.get<string>('STEAM_APPDETAILS_WINDOW_SECONDS') ??
-        '310',
+        '300',
     );
+    const windowSeconds =
+      Number.isFinite(configuredWindowSeconds) && configuredWindowSeconds > 0
+        ? configuredWindowSeconds
+        : 300;
+    const windowMs = Math.round(windowSeconds * 1000);
+    this.windowMs = windowMs;
+    const derivedSpacing = Math.ceil(windowMs / maxPerWindow);
+    const configuredSpacing = Number(
+      this.configService.get<string>('STEAM_APPDETAILS_SPACING_MS') ??
+        `${derivedSpacing}`,
+    );
+    const spacingCandidate =
+      Number.isFinite(configuredSpacing) && configuredSpacing >= 0
+        ? configuredSpacing
+        : derivedSpacing;
+    this.spacingMs = Math.max(spacingCandidate, derivedSpacing);
+    if (spacingCandidate < derivedSpacing) {
+      this.logger.warn(
+        `⚠️ AppDetails 최소 간격(${spacingCandidate}ms)이 5분 200회 제한을 충족하지 않아 ${this.spacingMs}ms로 보정됩니다.`,
+      );
+    }
 
     // Rate Limiter에 spacing을 통합하여 완벽한 제어
     // spacing은 Rate Limiter 내부에서 처리되므로 별도 sleep 불필요
     this.rateLimiter = new FixedWindowRateLimiter(
-      maxPerWindow,
-      windowSeconds * 1000,
+      this.maxEvents,
+      this.windowMs,
       this.spacingMs, // 최소 간격을 Rate Limiter에 전달
+    );
+    this.logger.log(
+      `♻️ AppDetails Rate Limit 구성: ${this.maxEvents}회/${(
+        this.windowMs / 1000
+      ).toFixed(0)}초, spacing=${this.spacingMs}ms`,
     );
   }
 
@@ -264,9 +300,35 @@ export class SteamAppDetailsService {
       data?.about_the_game ?? '',
     ].join(' ');
 
+    const descriptorIds: number[] = Array.isArray(
+      data?.content_descriptors?.ids,
+    )
+      ? (data.content_descriptors.ids as any[])
+          .map((value) => {
+            const numeric = Number(value);
+            return Number.isFinite(numeric) ? numeric : null;
+          })
+          .filter((value): value is number => value !== null)
+      : [];
+    const SEXUAL_DESCRIPTOR_IDS = new Set<number>([3, 4]);
+    const MATURE_DESCRIPTOR_IDS = new Set<number>([5]);
+    const hasSexualDescriptor = descriptorIds.some((id) =>
+      SEXUAL_DESCRIPTOR_IDS.has(id),
+    );
+    const hasMatureDescriptor = descriptorIds.some((id) =>
+      MATURE_DESCRIPTOR_IDS.has(id),
+    );
+
     // ── 정규화
     const textNotes = this.normalizeText(notesRaw); // ← notes는 '조건' 판정에만 사용
     const textBody = this.normalizeText(bodyRaw); // ← 본문 스코어링은 여기서만!
+    const ratingsRaw = this.normalizeText(
+      Object.values<any>(data?.ratings ?? {})
+        .map((rating) =>
+          [rating?.descriptors ?? '', rating?.rating ?? ''].join(' '),
+        )
+        .join(' '),
+    );
 
     // ── (선택) AAA 감점
     const ALLOW_AAA_BIAS = false;
@@ -327,8 +389,10 @@ export class SteamAppDetailsService {
       /성인\s*전용/,
       /성인\s*용/,
       /(r18|성인)\s*패치/,
-      /무수정|무삭제/,
+      /무수정|무삭제|無修正|無遮蔽|無碼/,
       /야애니/,
+      /成人向け|成人向|成人ゲーム/,
+      /裸露|色情|限制級|成人專用/,
       /포르노/,
       /섹스\s*(?:시뮬레이터|게임|모드)/,
       /노골적(?:인)?\s*성적\s*(?:콘텐츠|컨텐츠)/,
@@ -345,16 +409,27 @@ export class SteamAppDetailsService {
       /\blewd\b/,
       /성(?:적)?\s*(?:콘텐츠|컨텐츠)/,
       /노출|누드/,
-      /에로|야함|에치|에찌/,
+      /노골(?:적)?\s*노출/,
+      /선정적/,
+      /과도한\s*노출/,
+      /에로|야함|에치|에찌|에로틱|에로틱한/,
       /섹스/,
       /포르노/,
       /노골적(?:인)?\s*성적/,
       /성인\s*용/,
+      /미성년자\s*금지/,
+      /裸露|裸身|裸婦/,
+      /色情|猥褻|わいせつ/,
+      /エロ|エッチ|えっち/,
+      /無修正|無修整|無碼/,
+      /成人向け|成人向/,
     ];
     const WEAK_BODY: RegExp[] = [
       /\bsexy\b/,
       /\bharem\b/,
       /연애\s*이벤트|하렘|섹시/,
+      /미소녀|美少女/,
+      /ギャル|萌え|もえ/,
     ];
 
     const strongHitsFromBody = STRONG_BODY.filter((rx) =>
@@ -368,6 +443,10 @@ export class SteamAppDetailsService {
       [
         /(sex|sexual|성적|에로|야함|hentai|lewd|노출|누드|섹스|포르노)/,
         /(gallery|cg|패치|uncensored|무수정|r18|콘텐츠|컨텐츠)/,
+      ],
+      [
+        /(에로|야한|야애니|エロ|えっち|裸露|色情)/,
+        /(cg|일러스트|原画|無修正|無碼|콘텐츠|컨텐츠)/,
       ],
     ];
     if (this.hasProximity(textBody, proxPairs, 80)) score += 1;
@@ -407,12 +486,30 @@ export class SteamAppDetailsService {
     // ── 10) notes + 본문 결합 트리거 (네가 명시한 규칙)
     // notes에 sexual/nudity 계열이 있고, "본문 강키워드 점수 ≥ 2"면 true
     const notesHasSexual =
-      /(sexual\s*content|nudity|노출|누드|성(?:적)?\s*(?:콘텐츠|컨텐츠)|포르노|섹스)/.test(
+      /(sexual\s*content|nudity|노출|누드|성(?:적)?\s*(?:콘텐츠|컨텐츠)|포르노|섹스|에로|裸露|色情|成人向け|成人向)/.test(
         textNotes,
       );
     // strongHitsFromBody>0 일 때 +2를 이미 부여했으므로, 여기선 "강키워드가 1개 이상"이면 true로 봄
-    if (notesHasSexual && strongHitsFromBody >= 1) return true;
+    const ratingsHasSexual =
+      /(sexual|nudity|explicit|성적|노출|에로|裸露|色情|成人向け|成人向)/.test(
+        ratingsRaw,
+      );
+    if (
+      notesHasSexual &&
+      (strongHitsFromBody >= 1 || hasSexualDescriptor || ratingsHasSexual)
+    ) {
+      return true;
+    }
 
+    // ── 11) Steam descriptor 기반 가중치
+    if (hasSexualDescriptor) {
+      score += 5;
+    } else if (hasMatureDescriptor) {
+      score += 2;
+    }
+    if (ratingsHasSexual) {
+      score += 2;
+    }
     // ── 11) 누적 임계치
     return score >= 4;
   }

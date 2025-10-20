@@ -54,6 +54,22 @@ export interface PipelineRunResult {
     }[];
   };
   rawgReport?: any;
+  fullRefreshSummary?: {
+    totalGames: number;
+    processedGames: number;
+    steamRequested: number;
+    collected: number;
+    updated: number;
+    failed: number;
+    dryRun: boolean;
+    failures?: {
+      steamId: number | null;
+      rawgId: number | null;
+      slug: string | null;
+      reason: string;
+      message: string;
+    }[];
+  };
 }
 
 export interface ApiResponse<T> {
