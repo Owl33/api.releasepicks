@@ -9,6 +9,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { ResponseTransformInterceptor } from './common/interceptors/response.interceptor';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { setupSwagger } from './swagger/swagger.config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -37,6 +38,10 @@ async function bootstrap() {
   });
 
   const port = Number(8080);
+
+  // Swagger 문서 구성
+  setupSwagger(app);
+
   await app.listen(port);
 
   const logger = new Logger('Bootstrap');

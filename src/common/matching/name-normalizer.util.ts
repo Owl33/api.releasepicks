@@ -1,5 +1,6 @@
 import { NormalizedNameResult } from './matching.types';
 import { normalizeSlugCandidate } from '../slug/slug-normalizer.util';
+import { convertRomanTokenToArabicString } from '../utils/roman.util';
 
 const 불용어 = new Set([
   'the',
@@ -59,72 +60,5 @@ function 치환로마숫자(value: string): string {
 }
 
 function convertRomanToken(token: string): string | null {
-  const upper = token.toUpperCase();
-  if (!/^[IVXLCDM]+$/.test(upper)) return null;
-
-  const value = romanToArabic(upper);
-  if (value === null || value <= 0 || value > 3999) return null;
-
-  const canonical = arabicToRoman(value);
-  if (canonical !== upper) return null;
-
-  return String(value);
-}
-
-function romanToArabic(roman: string): number | null {
-  const values: Record<string, number> = {
-    I: 1,
-    V: 5,
-    X: 10,
-    L: 50,
-    C: 100,
-    D: 500,
-    M: 1000,
-  };
-
-  let total = 0;
-  let prev = 0;
-
-  for (let i = roman.length - 1; i >= 0; i -= 1) {
-    const current = values[roman[i]];
-    if (!current) return null;
-    if (current < prev) {
-      total -= current;
-    } else {
-      total += current;
-      prev = current;
-    }
-  }
-
-  return total;
-}
-
-function arabicToRoman(value: number): string {
-  const numerals: Array<[number, string]> = [
-    [1000, 'M'],
-    [900, 'CM'],
-    [500, 'D'],
-    [400, 'CD'],
-    [100, 'C'],
-    [90, 'XC'],
-    [50, 'L'],
-    [40, 'XL'],
-    [10, 'X'],
-    [9, 'IX'],
-    [5, 'V'],
-    [4, 'IV'],
-    [1, 'I'],
-  ];
-
-  let remaining = value;
-  let result = '';
-
-  for (const [arabic, roman] of numerals) {
-    while (remaining >= arabic) {
-      result += roman;
-      remaining -= arabic;
-    }
-  }
-
-  return result;
+  return convertRomanTokenToArabicString(token);
 }

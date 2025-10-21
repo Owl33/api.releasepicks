@@ -49,6 +49,9 @@ export interface ProcessedGameData {
   // 플랫폼별 출시 정보 (본편만)
   releases?: GameReleaseData[];
 
+  // 수집 메타 정보
+  sourceMonth?: string;
+
   // 멀티 플랫폼 매칭 힌트
   matchingContext?: MatchingContextData;
   matchingDecision?: MatchingDecisionData;

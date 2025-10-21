@@ -34,6 +34,10 @@ import { PopularityCalculator } from '../../common/utils/popularity-calculator.u
 import { normalizeGameName } from '../../common/utils/game-name-normalizer.util';
 import { normalizeGameName as normalizeMatchingName } from '../../common/matching';
 import { normalizeSlugCandidate } from '../../common/slug/slug-normalizer.util';
+import {
+  buildSlugVariantsFromName,
+  detectDuplicateSlugBase,
+} from '../../common/slug/slug-variant.util';
 import { toTimestamp } from '../../common/collector/date.util';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../../youtube/youtube.service';
@@ -485,14 +489,24 @@ export class SteamDataPipelineService {
 
       const normalizedMatching = normalizeMatchingName(processedGame.name);
       const candidateSlugs = new Set<string>();
-      if (typeof processedGame.slug === 'string') {
-        const normalizedSlug = normalizeSlugCandidate(processedGame.slug);
-        if (normalizedSlug) candidateSlugs.add(normalizedSlug);
+      const pushCandidate = (value?: string | null) => {
+        const normalized = normalizeSlugCandidate(value);
+        if (normalized) candidateSlugs.add(normalized);
+      };
+
+      pushCandidate(processedGame.slug);
+      pushCandidate(processedGame.ogSlug);
+
+      buildSlugVariantsFromName(processedGame.name).forEach(pushCandidate);
+      if (processedGame.ogName && processedGame.ogName !== processedGame.name) {
+        buildSlugVariantsFromName(processedGame.ogName).forEach(pushCandidate);
       }
-      if (typeof processedGame.ogSlug === 'string') {
-        const normalizedOgSlug = normalizeSlugCandidate(processedGame.ogSlug);
-        if (normalizedOgSlug) candidateSlugs.add(normalizedOgSlug);
-      }
+
+      const duplicateBase = detectDuplicateSlugBase(
+        processedGame.slug,
+        processedGame.name,
+      );
+      if (duplicateBase) candidateSlugs.add(duplicateBase);
 
       processedGame.matchingContext = {
         source: 'steam',

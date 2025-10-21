@@ -5,6 +5,8 @@ import {
   MatchingScore,
   MatchingWeights,
 } from './matching.types';
+import { convertRomanTokenToArabicNumber } from '../utils/roman.util';
+import { extractSequelNumbers } from '../slug/slug-variant.util';
 
 const DEFAULT_WEIGHTS: MatchingWeights = {
   name: 0.45,
@@ -75,8 +77,8 @@ export function calcMatchingScore(inputs: MatchingInputs): MatchingScore {
  * 이름에 숫자가 포함되어 있는지 확인 (속편 감지용)
  */
 function hasNumberInName(name: string): boolean {
-  // "2", "II", "III", "IV" 등의 숫자 패턴 감지
-  return /\b(2|3|4|5|ii|iii|iv|v)\b/i.test(name);
+  const numbers = extractSequelNumbers(name);
+  return numbers.some((value) => value > 0 && value <= 50);
 }
 
 function calculateNameScore(
@@ -109,45 +111,72 @@ function calculateNameScore(
           // ✅ 개선된 숫자 suffix 처리: 속편 감지
           // "stellar-blade" vs "stellar-blade-2" → MATCH (중복 방지용)
           // "subnautica" vs "subnautica-2" → NO MATCH (속편!)
-          const rMatch = rSlug.match(/^(.+?)(-\d+)?$/);
-          const sMatch = sSlug.match(/^(.+?)(-\d+)?$/);
+          const rParsed = parseSlugComponents(rSlug);
+          const sParsed = parseSlugComponents(sSlug);
 
-          if (rMatch && sMatch) {
-            const rBase = rMatch[1]; // "stellar-blade", "subnautica"
-            const sBase = sMatch[1];
-            const rSuffix = rMatch[2]; // undefined, "-2"
-            const sSuffix = sMatch[2]; // "-2", undefined
+          if (rParsed.base && sParsed.base && rParsed.base === sParsed.base) {
+            const rSuffix = rParsed.suffixRaw;
+            const sSuffix = sParsed.suffixRaw;
+            const rValue = rParsed.suffixValue;
+            const sValue = sParsed.suffixValue;
+            const baseLength = rParsed.base.length;
 
-            if (rBase === sBase && rBase.length > 3) {
-              // 케이스 1: 둘 다 suffix 없음 → MATCH (정확히 같은 게임)
-              if (!rSuffix && !sSuffix) {
+            if (baseLength <= 3) {
+              continue;
+            }
+
+            // 케이스 1: suffix 없음 → 정확히 같은 게임
+            if (!rSuffix && !sSuffix) {
+              dbSlugMatch = true;
+              break;
+            }
+
+            // 케이스 2: 양쪽 suffix 존재
+            if (rSuffix && sSuffix) {
+              // 둘 다 숫자/로마 숫자로 파싱 가능하면 값 비교
+              if (rValue !== null && sValue !== null) {
+                if (rValue === sValue) {
+                  dbSlugMatch = true;
+                  break;
+                }
+
+                const hasNumberToken =
+                  hasNumberInName(steam.original) ||
+                  hasNumberInName(rawg.original);
+
+                if (!hasNumberToken) {
+                  // slug 중복으로 판단
+                  dbSlugMatch = true;
+                  break;
+                }
+              } else if (
+                rSuffix.toLowerCase() === sSuffix.toLowerCase()
+              ) {
                 dbSlugMatch = true;
                 break;
+              } else {
+                // 파싱 실패 → 안전하게 이름 기반으로 판단
+                const hasNumberToken =
+                  hasNumberInName(steam.original) ||
+                  hasNumberInName(rawg.original);
+                if (!hasNumberToken) {
+                  dbSlugMatch = true;
+                  break;
+                }
               }
-              // 케이스 2: 같은 suffix → MATCH (stellar-blade-2 vs stellar-blade-2)
-              else if (rSuffix && sSuffix && rSuffix === sSuffix) {
-                dbSlugMatch = true;
-                break;
-              }
-              // 케이스 3: 둘 다 suffix 있지만 다름 → MATCH (중복 방지용)
-              // "stellar-blade-2" vs "stellar-blade-3" → 같은 게임의 중복 항목
-              else if (rSuffix && sSuffix) {
-                dbSlugMatch = true;
-                break;
-              }
-              // 케이스 4: 한쪽만 suffix 있음 → 이름으로 판단
-              else if ((rSuffix && !sSuffix) || (!rSuffix && sSuffix)) {
-                // 이름에 숫자가 있으면 → 속편 (NO MATCH)
-                // "Subnautica 2" → "subnautica-2" (진짜 2편)
-                const hasSteamNumber = hasNumberInName(steam.original);
-                const hasRawgNumber = hasNumberInName(rawg.original);
+            }
 
-                if (hasSteamNumber || hasRawgNumber) {
-                  // 속편으로 판단
-                  dbSlugMatch = false;
-                } else {
-                  // 이름에 숫자 없음 → 중복 방지용 suffix (MATCH)
-                  // "Stellar Blade" → "stellar-blade-2" (TM 중복)
+            // 케이스 3: 한쪽만 suffix 존재
+            if ((rSuffix && !sSuffix) || (!rSuffix && sSuffix)) {
+              const hasNumberToken =
+                hasNumberInName(steam.original) ||
+                hasNumberInName(rawg.original);
+
+              if (hasNumberToken) {
+                dbSlugMatch = false;
+              } else {
+                const numericValue = rValue ?? sValue;
+                if (numericValue !== null && numericValue <= 50) {
                   dbSlugMatch = true;
                   break;
                 }
@@ -197,6 +226,42 @@ function calculateTokenScore(rawgTokens: string[], steamTokens: string[]) {
 
   const denominator = Math.max(rawgSet.size, steamSet.size, 1);
   return Number((overlap / denominator).toFixed(3));
+}
+
+function parseSlugComponents(slug?: string | null) {
+  if (!slug) {
+    return {
+      base: null as string | null,
+      suffixRaw: null as string | null,
+      suffixValue: null as number | null,
+    };
+  }
+  const match = slug.match(/^(.+?)(?:-([0-9]{1,4}|[ivxlcdm]+))?$/i);
+  if (!match) {
+    return {
+      base: slug,
+      suffixRaw: null,
+      suffixValue: null,
+    };
+  }
+
+  const base = match[1];
+  const suffixRaw = match[2] ?? null;
+  let suffixValue: number | null = null;
+
+  if (suffixRaw) {
+    if (/^\d+$/.test(suffixRaw)) {
+      suffixValue = Number(suffixRaw);
+    } else {
+      suffixValue = convertRomanTokenToArabicNumber(suffixRaw);
+    }
+  }
+
+  return {
+    base,
+    suffixRaw,
+    suffixValue,
+  };
 }
 
 function computeGenreScore(rawg: string[] = [], steam: string[] = []) {

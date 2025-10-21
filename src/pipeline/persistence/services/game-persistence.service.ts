@@ -127,6 +127,30 @@ export class GamePersistenceService {
       }
     }
 
+    // 4-1. 매칭 컨텍스트 기반 슬러그 후보 조회
+    const candidateSlugs = data.matchingContext?.candidateSlugs ?? [];
+    for (const candidate of candidateSlugs) {
+      const byCandidateSlug = await manager.findOne(Game, {
+        where: { slug: ILike(candidate) },
+      });
+      if (byCandidateSlug && !this.isSteamIdConflict(byCandidateSlug, data)) {
+        this.logger.verbose(
+          `🔁 [GamePersistence] 후보 슬러그 매칭 성공 slug=${candidate} → gameId=${byCandidateSlug.id}`,
+        );
+        return byCandidateSlug;
+      }
+
+      const byCandidateOgSlug = await manager.findOne(Game, {
+        where: { og_slug: ILike(candidate) },
+      });
+      if (byCandidateOgSlug && !this.isSteamIdConflict(byCandidateOgSlug, data)) {
+        this.logger.verbose(
+          `🔁 [GamePersistence] 후보 OG 슬러그 매칭 성공 og_slug=${candidate} → gameId=${byCandidateOgSlug.id}`,
+        );
+        return byCandidateOgSlug;
+      }
+    }
+
     // 5. 멀티 플랫폼 매칭 (Steam/RAWG 모두 적용)
     const decision = await this.multiPlatformMatching.evaluate(data, manager);
     if (decision.outcome === 'matched' && decision.game) {

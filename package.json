@@ -34,6 +34,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.0.1",
+    "@nestjs/swagger": "^11.2.1",
     "@nestjs/typeorm": "^11.0.0",
     "@sparticuz/chromium": "^141.0.0",
     "@vercel/node": "^5.4.0",
@@ -53,6 +54,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "slugify": "^1.6.6",
+    "swagger-ui-express": "^5.0.1",
     "typeorm": "^0.3.27",
     "uuid": "^13.0.0",
     "youtube-sr": "^4.3.12"

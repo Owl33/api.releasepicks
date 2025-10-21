@@ -41,6 +41,38 @@ import {
   normalizeGameName as buildMatchingName,
 } from '../common/matching';
 import { normalizeSlugCandidate } from '../common/slug/slug-normalizer.util';
+import {
+  buildSlugVariantsFromName,
+  detectDuplicateSlugBase,
+} from '../common/slug/slug-variant.util';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Game } from '../entities/game.entity';
+
+type MonthTuple = [number, number];
+
+interface RawgMonthlyRangeOptions {
+  startMonth?: string;
+  endMonth?: string;
+  monthsBack?: number;
+  monthsForward?: number;
+  limitMonths?: number;
+  ordering?: '-released' | '-added';
+  metacritic?: string;
+  pageSize?: number;
+  excludeExisting?: boolean;
+  dryRun?: boolean;
+}
+
+interface RawgCollectByIdOptions {
+  chunkSize?: number;
+  delayMs?: number;
+  dryRun?: boolean;
+}
+
+interface RawgCollectAllOptions extends RawgCollectByIdOptions {
+  limit?: number;
+}
 
 @Injectable()
 export class RawgDataPipelineService {
@@ -50,6 +82,8 @@ export class RawgDataPipelineService {
   constructor(
     private readonly rawgApiService: RawgApiService,
     private readonly youtubeService: YouTubeService, // Phase 4: YouTube 서비스 주입
+    @InjectRepository(Game)
+    private readonly gamesRepository: Repository<Game>,
   ) {}
 
   getLatestReport(): RawgCollectionReport | null {
@@ -58,34 +92,64 @@ export class RawgDataPipelineService {
 
   /**
    * ✅ 공개 API 이름 유지: collectProcessedData()
-   * 내부 로직은 "월 단위 통합 수집(PS+Xbox+Nintendo, 각 월 최대 50개)"으로 동작
-   * @returns ProcessedGameData[] - 파이프라인 컨트롤러가 기대하는 표준 형식
+   * 내부적으로 collectMonthlyRange를 호출하며, 향후 호환성을 위해 유지한다.
    */
   async collectProcessedData(
     opts: RawgCollectorOptions = {},
   ): Promise<ProcessedGameData[]> {
+    return this.collectMonthlyRange({
+      monthsBack: opts.monthsBack ?? RAWG_COLLECTION.pastMonths,
+      monthsForward: opts.monthsForward ?? RAWG_COLLECTION.futureMonths,
+      limitMonths: opts.limitMonths,
+      ordering: opts.ordering,
+      metacritic: opts.metacritic,
+      excludeExisting: false,
+    });
+  }
+
+  /**
+   * 월 범위 기반 RAWG 수집 (신규/갱신 공통)
+   */
+  async collectMonthlyRange(
+    options: RawgMonthlyRangeOptions = {},
+  ): Promise<ProcessedGameData[]> {
     const startedAt = Date.now();
-    const pastMonths = opts.monthsBack ?? RAWG_COLLECTION.pastMonths;
-    const futureMonths = opts.monthsForward ?? RAWG_COLLECTION.futureMonths;
-    const limitMonths = opts.limitMonths;
-    const ordering = opts.ordering ?? RAWG_COLLECTION.ordering;
-    const metacritic = opts.metacritic;
+    const months = this.buildMonthSequence(options);
+    if (!months.length) {
+      this.logger.warn('⚠️ [RAWG] 선택된 월이 없어 수집을 건너뜁니다.');
+      this.lastReport = {
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date().toISOString(),
+        totalGames: 0,
+        months: [],
+        failedMonths: [],
+        retryLogs: [],
+        consoleIssues: [],
+        monitorSnapshot: rawgMonitor.snapshot(),
+      };
+      return [];
+    }
 
-    const months = generateMonthRange(pastMonths, futureMonths);
-    const target =
-      limitMonths && limitMonths > 0 ? months.slice(0, limitMonths) : months;
+    const ordering = options.ordering ?? RAWG_COLLECTION.ordering;
+    const metacritic = options.metacritic;
+    const pageSize = options.pageSize ?? RAWG_COLLECTION.pageSize;
+    const excludeExisting = options.excludeExisting ?? false;
 
-    // 진행률 로그: 총 월 수
     this.logger.log(
-      `🗓️ [RAWG] 대상 월 수: ${target.length}개 (past=${pastMonths}, future=${futureMonths}, limit=${limitMonths ?? '∞'})`,
+      `🗓️ [RAWG] 월 범위 수집 시작 — 총 ${months.length}개월 (excludeExisting=${excludeExisting})`,
     );
 
-    const queue = target.map(([year, month]) => ({
+    const queue = months.map(([year, month]) => ({
       year,
       month,
       attempt: 1,
     }));
     const maxAttempts = 3;
+
+    const seen = new Set<number>();
+    const existingIds = excludeExisting
+      ? await this.loadExistingRawgIds()
+      : new Set<number>();
 
     const platformIds: number[] = [];
     if (RAWG_COLLECTION.enablePcPlatform) {
@@ -98,18 +162,18 @@ export class RawgDataPipelineService {
     );
     const unifiedPlatforms = platformIds.join(',');
 
-    const rawResults: RawgIntermediate[] = [];
-    const seen = new Set<string>();
+    const processedData: ProcessedGameData[] = [];
+    let totalCollected = 0;
     const monthStats: RawgMonthStat[] = [];
     const retryLogs: RawgRetryLog[] = [];
     const failedMonths: string[] = [];
     const consoleIssues: string[] = [];
     let monthIndex = 0;
+    let shouldStop = false;
 
-    while (queue.length) {
+    while (queue.length && !shouldStop) {
       const task = queue.shift()!;
       monthIndex++;
-
       const monthKey = `${task.year}-${String(task.month).padStart(2, '0')}`;
       const stat: RawgMonthStat = {
         month: monthKey,
@@ -128,23 +192,20 @@ export class RawgDataPipelineService {
           ordering,
           metacritic,
         });
-        stat.requestCount += 1;
+        params.page_size = pageSize;
 
-        +(
-          // 진행률 로그: 월 단위 시작
-          this.logger.log(
-            `📅 [RAWG] (${monthIndex}/${target.length}) ${monthKey} 수집 시작 (attempt ${task.attempt})`,
-          )
+        stat.requestCount += 1;
+        this.logger.log(
+          `📅 [RAWG] (${monthIndex}/${months.length}) ${monthKey} 수집 시작 (attempt ${task.attempt})`,
         );
 
-        // ✅ 페이지네이션 사용
         const games = await this.rawgApiService.searchGamesByPlatformPaged({
           platforms: unifiedPlatforms,
           dates: params.dates,
           ordering: params.ordering,
           metacritic: params.metacritic,
-          pageSize: RAWG_COLLECTION.pageSize, // 총 수집 목표
-          maxPages: 10, // 안전장치
+          pageSize,
+          maxPages: 10,
         });
 
         if (!games) {
@@ -153,8 +214,6 @@ export class RawgDataPipelineService {
         }
 
         if (!games.length) {
-          // ✅ empty_result는 재시도 금지 (정상 상황)
-          stat.gameCount = 0;
           stat.success = true;
           stat.reason = 'empty_result';
           this.logger.log(
@@ -163,13 +222,20 @@ export class RawgDataPipelineService {
           continue;
         }
 
+        const monthRawResults: RawgIntermediate[] = [];
         let addedCount = 0;
         let skippedByAdded = 0;
         let skippedByPopularity = 0;
+        let skippedExisting = 0;
 
         for (const g of games) {
-          const key = String(g?.id || g?.slug || '');
-          if (!key || seen.has(key)) continue;
+          if (shouldStop) break;
+          const rawgId = g?.id;
+          if (!rawgId || seen.has(rawgId)) continue;
+          if (excludeExisting && existingIds.has(rawgId)) {
+            skippedExisting++;
+            continue;
+          }
 
           const added = typeof g.added === 'number' ? g.added : 0;
           if (added < RAWG_COLLECTION.minAdded) {
@@ -191,7 +257,6 @@ export class RawgDataPipelineService {
           const families = Array.from(
             new Set(extractPlatformFamilies(g.platforms || [])),
           ) as ConsoleFamily[];
-
           if (!families.length) {
             this.pushIssue(
               consoleIssues,
@@ -202,11 +267,13 @@ export class RawgDataPipelineService {
 
           let isDlc = false;
           let parentRawgId: number | undefined;
-
-          if (g.parent_games_count && g.parent_games_count > 0) {
+          const parentCount = Number(
+            g.parent_games_count ?? g.parents_count ?? 0,
+          );
+          if (parentCount > 0) {
             try {
               const parentGames = await this.rawgApiService.getParentGames(
-                g.id,
+                rawgId,
               );
               if (parentGames.length > 0) {
                 isDlc = true;
@@ -222,47 +289,54 @@ export class RawgDataPipelineService {
             }
           }
 
-          // ⚠️ RAWG API의 slug는 플랫폼별 표기 차이로 중복 게임을 유발할 수 있음
-          // 예: "Metal Gear Solid Delta" (RAWG) vs "METAL GEAR SOLID Δ" (Steam)
-          // 해결: normalizeGameName()으로 통일된 slug 생성
           const normalizedSlug = normalizeGameName(g.name);
-
           const platformDetails = (g.platforms || []).map((p: any) => ({
             slug: p?.platform?.slug ?? undefined,
             releasedAt: p?.released_at ?? null,
           }));
 
-          rawResults.push({
-            rawgId: g.id,
-            slug: normalizedSlug, // ⚠️ 변경: g.slug → normalizedSlug
+          monthRawResults.push({
+            rawgId,
+            slug: normalizedSlug,
             name: g.name,
             parentRawgId,
             screenshots:
-              g.short_screenshots?.slice(0, 5).map((s: any) => s.image) || [],
+              (g.short_screenshots || []).slice(0, 5).map((s: any) => s.image),
+            headerImage: g.background_image ?? null,
             released: g.released ?? null,
             platformFamilies: families,
             platformDetails,
             added,
             popularityScore,
             isDlc,
-            headerImage: g.background_image,
             sourceMonth: monthKey,
           });
-          seen.add(key);
+          seen.add(rawgId);
           addedCount++;
+
+          // 더 이상 limit으로 중단하지 않음 (전체 수집)
         }
 
         stat.gameCount = addedCount;
         stat.success = true;
-        stat.reason = `ok(len=${games.length}, kept=${addedCount}, skipAdded=${skippedByAdded}, skipPop=${skippedByPopularity})`;
+        stat.reason = `ok(len=${games.length}, kept=${addedCount}, skipAdded=${skippedByAdded}, skipPop=${skippedByPopularity}, skipExisting=${skippedExisting})`;
+        totalCollected += addedCount;
+
+        if (monthRawResults.length) {
+          const mapped = await this.mapRawResults(
+            monthRawResults,
+            consoleIssues,
+            processedData.length,
+          );
+          processedData.push(...mapped);
+        }
+
         this.logger.log(
-          `✅ [RAWG] ${monthKey} 완료 — 해당 월 총 게임 :${games.length}, 인기도 통과:${addedCount}, added필터:${skippedByAdded}, 인기도 필터에 해당한 게임:${skippedByPopularity}`,
+          `✅ [RAWG] ${monthKey} 완료 — 총:${games.length}, 저장:${addedCount}, added필터:${skippedByAdded}, 인기필터:${skippedByPopularity}, 기존:${skippedExisting}`,
         );
       } catch (error) {
         const message = retryReason ?? (error as Error).message;
         stat.reason = message;
-        // ❗ empty_result는 try 블록에서 continue 처리됨 — 여기 오면 '진짜 에러'
-
         if (task.attempt < maxAttempts) {
           shouldRetry = true;
           retryReason = message;
@@ -301,7 +375,7 @@ export class RawgDataPipelineService {
             attempt: task.attempt + 1,
           });
           await this.delay(retryDelay);
-        } else {
+        } else if (!shouldStop) {
           const baseDelay =
             RAWG_COLLECTION.requestDelayMs * (task.attempt > 1 ? 1.5 : 1);
           await this.delay(baseDelay);
@@ -310,32 +384,8 @@ export class RawgDataPipelineService {
     }
 
     this.logger.log(
-      `✨ [RAWG] 월 단위 통합 수집 완료 — 고유 게임 수: ${rawResults.length}`,
+      `✨ [RAWG] 월 단위 수집 종료 — 후보 ${totalCollected}건, 상세 완료 ${processedData.length}건`,
     );
-
-    const processedData: ProcessedGameData[] = [];
-    for (const raw of rawResults) {
-      // 매핑 진행률 로그
-      this.logger.log(
-        `🧪 [RAWG] 게임 메타 매핑 시작 — 총 ${rawResults.length}건`,
-      );
-
-      for (let i = 0; i < rawResults.length; i++) {
-        const raw = rawResults[i];
-        if (i === 0 || (i + 1) % 25 === 0 || i === rawResults.length - 1) {
-          this.logger.log(
-            `🔧 [RAWG] 매핑 진행 ${i + 1}/${rawResults.length} — ${raw.name}`,
-          );
-        }
-      }
-      const gameData = await this.mapToProcessedGameData(raw, consoleIssues);
-      processedData.push(gameData);
-    }
-    this.logger.log(
-      `✅ [RAWG] 게임 메타 매핑 완료 — ${processedData.length}건`,
-    );
-
-    const uniqueConsoleIssues = Array.from(new Set(consoleIssues));
 
     const report: RawgCollectionReport = {
       startedAt: new Date(startedAt).toISOString(),
@@ -344,14 +394,124 @@ export class RawgDataPipelineService {
       months: monthStats,
       failedMonths,
       retryLogs,
-      consoleIssues: uniqueConsoleIssues,
+      consoleIssues: Array.from(new Set(consoleIssues)),
       monitorSnapshot: rawgMonitor.snapshot(),
     };
+
     this.lastReport = report;
     await this.writeReport(report);
 
     return processedData;
   }
+
+  async collectNewGames(
+    options: RawgMonthlyRangeOptions = {},
+  ): Promise<ProcessedGameData[]> {
+    return this.collectMonthlyRange({
+      ...options,
+      excludeExisting: options.excludeExisting ?? true,
+    });
+  }
+
+  async collectByRawgIds(
+    rawgIds: number[],
+    opts: RawgCollectByIdOptions = {},
+  ): Promise<ProcessedGameData[]> {
+    const startedAt = Date.now();
+    const chunkSize = Math.max(1, opts.chunkSize ?? 20);
+    const delayMs = Math.max(0, opts.delayMs ?? 1000);
+
+    if (!Array.isArray(rawgIds) || rawgIds.length === 0) {
+      this.logger.warn('[RAWG] collectByRawgIds 호출 - 대상 ID가 없습니다.');
+      this.lastReport = {
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date().toISOString(),
+        totalGames: 0,
+        months: [],
+        failedMonths: [],
+        retryLogs: [],
+        consoleIssues: [],
+        monitorSnapshot: rawgMonitor.snapshot(),
+      };
+      return [];
+    }
+
+    const consoleIssues: string[] = [];
+    const results: ProcessedGameData[] = [];
+    const retryLogs: RawgRetryLog[] = [];
+
+    for (let index = 0; index < rawgIds.length; index += chunkSize) {
+      const slice = rawgIds.slice(index, index + chunkSize);
+      this.logger.log(
+        `🎯 [RAWG] RAWG ID 갱신 (${index + 1}-${index + slice.length}/${rawgIds.length})`,
+      );
+
+      for (const id of slice) {
+        try {
+          const processed = await this.collectOneByRawgId(id);
+          if (processed) {
+            results.push(processed);
+          } else {
+            retryLogs.push({
+              month: `rawg:${id}`,
+              attempts: 1,
+              status: 'failed',
+              reason: 'not-found',
+            });
+          }
+        } catch (error: any) {
+          retryLogs.push({
+            month: `rawg:${id}`,
+            attempts: 1,
+            status: 'failed',
+            reason: error?.message ?? 'unknown-error',
+          });
+        }
+      }
+
+      if (delayMs > 0 && index + chunkSize < rawgIds.length) {
+        await this.delay(delayMs);
+      }
+    }
+
+    this.lastReport = {
+      startedAt: new Date(startedAt).toISOString(),
+      finishedAt: new Date().toISOString(),
+      totalGames: results.length,
+      months: [],
+      failedMonths: retryLogs
+        .filter((log) => log.status === 'failed')
+        .map((log) => log.month),
+      retryLogs,
+      consoleIssues: Array.from(new Set(consoleIssues)),
+      monitorSnapshot: rawgMonitor.snapshot(),
+    };
+
+    return results;
+  }
+
+  async collectAllExisting(
+    opts: RawgCollectAllOptions = {},
+  ): Promise<{ targetIds: number[]; processed: ProcessedGameData[] }> {
+    const qb = this.gamesRepository
+      .createQueryBuilder('game')
+      .select('game.rawg_id', 'rawg_id')
+      .where('game.rawg_id IS NOT NULL')
+      .orderBy('game.updated_at', 'DESC');
+
+    if (opts.limit && opts.limit > 0) {
+      qb.limit(opts.limit);
+    }
+
+    const rows = await qb.getRawMany<{ rawg_id: string }>();
+    const ids = rows
+      .map((row) => Number(row.rawg_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const processed = await this.collectByRawgIds(ids, opts);
+    return { targetIds: ids, processed };
+  }
+
   /**
    * RAWG 단일 수집 (rawg_id 기준)
    * - 성공: 해당 게임을 ProcessedGameData로 가공하여 반환
@@ -391,7 +551,8 @@ export class RawgDataPipelineService {
       // 3) DLC/부모 매핑
       let isDlc = false;
       let parentRawgId: number | undefined;
-      const parentCount = details?.parent_games_count ?? 0;
+      const parentCount =
+        Number(details?.parent_games_count ?? details?.parents_count ?? 0) || 0;
       if (parentCount > 0) {
         try {
           const parents = await this.rawgApiService.getParentGames(rawgId);
@@ -459,6 +620,116 @@ export class RawgDataPipelineService {
     }
   }
 
+  private buildMonthSequence(options: RawgMonthlyRangeOptions): MonthTuple[] {
+    const limitMonths =
+      options.limitMonths && options.limitMonths > 0
+        ? Math.floor(options.limitMonths)
+        : undefined;
+
+    let sequence: MonthTuple[] = [];
+
+    if (options.startMonth || options.endMonth) {
+      const start = this.parseMonthString(
+        options.startMonth ?? options.endMonth!,
+      );
+      const end = this.parseMonthString(
+        options.endMonth ?? options.startMonth!,
+      );
+      const [startYear, startMonth] = start;
+      const [endYear, endMonth] = end;
+      let currentYear = startYear;
+      let currentMonth = startMonth;
+
+      while (
+        currentYear < endYear ||
+        (currentYear === endYear && currentMonth <= endMonth)
+      ) {
+        sequence.push([currentYear, currentMonth]);
+        currentMonth++;
+        if (currentMonth > 12) {
+          currentMonth = 1;
+          currentYear++;
+        }
+      }
+    } else {
+      const past = options.monthsBack ?? RAWG_COLLECTION.pastMonths;
+      const future = options.monthsForward ?? RAWG_COLLECTION.futureMonths;
+      sequence = generateMonthRange(past, future);
+    }
+
+    if (limitMonths) {
+      sequence = sequence.slice(0, limitMonths);
+    }
+
+    return sequence;
+  }
+
+  private parseMonthString(value: string): MonthTuple {
+    const match = /^(\d{4})-(\d{2})$/.exec(value);
+    if (!match) {
+      throw new Error(`잘못된 월 형식(YYYY-MM): ${value}`);
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+      throw new Error(`잘못된 월 값: ${value}`);
+    }
+    return [year, month];
+  }
+
+  private async loadExistingRawgIds(): Promise<Set<number>> {
+    const rows = await this.gamesRepository
+      .createQueryBuilder('game')
+      .select('game.rawg_id', 'rawg_id')
+      .where('game.rawg_id IS NOT NULL')
+      .getRawMany<{ rawg_id: string }>();
+    const set = new Set<number>();
+    for (const row of rows) {
+      const id = Number(row.rawg_id);
+      if (Number.isFinite(id) && id > 0) {
+        set.add(id);
+      }
+    }
+    return set;
+  }
+
+  private async mapRawResults(
+    rawResults: RawgIntermediate[],
+    consoleIssues: string[],
+    offset = 0,
+  ): Promise<ProcessedGameData[]> {
+    const processedData: ProcessedGameData[] = [];
+    const chunkCount = rawResults.length;
+    const globalTotal = offset + chunkCount;
+    this.logger.log(
+      `🧪 [RAWG] 게임 메타 매핑 시작 — 이번 청크 ${chunkCount}건 (누적 ${globalTotal}건)`,
+    );
+    for (let i = 0; i < rawResults.length; i++) {
+      const raw = rawResults[i];
+      const globalIndex = offset + i + 1;
+      const logPrefix = `[${globalIndex}/${globalTotal}] ${raw.name} (rawgId=${raw.rawgId}, month=${raw.sourceMonth})`;
+      if (i === 0 || (i + 1) % 25 === 0 || i === rawResults.length - 1) {
+        this.logger.log(`🔧 [RAWG] 매핑 진행 ${logPrefix}`);
+      }
+
+      this.logger.debug(`🎯 [RAWG] 상세 매핑 시작 — ${logPrefix}`);
+      try {
+        const gameData = await this.mapToProcessedGameData(raw, consoleIssues);
+        processedData.push(gameData);
+        this.logger.debug(`✅ [RAWG] 상세 매핑 완료 — ${logPrefix}`);
+      } catch (error: any) {
+        this.logger.error(
+          `❌ [RAWG] 상세 매핑 실패 — ${logPrefix}: ${error?.message ?? error}`,
+        );
+        throw error;
+      }
+    }
+    this.logger.log(
+      `✅ [RAWG] 게임 메타 매핑 완료 — ${processedData.length}건`,
+    );
+    return processedData;
+  }
+
   /**
    * RAWG 원시 데이터를 ProcessedGameData 형식으로 변환
    * Phase 4: 인기도 40점 이상 게임은 YouTube 트레일러 조회
@@ -497,6 +768,35 @@ export class RawgDataPipelineService {
     if (!raw.isDlc && meetsPopularityThreshold) {
       try {
         rawgDetails = await this.rawgApiService.getGameDetails(raw.rawgId);
+
+        const detailParentCount = Number(
+          rawgDetails?.parent_games_count ?? rawgDetails?.parents_count ?? 0,
+        );
+        if (detailParentCount > 0) {
+          if (!raw.isDlc) {
+            raw.isDlc = true;
+            this.logger.log(
+              `✅ [RAWG] 상세 정보에서 DLC 판정 - ${raw.name} (rawgId=${raw.rawgId})`,
+            );
+          }
+          if (!raw.parentRawgId) {
+            try {
+              const parents = await this.rawgApiService.getParentGames(
+                raw.rawgId,
+              );
+              if (parents?.length) {
+                raw.parentRawgId = parents[0].id;
+                this.logger.log(
+                  `   ↳ 부모 게임: ${parents[0].name} (rawg_id=${parents[0].id})`,
+                );
+              }
+            } catch (e: any) {
+              this.logger.warn(
+                `⚠️ [RAWG] 상세 기반 부모 조회 실패 - ${raw.name}: ${e?.message ?? e}`,
+              );
+            }
+          }
+        }
 
         try {
           const releaseYear = releaseDate?.getUTCFullYear();
@@ -702,12 +1002,23 @@ export class RawgDataPipelineService {
       : undefined;
 
     const candidateSlugs = new Set<string>();
-    [raw.slug, raw.name, rawgDetails?.slug, rawgDetails?.name]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .forEach((value) => {
-        const normalized = normalizeSlugCandidate(value);
-        if (normalized) candidateSlugs.add(normalized);
-      });
+    const pushCandidate = (value?: string | null) => {
+      const normalized = normalizeSlugCandidate(value);
+      if (normalized) candidateSlugs.add(normalized);
+    };
+
+    pushCandidate(raw.slug);
+    pushCandidate(raw.name);
+    pushCandidate(rawgDetails?.slug);
+    pushCandidate(rawgDetails?.name);
+
+    buildSlugVariantsFromName(raw.name).forEach(pushCandidate);
+    if (rawgDetails?.name && rawgDetails.name !== raw.name) {
+      buildSlugVariantsFromName(rawgDetails.name).forEach(pushCandidate);
+    }
+
+    const duplicateBase = detectDuplicateSlugBase(raw.slug, raw.name);
+    if (duplicateBase) candidateSlugs.add(duplicateBase);
 
     const matchingContext: MatchingContextData = {
       source: 'rawg',
@@ -737,6 +1048,7 @@ export class RawgDataPipelineService {
       rawgId: raw.rawgId,
       gameType,
       parentRawgId: raw.isDlc ? raw.parentRawgId : undefined,
+      sourceMonth: raw.sourceMonth,
 
       releaseDate,
       releaseDateRaw: releaseInfo.raw,

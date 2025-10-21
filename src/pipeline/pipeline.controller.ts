@@ -30,7 +30,6 @@ import {
 import { SaveFailureDetail } from './contracts/save-result.contract';
 import { PersistenceSaveResult } from './persistence/persistence.types';
 
-import { ManualPipelineDto } from './dto/manual-pipeline.dto';
 import { SteamRefreshDto } from './dto/steam-refresh.dto';
 import { SteamNewDto } from './dto/steam-new.dto';
 import {
@@ -39,7 +38,16 @@ import {
   SourcesEnum,
 } from './dto/single-game-manual-dto';
 import { FullRefreshDto } from './dto/full-refresh.dto';
-
+import { RawgNewDto } from '../rawg/dto/rawg-new.dto';
+import { RawgRefreshDto } from '../rawg/dto/rawg-refresh.dto';
+import {
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiTags,
+  ApiOkResponse,
+} from '@nestjs/swagger';
 type SteamBatchRunningTotals = {
   collected: number;
   created: number;
@@ -129,6 +137,7 @@ interface SteamBatchHooks<TTarget> {
  * - 트랜잭션 보장
  */
 
+@ApiTags('Pipeline')
 @Controller('api/pipeline')
 export class PipelineController {
   private readonly logger = new Logger(PipelineController.name);
@@ -178,6 +187,24 @@ export class PipelineController {
 
 
   @Get('cron/steam-maintenance')
+  @ApiOperation({
+    summary: 'Steam 유지보수 (cron용)',
+    description:
+      '출시 윈도우 갱신과 신규 탐지를 순차적으로 실행합니다. 운영자 전용 엔드포인트입니다.',
+  })
+  @ApiOkResponse({
+    description: '실행 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Steam maintenance completed',
+        data: {
+          refresh: { statusCode: 200, message: '...', data: { pipelineRunId: 1 } },
+          steamNew: { statusCode: 200, message: '...', data: { pipelineRunId: 2 } },
+        },
+      },
+    },
+  })
   async triggerSteamMaintenance(): Promise<
     ApiResponse<{
       refresh: ApiResponse<PipelineRunResult>;
@@ -208,160 +235,389 @@ export class PipelineController {
       },
     };
   }
-
-  /**
-   * 수동 실행 API (관리자 전용)
-   * Query Parameters:
-   * - phase: 'steam' | 'rawg' | 'full' (기본: 'full')
-   * - mode: 'bootstrap' | 'operational' (기본: 'bootstrap')
-   * - limit: number (기본: 200, 최소: 1, 최대: 10000)
-   * - strategy: 'latest' | 'priority' | 'incremental' |batch (기본: 'latest')
-   */
-  @Post('manual')
+  @Post('rawg/new')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  async executeManualPipeline(
-    @Query() params: ManualPipelineDto,
+  @ApiOperation({
+    summary: 'RAWG 신규 수집',
+    description:
+      'RAWG에서 지정한 기간/월 범위의 신규 게임을 수집하여 DB에 저장합니다.',
+  })
+  @ApiBody({
+    type: RawgNewDto,
+    examples: {
+      default: {
+        summary: '예시 요청',
+        value: {
+          monthsBack: 0,
+          monthsForward: 1,
+          pageSize: 10,
+          excludeExisting: true,
+          dryRun: false,
+        },
+      },
+      customRange: {
+        summary: '명시적 범위 지정 예시',
+        value: {
+          startMonth: '2024-01',
+          endMonth: '2024-06',
+          ordering: '-added',
+          pageSize: 20,
+          excludeExisting: false,
+          dryRun: true,
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'RAWG 신규 수집 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'RAWG 신규 수집 완료 (12.34s)',
+        data: {
+          pipelineRunId: 123,
+          phase: 'rawg-new',
+          totalProcessed: 15,
+          finishedAt: '2025-10-21T12:00:00.000Z',
+          rawgNewSummary: {
+            collected: 15,
+            saved: 15,
+            created: 15,
+            updated: 0,
+            failed: 0,
+            dryRun: false,
+            excludeExisting: true,
+          },
+        },
+      },
+    },
+  })
+  async executeRawgNew(
+    @Body() dto: RawgNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
-    // DTO 기본값 보장 (ValidationPipe transform 후 undefined 방지)
-    const phase = params.phase ?? 'full';
-    const mode = params.mode ?? 'bootstrap';
-    const limit = params.limit ?? 200;
-    const strategy = params.strategy ?? 'latest';
-    const startTime = Date.now();
+    const startedAt = Date.now();
+    const dryRun = dto.dryRun ?? false;
+    const excludeExisting = dto.excludeExisting ?? true;
 
-    this.logger.log(`🚀 [수동 파이프라인] 시작`);
-    this.logger.log(`   - phase: ${phase}`);
-    this.logger.log(`   - mode: ${mode}`);
-    this.logger.log(`   - limit: ${limit}`);
-    this.logger.log(`   - strategy: ${strategy}`);
-
-    const pipelineRun = await this.createPipelineRun('manual', phase);
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'rawg-new',
+      'rawg_new_pipeline_manual',
+    );
 
     try {
-      let steamData: ProcessedGameData[] = [];
-      let rawgData: ProcessedGameData[] = [];
-      let rawgCount = 0;
+      const processed = await this.rawgDataPipeline.collectNewGames({
+        startMonth: dto.startMonth,
+        endMonth: dto.endMonth,
+        monthsBack: dto.monthsBack,
+        monthsForward: dto.monthsForward,
+        limitMonths: dto.limitMonths,
+        ordering: dto.ordering,
+        metacritic: dto.metacritic,
+        pageSize: dto.pageSize,
+        excludeExisting,
+      });
 
-      // Steam 데이터 수집
-      if (phase === 'steam' || phase === 'full') {
-        this.logger.log('📥 [수동 파이프라인] Steam 데이터 수집 시작');
-
-        const collectedSteam =
-          await this.steamDataPipeline.collectProcessedData({
-            mode,
-            limit,
-            strategy,
-          });
-        this.logger.log(
-          `✨ [수동 파이프라인] Steam: ${collectedSteam.length}/${limit}개 수집 완료`,
-        );
-
-        steamData = collectedSteam;
+      const totalCollected = processed.length;
+      const groupedByMonth = new Map<string, ProcessedGameData[]>();
+      for (const item of processed) {
+        const monthKey = item.sourceMonth ?? 'unknown';
+        if (!groupedByMonth.has(monthKey)) {
+          groupedByMonth.set(monthKey, []);
+        }
+        groupedByMonth.get(monthKey)!.push(item);
       }
+      const orderedMonths = Array.from(groupedByMonth.keys()).sort();
 
-      // RAWG 데이터 수집
-      if (phase === 'rawg' || phase === 'full') {
-        this.logger.log('📥 [수동 파이프라인] RAWG 데이터 수집 시작');
-        rawgData = await this.rawgDataPipeline.collectProcessedData();
-        rawgCount = rawgData.length;
-        this.logger.log(`✨ [수동 파이프라인] RAWG: ${rawgCount}개 수집 완료`);
-      }
+      const aggregated: PersistenceSaveResult = {
+        created: 0,
+        updated: 0,
+        failed: 0,
+        failures: [],
+      };
+      let failureSummaries: ReturnType<typeof this.mapFailureDetails> = [];
 
-      // 통합 저장
-      const totalProcessed = steamData.length + rawgData.length;
-      this.logger.log(
-        `💾 [수동 파이프라인] ${totalProcessed}개 게임 저장 시작`,
-      );
-
-      let totalCreated = 0;
-      let totalUpdated = 0;
-      let totalFailed = 0;
-
-      let steamSummary:
-        | {
-            created: number;
-            updated: number;
-            failed: number;
-            total: number;
-            failures?: {
-              steamId: number | null;
-              rawgId: number | null;
-              slug: string | null;
-              reason: string;
-              message: string;
-            }[];
+      if (!dryRun && totalCollected > 0) {
+        const SAVE_BATCH_SIZE = 1000;
+        for (const monthKey of orderedMonths) {
+          const items = groupedByMonth.get(monthKey)!;
+          const totalChunks = Math.ceil(items.length / SAVE_BATCH_SIZE) || 1;
+          this.logger.log(
+            `💾 [RAWG 신규] ${monthKey} 월 저장 시작 (${items.length}건, 청크=${totalChunks})`,
+          );
+          for (let index = 0; index < items.length; index += SAVE_BATCH_SIZE) {
+            const chunk = items.slice(index, index + SAVE_BATCH_SIZE);
+            const chunkNo = Math.floor(index / SAVE_BATCH_SIZE) + 1;
+            this.logger.log(
+              `   chunk ${chunkNo}/${totalChunks} 저장 (${chunk.length}건)`,
+            );
+            const chunkResult = await this.persistence.saveProcessedGames(
+              chunk,
+              pipelineRun.id,
+            );
+            aggregated.created += chunkResult.created;
+            aggregated.updated += chunkResult.updated;
+            aggregated.failed += chunkResult.failed;
+            if (chunkResult.failures?.length) {
+              aggregated.failures.push(...chunkResult.failures);
+            }
           }
-        | undefined;
+        }
 
-      if (steamData.length > 0) {
-        const steamResult = await this.persistence.saveProcessedGames(
-          steamData,
-          pipelineRun.id,
-        );
-        const steamFailures = this.mapFailureDetails(steamResult.failures);
-        steamSummary = {
-          created: steamResult.created,
-          updated: steamResult.updated,
-          failed: steamResult.failed,
-          total: steamData.length,
-          failures: steamFailures.length > 0 ? steamFailures : undefined,
-        };
-        totalCreated += steamResult.created;
-        totalUpdated += steamResult.updated;
-        totalFailed += steamResult.failed;
+        failureSummaries = this.mapFailureDetails(aggregated.failures);
+      } else if (dryRun) {
+        this.logger.log(`🧪 [RAWG 신규] 드라이런 모드 — 저장 생략`);
+      } else {
+        this.logger.log(`ℹ️ [RAWG 신규] 저장할 데이터가 없습니다.`);
       }
-
-      if (rawgData.length > 0) {
-        const rawgResult = await this.persistence.saveProcessedGames(
-          rawgData,
-          pipelineRun.id,
-        );
-        totalCreated += rawgResult.created;
-        totalUpdated += rawgResult.updated;
-        totalFailed += rawgResult.failed;
-      }
-
-      // saveResult는 최소한 아래 형태라고 가정
-      // type SaveResult = { created: number; updated: number; failed: number; failedItems?: any[] };
-
-      const duration = Date.now() - startTime;
-      const durationSeconds = (duration / 1000).toFixed(2);
-
-      const rawgReport =
-        rawgCount > 0 ? this.rawgDataPipeline.getLatestReport() : null;
 
       await this.completePipelineRun(
         pipelineRun.id,
         'completed',
-        undefined,
-        totalProcessed,
-        totalCreated + totalUpdated,
-        totalFailed,
+        dryRun ? 'dry-run' : undefined,
+        totalCollected,
+        aggregated.created + aggregated.updated,
+        aggregated.failed,
       );
-      this.logger.log(`✅ [수동 파이프라인] 완료`);
-      this.logger.log(`   - 총 처리 시간: ${durationSeconds}초`);
-      this.logger.log(`   - 성공: ${totalCreated + totalUpdated}개`);
-      this.logger.log(`   - 실패: ${totalFailed}개`);
+
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      const rawgReport = this.rawgDataPipeline.getLatestReport();
 
       return {
         statusCode: 200,
-        message: '파이프라인 수동 실행 완료',
+        message: `RAWG 신규 수집 완료 (${durationSeconds}s)`,
         data: {
           pipelineRunId: pipelineRun.id,
-          phase,
-          totalProcessed,
+          phase: 'rawg-new',
+          totalProcessed: totalCollected,
           finishedAt: new Date(),
-          steamSummary: steamSummary ?? undefined,
+          rawgNewSummary: {
+            collected: totalCollected,
+            saved: aggregated.created + aggregated.updated,
+            created: aggregated.created,
+            updated: aggregated.updated,
+            failed: aggregated.failed,
+            dryRun,
+            excludeExisting,
+            monthsBack: dto.monthsBack ?? null,
+            monthsForward: dto.monthsForward ?? null,
+            startMonth: dto.startMonth ?? null,
+            endMonth: dto.endMonth ?? null,
+            pageSize: dto.pageSize ?? null,
+            months: orderedMonths,
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
+          },
           rawgReport: rawgReport ?? undefined,
         },
       };
     } catch (error) {
-      const duration = Date.now() - startTime;
-      const durationSeconds = (duration / 1000).toFixed(2);
       const err = this.normalizeError(error);
+      this.logger.error(`❌ [RAWG 신규] 실패 - ${err.message}`);
 
-      this.logger.error(`❌ [수동 파이프라인] 실패 (${durationSeconds}초)`);
-      this.logger.error(`   - 오류: ${err.message}`);
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
+    }
+  }
+
+  @Post('rawg/refresh')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary: 'RAWG 데이터 갱신',
+    description:
+      'rawgIds 배열을 지정하거나 전체 RAWG DB 게임을 대상으로 상세 정보를 갱신합니다.',
+  })
+  @ApiBody({
+    type: RawgRefreshDto,
+    examples: {
+      selected: {
+        summary: '선택 업데이트',
+        value: {
+          rawgIds: [1234, 5678],
+          chunkSize: 10,
+          delayMs: 1000,
+          dryRun: false,
+        },
+      },
+      full: {
+        summary: '전체 갱신 (limit 100)',
+        value: {
+          limit: 100,
+          chunkSize: 20,
+          delayMs: 1500,
+          dryRun: true,
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'RAWG 갱신 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'RAWG 갱신 완료 (8.21s)',
+        data: {
+          pipelineRunId: 456,
+          phase: 'rawg-refresh',
+          totalProcessed: 20,
+          finishedAt: '2025-10-21T12:10:00.000Z',
+          rawgRefreshSummary: {
+            targetIds: [1234, 5678],
+            inspected: 2,
+            processed: 2,
+            saved: 2,
+            failed: 0,
+            dryRun: false,
+            chunkSize: 20,
+            delayMs: 1000,
+          },
+        },
+      },
+    },
+  })
+  async executeRawgRefresh(
+    @Body() dto: RawgRefreshDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const startedAt = Date.now();
+    const dryRun = dto.dryRun ?? false;
+
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'rawg-refresh',
+      'rawg_refresh_pipeline_manual',
+    );
+
+    try {
+      let targetIds: number[] = [];
+      let processed: ProcessedGameData[] = [];
+
+      if (dto.rawgIds && dto.rawgIds.length > 0) {
+        targetIds = Array.from(new Set(dto.rawgIds)).filter((id) => id > 0);
+        processed = await this.rawgDataPipeline.collectByRawgIds(targetIds, {
+          chunkSize: dto.chunkSize,
+          delayMs: dto.delayMs,
+        });
+      } else {
+        const { targetIds: ids, processed: data } =
+          await this.rawgDataPipeline.collectAllExisting({
+            limit: dto.limit,
+            chunkSize: dto.chunkSize,
+            delayMs: dto.delayMs,
+          });
+        targetIds = ids;
+        processed = data;
+      }
+
+      if (targetIds.length === 0) {
+        this.logger.warn('⚠️ [RAWG Refresh] 갱신 대상이 없습니다.');
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'no-targets',
+          0,
+          0,
+          0,
+        );
+
+        return {
+          statusCode: 200,
+          message: 'RAWG 갱신 대상이 없습니다.',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'rawg-refresh',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            rawgRefreshSummary: {
+              targetIds: [],
+              inspected: 0,
+              processed: 0,
+              saved: 0,
+              failed: 0,
+              dryRun,
+              chunkSize: dto.chunkSize ?? null,
+              delayMs: dto.delayMs ?? null,
+            },
+          },
+        };
+      }
+
+      const totalCollected = processed.length;
+      const aggregated: PersistenceSaveResult = {
+        created: 0,
+        updated: 0,
+        failed: 0,
+        failures: [],
+      };
+      let failureSummaries: ReturnType<typeof this.mapFailureDetails> = [];
+
+      if (!dryRun && totalCollected > 0) {
+        const SAVE_BATCH_SIZE = 1000;
+        const totalChunks = Math.ceil(totalCollected / SAVE_BATCH_SIZE) || 1;
+        this.logger.log(
+          `💾 [RAWG Refresh] ${totalCollected}/${targetIds.length}건 저장 시작 (청크=${totalChunks})`,
+        );
+        for (let index = 0; index < totalCollected; index += SAVE_BATCH_SIZE) {
+          const chunk = processed.slice(index, index + SAVE_BATCH_SIZE);
+          const chunkNo = Math.floor(index / SAVE_BATCH_SIZE) + 1;
+          this.logger.log(
+            `   chunk ${chunkNo}/${totalChunks} 저장 (${chunk.length}건)`,
+          );
+          const chunkResult = await this.persistence.saveProcessedGames(
+            chunk,
+            pipelineRun.id,
+          );
+          aggregated.created += chunkResult.created;
+          aggregated.updated += chunkResult.updated;
+          aggregated.failed += chunkResult.failed;
+          if (chunkResult.failures?.length) {
+            aggregated.failures.push(...chunkResult.failures);
+          }
+        }
+        failureSummaries = this.mapFailureDetails(aggregated.failures);
+      } else if (dryRun) {
+        this.logger.log(`🧪 [RAWG Refresh] 드라이런 모드 — 저장 생략`);
+      } else {
+        this.logger.log('ℹ️ [RAWG Refresh] 저장할 데이터가 없습니다.');
+      }
+
+      await this.completePipelineRun(
+        pipelineRun.id,
+        'completed',
+        dryRun ? 'dry-run' : undefined,
+        targetIds.length,
+        aggregated.created + aggregated.updated,
+        aggregated.failed,
+      );
+
+      const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+      const rawgReport = this.rawgDataPipeline.getLatestReport();
+
+      return {
+        statusCode: 200,
+        message: `RAWG 갱신 완료 (${durationSeconds}s)`,
+        data: {
+          pipelineRunId: pipelineRun.id,
+          phase: 'rawg-refresh',
+          totalProcessed: totalCollected,
+          finishedAt: new Date(),
+          rawgRefreshSummary: {
+            targetIds,
+            inspected: targetIds.length,
+            processed: totalCollected,
+            saved: aggregated.created + aggregated.updated,
+            failed: aggregated.failed,
+            dryRun,
+            chunkSize: dto.chunkSize ?? null,
+            delayMs: dto.delayMs ?? null,
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
+          },
+          rawgReport: rawgReport ?? undefined,
+        },
+      };
+    } catch (error) {
+      const err = this.normalizeError(error);
+      this.logger.error(`❌ [RAWG Refresh] 실패 - ${err.message}`);
 
       await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
       throw err;
@@ -370,6 +626,50 @@ export class PipelineController {
 
   @Post('steam/new')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary: 'Steam 신규 게임 탐지',
+    description:
+      'Steam AppList에서 기존에 저장되지 않은 게임을 찾아 상세 정보를 수집합니다.',
+  })
+  @ApiBody({
+    type: SteamNewDto,
+    examples: {
+      default: {
+        summary: '예시',
+        value: {
+          mode: 'operational',
+          limit: 500,
+          dryRun: false,
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Steam 신규 탐지 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Steam 신규 30건 처리 완료 (수집 30/100건)',
+        data: {
+          pipelineRunId: 789,
+          phase: 'steam',
+          totalProcessed: 30,
+          finishedAt: '2025-10-21T12:15:00.000Z',
+          steamNewSummary: {
+            candidates: 120,
+            inspected: 100,
+            targetIds: [123, 456],
+            excludedByRegistry: 5,
+            created: 25,
+            updated: 5,
+            saved: 30,
+            failed: 0,
+            dryRun: false,
+          },
+        },
+      },
+    },
+  })
   async executeSteamNew(
     @Body() params: SteamNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
@@ -607,6 +907,46 @@ export class PipelineController {
 
   @Post('refresh/steam')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary: 'Steam 출시 윈도우 갱신',
+    description:
+      '출시 임박 또는 최근 출시된 게임을 중심으로 상세 정보를 재수집합니다.',
+  })
+  @ApiBody({
+    type: SteamRefreshDto,
+    examples: {
+      default: {
+        summary: '예시',
+        value: {
+          limit: 40,
+          dryRun: false,
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Steam 출시 윈도우 갱신 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Steam 출시 윈도우 갱신 완료 (5.02s)',
+        data: {
+          pipelineRunId: 1011,
+          phase: 'steam',
+          totalProcessed: 40,
+          finishedAt: '2025-10-21T12:20:00.000Z',
+          refreshSummary: {
+            totalCandidates: 40,
+            processed: 38,
+            saved: 35,
+            failed: 3,
+            dryRun: false,
+            candidates: [],
+          },
+        },
+      },
+    },
+  })
   async executeSteamRefresh(
     @Body() params: SteamRefreshDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
@@ -753,6 +1093,48 @@ export class PipelineController {
 
   @Post('steam/full-refresh')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary: 'Steam 전체 게임 갱신',
+    description:
+      '저장된 모든 Steam 게임에 대해 상세 정보를 재수집합니다. 비용이 큰 작업이므로 주의해서 사용하세요.',
+  })
+  @ApiBody({
+    type: FullRefreshDto,
+    examples: {
+      default: {
+        summary: '예시',
+        value: {
+          mode: 'operational',
+          dryRun: true,
+          limit: 500,
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Steam 전체 갱신 결과',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Steam 전체 갱신 완료 (dry-run)',
+        data: {
+          pipelineRunId: 1213,
+          phase: 'steam',
+          totalProcessed: 0,
+          finishedAt: '2025-10-21T12:30:00.000Z',
+          fullRefreshSummary: {
+            totalGames: 5000,
+            processedGames: 0,
+            steamRequested: 0,
+            collected: 0,
+            updated: 0,
+            failed: 0,
+            dryRun: true,
+          },
+        },
+      },
+    },
+  })
   async executeFullGamesRefresh(
     @Body() params: FullRefreshDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
@@ -1413,7 +1795,7 @@ export class PipelineController {
 
   private async createPipelineRun(
     triggerType: 'automatic' | 'manual',
-    phase: 'steam' | 'rawg' | 'full',
+    phase: string,
     pipelineTypeOverride?: string,
   ): Promise<PipelineRun> {
     const run = this.pipelineRunsRepository.create({

@@ -33,7 +33,7 @@ export class RawgApiService {
   private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
   private lastFailureTime: Date | null = null;
   private readonly failureThreshold = 5;
-  private readonly timeout = 5 * 60 * 1000;
+  private readonly timeout = 10 * 60 * 1000;
   private last429AlertAt = 0;
   private last5xxAlertAt = 0;
 
@@ -215,7 +215,7 @@ export class RawgApiService {
         const response: AxiosResponse<T> = await firstValueFrom(
           this.httpService.get(`${this.baseUrl}${endpoint}`, {
             params,
-            timeout: 10000,
+            timeout: 60000,
             headers: { 'User-Agent': 'GameCalendarBot/1.0' },
           }),
         );
@@ -234,6 +234,9 @@ export class RawgApiService {
       } catch (error: any) {
         this.logger.warn(
           `⚠️ RAWG API 실패 (${attempt}/${maxRetries}) ${endpoint}: ${error?.message}`,
+        );
+        this.logger.warn(
+          `   ↳ 요청 파라미터: ${this.buildLoggableParams(params)}`,
         );
 
         const status = error?.response?.status ?? 0;
@@ -349,6 +352,28 @@ export class RawgApiService {
         message,
         snapshot,
       });
+    }
+  }
+
+  private buildLoggableParams(params: Record<string, any>): string {
+    if (!params) return '{}';
+    const sanitized: Record<string, any> = {};
+    for (const [key, value] of Object.entries(params)) {
+      const lowered = key.toLowerCase();
+      if (lowered === 'key' || lowered.endsWith('key') || lowered.includes('token')) {
+        sanitized[key] = '***';
+        continue;
+      }
+      if (typeof value === 'string' && value.length > 180) {
+        sanitized[key] = `${value.slice(0, 177)}...`;
+        continue;
+      }
+      sanitized[key] = value;
+    }
+    try {
+      return JSON.stringify(sanitized);
+    } catch {
+      return '[unserializable params]';
     }
   }
 

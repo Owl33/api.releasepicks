@@ -291,6 +291,10 @@ export class SteamAppDetailsService {
 
   /** 메인 판별 함수 */
   private detectSexual(data: any): boolean {
+    const appId = Number(data?.steam_appid ?? 0);
+    const title = String(data?.name ?? '');
+    const signals: string[] = [];
+
     // ── 필드 수집
     const notesRaw = String(data?.content_descriptors?.notes ?? '');
     const bodyRaw = [
@@ -330,6 +334,15 @@ export class SteamAppDetailsService {
         .join(' '),
     );
 
+    if (hasSexualDescriptor) {
+      this.logSexualDecision(appId, title, true, 'descriptor_3/4', {
+        score: 0,
+        strongHits: 0,
+        signals: ['descriptor:3/4'],
+      });
+      return true;
+    }
+
     // ── (선택) AAA 감점
     const ALLOW_AAA_BIAS = false;
     let bias = 0;
@@ -354,27 +367,32 @@ export class SteamAppDetailsService {
       (data?.categories ?? []).map((c: any) => c?.description ?? c),
     );
 
-    const DECISIVE_TAGS = new Set([
+    const ADULT_ONLY_TAGS = new Set([
       'hentai',
       'eroge',
       'adult only',
       'nsfw',
       'r18',
       'explicit sexual content',
-    ]); // +3
+      'adults only sexual content',
+    ]);
     const STRONG_TAGS = new Set(['sexual content', 'nudity']); // 둘 다 있어도 총 +2
 
-    let score = 0;
-
-    const hasDecisiveTag =
-      tags.some((t) => DECISIVE_TAGS.has(t)) ||
-      categories.some((c) => DECISIVE_TAGS.has(c));
-    if (hasDecisiveTag) score += 3;
+    const hasAdultOnlyTag =
+      tags.some((t) => ADULT_ONLY_TAGS.has(t)) ||
+      categories.some((c) => ADULT_ONLY_TAGS.has(c));
+    if (hasAdultOnlyTag) {
+      this.logSexualDecision(appId, title, true, '태그_AO', {
+        score: 0,
+        strongHits: 0,
+        signals: ['tag:adult-only'],
+      });
+      return true;
+    }
 
     const hasStrongTag =
       tags.some((t) => STRONG_TAGS.has(t)) ||
       categories.some((c) => STRONG_TAGS.has(c));
-    if (hasStrongTag) score += 2;
 
     // ── 2) 성인 전용 지표(트리거 A): 하나라도 있으면 즉시 true
     //     (본문만 검사. notes는 사용하지 않음)
@@ -383,7 +401,7 @@ export class SteamAppDetailsService {
       /\beroge\b/,
       /\buncensored\b/,
       /\bh-?cg\b/,
-      /\bpornographic?\b/,
+      /\bpornographic(?:\s+(game|games|content|material|visuals|experience))?\b/,
       /\badult\s+only\b/,
       /\br18\b/,
       /성인\s*전용/,
@@ -393,12 +411,21 @@ export class SteamAppDetailsService {
       /야애니/,
       /成人向け|成人向|成人ゲーム/,
       /裸露|色情|限制級|成人專用/,
-      /포르노/,
+      /포르노\s*(?:게임|콘텐츠|컨텐츠|물|비디오|영상|시뮬레이터|소프트|작품)/,
       /섹스\s*(?:시뮬레이터|게임|모드)/,
       /노골적(?:인)?\s*성적\s*(?:콘텐츠|컨텐츠)/,
+      /성인\s*전용\s*성(?:적)?\s*(?:콘텐츠|컨텐츠)/,
+      /adults?\s*only\s*sexual\s*content/,
       /에로\s*게임/,
     ];
-    if (adultOnlySignals.some((rx) => rx.test(textBody))) return true;
+    if (adultOnlySignals.some((rx) => rx.test(textBody))) {
+      this.logSexualDecision(appId, title, true, '본문_AO', {
+        score: 0,
+        strongHits: 0,
+        signals: ['body:adult-only'],
+      });
+      return true;
+    }
 
     // ── 3) 본문 강/약 신호 (※ notes 제외!)
     const STRONG_BODY: RegExp[] = [
@@ -406,16 +433,21 @@ export class SteamAppDetailsService {
       /\bnudity\b/,
       /\bnudes?\b/,
       /\bsex\s*(?:scenes?|acts?)\b/,
+      /\badults?\s*only\s*sexual\s*content\b/,
+      /\bexplicit\s+sexual\s+content\b/,
       /\blewd\b/,
       /성(?:적)?\s*(?:콘텐츠|컨텐츠)/,
       /노출|누드/,
       /노골(?:적)?\s*노출/,
       /선정적/,
       /과도한\s*노출/,
+      /성\s*행위|성\s*관계/,
+      /성행위|성관계/,
       /에로|야함|에치|에찌|에로틱|에로틱한/,
       /섹스/,
       /포르노/,
       /노골적(?:인)?\s*성적/,
+      /노골적(?:인)?\s*성\s*행위/,
       /성인\s*용/,
       /미성년자\s*금지/,
       /裸露|裸身|裸婦/,
@@ -423,6 +455,7 @@ export class SteamAppDetailsService {
       /エロ|エッチ|えっち/,
       /無修正|無修整|無碼/,
       /成人向け|成人向/,
+      /性行為|性描写|性描寫|性愛/,
     ];
     const WEAK_BODY: RegExp[] = [
       /\bsexy\b/,
@@ -432,11 +465,22 @@ export class SteamAppDetailsService {
       /ギャル|萌え|もえ/,
     ];
 
+    let score = 0;
     const strongHitsFromBody = STRONG_BODY.filter((rx) =>
       rx.test(textBody),
     ).length;
-    if (strongHitsFromBody > 0) score += 2; // 1개 이상 존재 시 +2
-    if (WEAK_BODY.some((rx) => rx.test(textBody))) score += 1;
+    if (strongHitsFromBody > 0) {
+      score += 2; // 1개 이상 존재 시 +2
+      signals.push(`본문_강키워드(${strongHitsFromBody})+2`);
+    }
+    if (WEAK_BODY.some((rx) => rx.test(textBody))) {
+      score += 1;
+      signals.push('본문_약키워드+1');
+    }
+    if (hasStrongTag) {
+      score += 2;
+      signals.push('태그:sexual/nudity+2');
+    }
 
     // ── 4) 근접 강화: 성적 키워드와 cg/패치/무수정/r18 등이 80자 내 동시 등장 시 +1 (※ 본문만)
     const proxPairs: [RegExp, RegExp][] = [
@@ -449,24 +493,36 @@ export class SteamAppDetailsService {
         /(cg|일러스트|原画|無修正|無碼|콘텐츠|컨텐츠)/,
       ],
     ];
-    if (this.hasProximity(textBody, proxPairs, 80)) score += 1;
+    if (this.hasProximity(textBody, proxPairs, 80)) {
+      score += 1;
+      signals.push('근접강화+1');
+    }
 
     // ── 5) 안내/면책 문구는 중립 (점수 변화 없음) — 감지만 하고 no-op
     // const disclaimers = [/성적인?\s*콘텐츠[^.]{0,40}18\s*세\s*이상/, /all\s*characters[^.]{0,40}(18\+|over\s*18)/];
 
     // ── 6) 비노골/예술 표현 완화 (IMMORTALITY 대응)
     //     'non-graphic|brief|partial|non-explicit|artistic' 가 sexual/nudity 주변(±60자)에 있으면 -2
-    if (this.softenNearSexual(textBody, 60)) score -= 2;
+    if (this.softenNearSexual(textBody, 60)) {
+      score = Math.max(score - 2, 0);
+      signals.push('완화-2');
+    }
 
     // ── 7) FMV/영화형 장르 감점 (성인 전용 지표 없을 때만)
     const isFMV =
       /(fmv|interactive\s+(movie|film)|narrative\s+adventure|cinematic)/.test(
         textBody,
       );
-    if (isFMV) score -= 1;
+    if (isFMV) {
+      score = Math.max(score - 1, 0);
+      signals.push('FMV-1');
+    }
 
     // ── 8) AAA 바이어스
     score += bias;
+    if (bias !== 0) {
+      signals.push(`AAA${bias}`);
+    }
 
     // ── 9) 트리거 B: 본문 강 신호 2개 이상이 서로 근접(≤80자)해야 true (태그/notes로는 불가)
     const triggerB =
@@ -481,37 +537,74 @@ export class SteamAppDetailsService {
         ],
         80,
       );
-    if (triggerB) return true;
-
-    // ── 10) notes + 본문 결합 트리거 (네가 명시한 규칙)
-    // notes에 sexual/nudity 계열이 있고, "본문 강키워드 점수 ≥ 2"면 true
-    const notesHasSexual =
-      /(sexual\s*content|nudity|노출|누드|성(?:적)?\s*(?:콘텐츠|컨텐츠)|포르노|섹스|에로|裸露|色情|成人向け|成人向)/.test(
-        textNotes,
-      );
-    // strongHitsFromBody>0 일 때 +2를 이미 부여했으므로, 여기선 "강키워드가 1개 이상"이면 true로 봄
-    const ratingsHasSexual =
-      /(sexual|nudity|explicit|성적|노출|에로|裸露|色情|成人向け|成人向)/.test(
-        ratingsRaw,
-      );
-    if (
-      notesHasSexual &&
-      (strongHitsFromBody >= 1 || hasSexualDescriptor || ratingsHasSexual)
-    ) {
+    if (triggerB) {
+      this.logSexualDecision(appId, title, true, '본문_근접트리거', {
+        score,
+        strongHits: strongHitsFromBody,
+        signals,
+      });
       return true;
     }
 
-    // ── 11) Steam descriptor 기반 가중치
-    if (hasSexualDescriptor) {
-      score += 5;
-    } else if (hasMatureDescriptor) {
-      score += 2;
+    // ── 10) notes + 본문 결합 트리거 (네가 명시한 규칙)
+    // notes에 sexual/nudity 계열이 있고, "본문 강키워드 점수 ≥ 2"면 true
+    const notesHasExplicit =
+      /(explicit\s+sexual\s+content|adults?\s*only\s*sexual\s*content|노골적\s*성행위|노골적\s*성적)/.test(
+        textNotes,
+      );
+    const ratingsHasExplicit =
+      /(explicit\s+sexual\s+content|adults?\s*only\s*sexual\s*content|노골적\s*성(?:적)?\s*(?:콘텐츠|컨텐츠)|노골적\s*성행위)/.test(
+        ratingsRaw,
+      );
+    const ratingsHasGeneral =
+      !ratingsHasExplicit &&
+      /(sexual\s+content|sexuality|sex|성적\s*(?:콘텐츠|표현)|성행위|性描写|性行為|성인\s*용)/.test(
+        ratingsRaw,
+      );
+
+    if (ratingsHasExplicit) {
+      score += 3;
+      signals.push('ratings_explicit+3');
+    } else if (ratingsHasGeneral) {
+      score += 1;
+      signals.push('ratings_general+1');
     }
-    if (ratingsHasSexual) {
-      score += 2;
+
+    if (hasMatureDescriptor) {
+      score += 1;
+      signals.push('descriptor:5+1');
     }
+
+    if (
+      notesHasExplicit &&
+      ratingsHasExplicit &&
+      strongHitsFromBody >= 1
+    ) {
+      this.logSexualDecision(appId, title, true, 'notes+ratings_explicit', {
+        score,
+        strongHits: strongHitsFromBody,
+        signals,
+      });
+      return true;
+    }
+
     // ── 11) 누적 임계치
-    return score >= 4;
+    const meetsThreshold = score >= 6 && strongHitsFromBody >= 1;
+    if (meetsThreshold) {
+      this.logSexualDecision(appId, title, true, '점수임계치', {
+        score,
+        strongHits: strongHitsFromBody,
+        signals,
+      });
+      return true;
+    }
+
+    this.logSexualDecision(appId, title, false, '임계치미달', {
+      score,
+      strongHits: strongHitsFromBody,
+      signals,
+    });
+    return false;
   }
 
   /** HTML/URL/파일명 제거 + 소문자화 + 공백 정리 */
@@ -609,6 +702,27 @@ export class SteamAppDetailsService {
       if (text.includes(p)) n++;
     }
     return n;
+  }
+
+  /** 성인향 판정 로그 */
+  private logSexualDecision(
+    appId: number,
+    title: string,
+    result: boolean,
+    reason: string,
+    payload: { score: number; strongHits: number; signals: string[] },
+  ) {
+    const namePart = title ? ` ${title}` : '';
+    const signalText = payload.signals.length
+      ? payload.signals.join(', ')
+      : '신호 없음';
+    this.logger.debug(
+      `🔍 Steam 성인향 판정${namePart} (AppID ${appId}) → ${
+        result ? 'TRUE' : 'FALSE'
+      } | 이유: ${reason} | 점수: ${payload.score} | 본문 강키워드: ${
+        payload.strongHits
+      } | 신호: ${signalText}`,
+    );
   }
 
   /**

@@ -30,6 +30,7 @@ export interface RawgGameSearchResult {
 
   // ===== Phase 5.5: DLC 감지를 위한 필드 추가 =====
   parent_games_count?: number | null; // DLC 여부 판단 (> 0이면 DLC 가능성)
+  parents_count?: number | null;
 }
 export type RawgGameShort = RawgGameSearchResult;
 

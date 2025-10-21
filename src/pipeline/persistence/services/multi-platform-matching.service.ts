@@ -11,6 +11,10 @@ import {
 import { Game } from '../../../entities/game.entity';
 import { normalizeSlugCandidate } from '../../../common/slug/slug-normalizer.util';
 import {
+  buildSlugVariantsFromName,
+  detectDuplicateSlugBase,
+} from '../../../common/slug/slug-variant.util';
+import {
   MatchingScore,
   calcMatchingScore,
   normalizeGameName,
@@ -51,6 +55,15 @@ export class MultiPlatformMatchingService {
     const candidates = await this.loadCandidates(data, context, manager);
 
     if (!candidates.length) {
+      if (context?.candidateSlugs?.length) {
+        this.logger.warn(
+          `🔍 [멀티 매칭] 후보 미발견 rawgId=${data.rawgId} name="${data.name}" 슬러그후보=${context.candidateSlugs.join(',')}`,
+        );
+      } else {
+        this.logger.warn(
+          `🔍 [멀티 매칭] 후보 미발견 rawgId=${data.rawgId} name="${data.name}" 슬러그후보=없음`,
+        );
+      }
       await this.applyDecision(data, {
         outcome: 'rejected',
         reason: 'NO_CANDIDATE',
@@ -316,6 +329,23 @@ export class MultiPlatformMatchingService {
     // ✅ ogName 우선 사용 (영문 기준)
     const normalized = normalizeGameName(data.ogName || data.name);
     if (normalized.looseSlug) set.add(normalized.looseSlug);
+
+    buildSlugVariantsFromName(data.name).forEach((variant) => push(variant));
+    if (data.ogName && data.ogName !== data.name) {
+      buildSlugVariantsFromName(data.ogName).forEach((variant) => push(variant));
+    }
+
+    const duplicateSlugBase = detectDuplicateSlugBase(
+      data.slug,
+      data.name ?? data.ogName ?? '',
+    );
+    if (duplicateSlugBase) set.add(duplicateSlugBase);
+
+    const duplicateOgBase = detectDuplicateSlugBase(
+      data.ogSlug,
+      data.ogName ?? data.name ?? '',
+    );
+    if (duplicateOgBase) set.add(duplicateOgBase);
 
     return [...set];
   }
