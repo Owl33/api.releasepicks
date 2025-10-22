@@ -22,7 +22,8 @@ export function normalizeDate(
   input: Date | string | null | undefined,
 ): Date | null {
   if (!input) return null;
-  if (input instanceof Date) return Number.isFinite(input.getTime()) ? input : null;
+  if (input instanceof Date)
+    return Number.isFinite(input.getTime()) ? input : null;
   const parsed = new Date(input as any);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
 }

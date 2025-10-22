@@ -49,19 +49,30 @@ export class GamesController {
   @Get('highlights')
   @ApiOperation({
     summary: '게임 하이라이트 조회',
-    description:
-      '다가오는 인기 게임과 현재 인기 있는 게임 목록을 반환합니다.',
+    description: '다가오는 인기 게임과 현재 인기 있는 게임 목록을 반환합니다.',
   })
   @ApiQuery({
     name: 'upcomingLimit',
     required: false,
-    schema: { type: 'number', default: 16, example: 16, minimum: 10, maximum: 20 },
+    schema: {
+      type: 'number',
+      default: 16,
+      example: 16,
+      minimum: 10,
+      maximum: 20,
+    },
     description: '다가오는 게임 최대 개수 (10~20, 기본 16)',
   })
   @ApiQuery({
     name: 'popularLimit',
     required: false,
-    schema: { type: 'number', default: 16, example: 16, minimum: 10, maximum: 20 },
+    schema: {
+      type: 'number',
+      default: 16,
+      example: 16,
+      minimum: 10,
+      maximum: 20,
+    },
     description: '인기 게임 최대 개수 (10~20, 기본 16)',
   })
   @ApiOkResponse({
@@ -168,6 +179,13 @@ export class GamesController {
     required: false,
     description: '플랫폼 목록 (콤마 구분)',
     example: 'pc,ps5,xbox-series',
+  })
+  @ApiQuery({
+    name: 'reviewScoreDesc',
+    required: false,
+    description:
+      "Steam 리뷰 요약(desc) 목록 (콤마 구분). 'all', 'none' 또는 영어 원문 값 사용",
+    example: 'Overwhelmingly Positive,Mixed',
   })
   @ApiQuery({
     name: 'popularityScore',

@@ -1,7 +1,9 @@
 import { EntityManager } from 'typeorm';
 import { SlugPolicyService } from './slug-policy.service';
 
-const createManagerMock = (existSequence: Array<boolean | (() => boolean)>): Partial<EntityManager> => {
+const createManagerMock = (
+  existSequence: Array<boolean | (() => boolean)>,
+): Partial<EntityManager> => {
   const sequence = [...existSequence];
   const builderFactory = () => {
     return {

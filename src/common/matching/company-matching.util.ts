@@ -42,9 +42,15 @@ export function computeCompanyOverlap(
 
   const overlap = [...overlapKeys].map((key) => key.split(':')[1]);
 
-  const denominator = Math.max(rawgNormalized.keys.size, steamNormalized.keys.size, 1);
+  const denominator = Math.max(
+    rawgNormalized.keys.size,
+    steamNormalized.keys.size,
+    1,
+  );
   const score =
-    overlap.length === 0 ? 0 : Number((overlap.length / denominator).toFixed(3));
+    overlap.length === 0
+      ? 0
+      : Number((overlap.length / denominator).toFixed(3));
 
   return {
     overlap,
@@ -81,7 +87,10 @@ function normalizeCompanyList(companies: CompanyData[]): {
 }
 
 function normalizeCompanyName(name: string): string {
-  const lower = name.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  const lower = name
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
   const tokens = lower
     .split(/[^\p{L}\p{N}]+/u)
     .map((token) => token.trim())

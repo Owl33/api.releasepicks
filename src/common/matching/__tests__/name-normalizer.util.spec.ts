@@ -1,8 +1,12 @@
-import { buildLooseSlug, buildTokenSet, normalizeGameName } from '../name-normalizer.util';
+import {
+  buildLooseSlug,
+  buildTokenSet,
+  normalizeGameName,
+} from '../name-normalizer.util';
 
 describe('name-normalizer', () => {
   it('로마 숫자를 치환하고 토큰을 생성한다', () => {
-    const result = normalizeGameName("Resident Evil VII: Biohazard");
+    const result = normalizeGameName('Resident Evil VII: Biohazard');
     expect(result.tokens).toContain('7');
     expect(result.tokens).toContain('resident');
   });

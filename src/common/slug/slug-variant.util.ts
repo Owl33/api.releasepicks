@@ -82,7 +82,9 @@ export function detectDuplicateSlugBase(
  */
 export function extractSequelNumbers(name?: string | null): number[] {
   if (!name) return [];
-  const tokens = name.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length > 0);
+  const tokens = name
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0);
   const numbers: number[] = [];
 
   tokens.forEach((token) => {

@@ -25,7 +25,10 @@ const 토큰분리정규식 = /[^\p{L}\p{N}]+/u;
  */
 export function normalizeGameName(raw: string): NormalizedNameResult {
   const original = raw ?? '';
-  const normalized = original.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  const normalized = original
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
   const romanConverted = 치환로마숫자(normalized);
   const tokens = buildTokenSet(romanConverted);
   const looseSlug = buildLooseSlug(original);
@@ -56,7 +59,10 @@ export function buildLooseSlug(value: string): string {
 }
 
 function 치환로마숫자(value: string): string {
-  return value.replace(로마숫자정규식, (match) => convertRomanToken(match) ?? match);
+  return value.replace(
+    로마숫자정규식,
+    (match) => convertRomanToken(match) ?? match,
+  );
 }
 
 function convertRomanToken(token: string): string | null {

@@ -575,11 +575,7 @@ export class SteamAppDetailsService {
       signals.push('descriptor:5+1');
     }
 
-    if (
-      notesHasExplicit &&
-      ratingsHasExplicit &&
-      strongHitsFromBody >= 1
-    ) {
+    if (notesHasExplicit && ratingsHasExplicit && strongHitsFromBody >= 1) {
       this.logSexualDecision(appId, title, true, 'notes+ratings_explicit', {
         score,
         strongHits: strongHitsFromBody,

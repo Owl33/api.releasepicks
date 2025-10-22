@@ -15,7 +15,9 @@ export class ServiceRoleGuard implements CanActivate {
     const request = context
       .switchToHttp()
       .getRequest<{ headers: Record<string, string | undefined> }>();
-    const serviceKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY');
+    const serviceKey = this.configService.get<string>(
+      'SUPABASE_SERVICE_ROLE_KEY',
+    );
 
     if (!serviceKey || serviceKey.trim() === '') {
       throw new UnauthorizedException('Service role key is not configured.');

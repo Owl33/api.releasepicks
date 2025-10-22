@@ -1,7 +1,12 @@
 import { Controller, Get, Param } from '@nestjs/common';
 import { SteamCommunityService } from './services/steam-community.service';
 import { SteamReviewService } from './services/steam-review.service';
-import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 @ApiTags('Steam')
 @Controller('api/steam')
 export class SteamController {
@@ -11,8 +16,14 @@ export class SteamController {
   ) {}
 
   @Get('/review')
-  @ApiOperation({ summary: '샘플 리뷰 수집', description: '내부 테스트용: 고정 AppID 리뷰 데이터를 반환합니다.' })
-  @ApiOkResponse({ description: '리뷰 통계', schema: { example: { success: true } } })
+  @ApiOperation({
+    summary: '샘플 리뷰 수집',
+    description: '내부 테스트용: 고정 AppID 리뷰 데이터를 반환합니다.',
+  })
+  @ApiOkResponse({
+    description: '리뷰 통계',
+    schema: { example: { success: true } },
+  })
   getHello(): any {
     return this.SteamReviewService.fetchAppReview(440);
   }

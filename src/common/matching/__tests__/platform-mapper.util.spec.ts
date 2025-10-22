@@ -1,10 +1,17 @@
-import { mapRawgPlatformSlugToPlatform, summarizeRawgPlatforms } from '../platform-mapper.util';
+import {
+  mapRawgPlatformSlugToPlatform,
+  summarizeRawgPlatforms,
+} from '../platform-mapper.util';
 import { Platform } from '../../../entities/enums';
 
 describe('platform-mapper', () => {
   it('RAWG slug를 통합 플랫폼으로 매핑한다', () => {
-    expect(mapRawgPlatformSlugToPlatform('playstation5')).toBe(Platform.PLAYSTATION);
-    expect(mapRawgPlatformSlugToPlatform('nintendo-switch')).toBe(Platform.NINTENDO);
+    expect(mapRawgPlatformSlugToPlatform('playstation5')).toBe(
+      Platform.PLAYSTATION,
+    );
+    expect(mapRawgPlatformSlugToPlatform('nintendo-switch')).toBe(
+      Platform.NINTENDO,
+    );
   });
 
   it('플랫폼 요약을 반환한다', () => {

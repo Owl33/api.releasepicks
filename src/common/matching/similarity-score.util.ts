@@ -25,16 +25,12 @@ export function calcMatchingScore(inputs: MatchingInputs): MatchingScore {
     ...inputs.weights,
   };
 
-  const nameResult = calculateNameScore(
-    inputs.rawgName,
-    inputs.steamName,
-    {
-      rawgSlug: inputs.rawgSlug,
-      rawgOgSlug: inputs.rawgOgSlug,
-      steamSlug: inputs.steamSlug,
-      steamOgSlug: inputs.steamOgSlug,
-    },
-  );
+  const nameResult = calculateNameScore(inputs.rawgName, inputs.steamName, {
+    rawgSlug: inputs.rawgSlug,
+    rawgOgSlug: inputs.rawgOgSlug,
+    steamSlug: inputs.steamSlug,
+    steamOgSlug: inputs.steamOgSlug,
+  });
   const releaseResult = compareReleaseDates(
     inputs.rawgReleaseDate ?? null,
     inputs.steamReleaseDate ?? null,
@@ -52,7 +48,8 @@ export function calcMatchingScore(inputs: MatchingInputs): MatchingScore {
 
   const bonusScore = inputs.pcReleaseAligned ? weights.bonus : 0;
 
-  const total = nameScore + releaseDateScore + companyScore + genreScore + bonusScore;
+  const total =
+    nameScore + releaseDateScore + companyScore + genreScore + bonusScore;
 
   return {
     totalScore: Number(Math.min(total, 1).toFixed(4)),
@@ -149,9 +146,7 @@ function calculateNameScore(
                   dbSlugMatch = true;
                   break;
                 }
-              } else if (
-                rSuffix.toLowerCase() === sSuffix.toLowerCase()
-              ) {
+              } else if (rSuffix.toLowerCase() === sSuffix.toLowerCase()) {
                 dbSlugMatch = true;
                 break;
               } else {
@@ -270,10 +265,20 @@ function computeGenreScore(rawg: string[] = [], steam: string[] = []) {
   }
 
   const rawgSet = new Set(
-    rawg.map((g) => g.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase()),
+    rawg.map((g) =>
+      g
+        .normalize('NFKD')
+        .replace(/\p{Diacritic}/gu, '')
+        .toLowerCase(),
+    ),
   );
   const steamSet = new Set(
-    steam.map((g) => g.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase()),
+    steam.map((g) =>
+      g
+        .normalize('NFKD')
+        .replace(/\p{Diacritic}/gu, '')
+        .toLowerCase(),
+    ),
   );
 
   const overlap: string[] = [];
@@ -283,7 +288,9 @@ function computeGenreScore(rawg: string[] = [], steam: string[] = []) {
 
   const denominator = Math.max(rawgSet.size, steamSet.size, 1);
   const score =
-    overlap.length === 0 ? 0 : Number((overlap.length / denominator).toFixed(3));
+    overlap.length === 0
+      ? 0
+      : Number((overlap.length / denominator).toFixed(3));
 
   return { score, overlap };
 }
@@ -326,8 +333,7 @@ function jaroWinkler(a: string, b: string): number {
   }
 
   const m = matches;
-  const jaro =
-    (m / a.length + m / b.length + (m - transpositions / 2) / m) / 3;
+  const jaro = (m / a.length + m / b.length + (m - transpositions / 2) / m) / 3;
 
   let prefix = 0;
   for (let i = 0; i < Math.min(4, a.length, b.length); i++) {

@@ -145,54 +145,54 @@ export class GameSearchService {
           // trigram + compact trigram (인덱스 존재)
           b.where('lower(game.name) % :qLower', { qLower })
             .orWhere('lower(game.og_name) % :qLower', { qLower })
-        .orWhere(
-          "regexp_replace(lower(game.name), '[\\s\\-_/]+', '', 'g') % :qCompact",
-          { qCompact },
-        )
-        .orWhere(
-          "regexp_replace(lower(game.og_name), '[\\s\\-_/]+', '', 'g') % :qCompact",
-          { qCompact },
-        )
-        .orWhere('lower(game.name) LIKE :qPrefix', { qPrefix })
-        .orWhere('lower(game.og_name) LIKE :qPrefix', { qPrefix })
-        .orWhere('lower(game.name) LIKE :primaryPrefix', {
-          primaryPrefix,
-        })
-        .orWhere('lower(game.og_name) LIKE :primaryPrefix', {
-          primaryPrefix,
-        })
-        .orWhere('lower(game.name) LIKE :primaryLike', { primaryLike })
-        .orWhere('lower(game.og_name) LIKE :primaryLike', { primaryLike });
+            .orWhere(
+              "regexp_replace(lower(game.name), '[\\s\\-_/]+', '', 'g') % :qCompact",
+              { qCompact },
+            )
+            .orWhere(
+              "regexp_replace(lower(game.og_name), '[\\s\\-_/]+', '', 'g') % :qCompact",
+              { qCompact },
+            )
+            .orWhere('lower(game.name) LIKE :qPrefix', { qPrefix })
+            .orWhere('lower(game.og_name) LIKE :qPrefix', { qPrefix })
+            .orWhere('lower(game.name) LIKE :primaryPrefix', {
+              primaryPrefix,
+            })
+            .orWhere('lower(game.og_name) LIKE :primaryPrefix', {
+              primaryPrefix,
+            })
+            .orWhere('lower(game.name) LIKE :primaryLike', { primaryLike })
+            .orWhere('lower(game.og_name) LIKE :primaryLike', { primaryLike });
 
-      if (useSlug) {
-        b.orWhere('(game.slug::text) % :qSlug', { qSlug })
-          .orWhere('(game.og_slug::text) % :qSlug', { qSlug })
-          .orWhere(
-            "regexp_replace((game.slug::text), '[\\s\\-_/]+', '', 'g') % :qCompact",
-            { qCompact },
-          )
-          .orWhere(
-            "regexp_replace((game.og_slug::text), '[\\s\\-_/]+', '', 'g') % :qCompact",
-            { qCompact },
-          );
-      }
-      if (usePrimarySlugSearch) {
-        b.orWhere('(game.slug::text) LIKE :primarySlugPrefix', {
-          primarySlugPrefix,
-        })
-          .orWhere('(game.og_slug::text) LIKE :primarySlugPrefix', {
-            primarySlugPrefix,
-          })
-          .orWhere('(game.slug::text) LIKE :primarySlugLike', {
-            primarySlugLike,
-          })
-          .orWhere('(game.og_slug::text) LIKE :primarySlugLike', {
-            primarySlugLike,
-          });
-      }
-    }
-  }),
-);
+          if (useSlug) {
+            b.orWhere('(game.slug::text) % :qSlug', { qSlug })
+              .orWhere('(game.og_slug::text) % :qSlug', { qSlug })
+              .orWhere(
+                "regexp_replace((game.slug::text), '[\\s\\-_/]+', '', 'g') % :qCompact",
+                { qCompact },
+              )
+              .orWhere(
+                "regexp_replace((game.og_slug::text), '[\\s\\-_/]+', '', 'g') % :qCompact",
+                { qCompact },
+              );
+          }
+          if (usePrimarySlugSearch) {
+            b.orWhere('(game.slug::text) LIKE :primarySlugPrefix', {
+              primarySlugPrefix,
+            })
+              .orWhere('(game.og_slug::text) LIKE :primarySlugPrefix', {
+                primarySlugPrefix,
+              })
+              .orWhere('(game.slug::text) LIKE :primarySlugLike', {
+                primarySlugLike,
+              })
+              .orWhere('(game.og_slug::text) LIKE :primarySlugLike', {
+                primarySlugLike,
+              });
+          }
+        }
+      }),
+    );
 
     // ② 랭킹 계산 — exact/prefix/부분/compact/slug + trigram + popularity
     qb.addSelect(

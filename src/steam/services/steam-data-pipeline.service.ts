@@ -206,9 +206,9 @@ export class SteamDataPipelineService {
           originalAppName,
         )) ?? 0;
       timers.followersDuration = Date.now() - timers.followersStart;
-      this.logger.debug(
-        `${prefix}⏱️ Followers ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
-      );
+      // this.logger.debug(
+      //   `${prefix}⏱️ Followers ${(timers.followersDuration / 1000).toFixed(2)}초 (${followers || 0}명)`,
+      // );
 
       let totalReviews = 0;
       let reviewScoreDesc = '';
@@ -225,7 +225,7 @@ export class SteamDataPipelineService {
       const hasKorean =
         Array.isArray(steamDetails.supported_languages) &&
         steamDetails.supported_languages.includes('한국어');
-      this.logger.debug(
+      this.logger.log(
         `${prefix}📊 인기도 점수: ${popularityScore}점 (한국어 지원)`,
       );
       if (popularityScore >= 40) {
@@ -300,19 +300,19 @@ export class SteamDataPipelineService {
             youtubePickedViewCount = picked.viewCount ?? null;
           }
           timers.youtubeDuration = Date.now() - timers.youtubeStart;
-          this.logger.debug(
-            `${prefix}⏱️ YouTube ${(timers.youtubeDuration / 1000).toFixed(2)}초`,
-          );
+          // this.logger.debug(
+          //   `${prefix}⏱️ YouTube ${(timers.youtubeDuration / 1000).toFixed(2)}초`,
+          // );
         } catch (error) {
           timers.youtubeDuration = Date.now() - timers.youtubeStart;
-          this.logger.warn(
-            `${prefix}⚠️ YouTube 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error?.message ?? error}`,
-          );
+          // this.logger.warn(
+          //   `${prefix}⚠️ YouTube 실패 (${(timers.youtubeDuration / 1000).toFixed(2)}초): ${error?.message ?? error}`,
+          // );
         }
       } else {
-        this.logger.debug(
-          `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
-        );
+        // this.logger.debug(
+        //   `${prefix}⏭️ YouTube 스킵 (인기도 ${popularityScore}점 < 40점)`,
+        // );
       }
 
       if (youtubePickedUrl) {

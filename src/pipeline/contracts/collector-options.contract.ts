@@ -1,4 +1,7 @@
-export type { ExistingGamesMap, ExistingGameSnapshot } from './collector/shared';
+export type {
+  ExistingGamesMap,
+  ExistingGameSnapshot,
+} from './collector/shared';
 export type {
   PrioritySelectionOptions,
   SteamCollectOptions,

@@ -180,48 +180,51 @@ export class PersistenceOrchestratorService {
           emitProgress();
         } catch (error) {
           const is23505 = (error as { code?: string })?.code === '23505';
-          const constraint = (error as { constraint?: string })?.constraint ?? '';
+          const constraint =
+            (error as { constraint?: string })?.constraint ?? '';
           const detail = (error as { detail?: string })?.detail;
 
           if (is23505 && constraint === 'games_og_slug_key') {
             try {
-              const recoveryResult = await this.dataSource.transaction<
-                GamePersistenceResult
-              >(async (manager) => {
-                const collidedOg =
-                  this.extractUniqueValueFromDetail(detail, 'og_slug') ??
-                  item.data.ogSlug ??
-                  item.data.ogName ??
-                  item.data.slug ??
-                  item.data.name;
+              const recoveryResult =
+                await this.dataSource.transaction<GamePersistenceResult>(
+                  async (manager) => {
+                    const collidedOg =
+                      this.extractUniqueValueFromDetail(detail, 'og_slug') ??
+                      item.data.ogSlug ??
+                      item.data.ogName ??
+                      item.data.slug ??
+                      item.data.name;
 
-                if (!collidedOg) {
-                  throw error;
-                }
+                    if (!collidedOg) {
+                      throw error;
+                    }
 
-                const existing = await manager.findOne(Game, {
-                  where: { og_slug: ILike(collidedOg) },
-                });
-                if (!existing) {
-                  throw error;
-                }
+                    const existing = await manager.findOne(Game, {
+                      where: { og_slug: ILike(collidedOg) },
+                    });
+                    if (!existing) {
+                      throw error;
+                    }
 
-                const result = await this.gamePersistence.upsertWithExistingGame(
-                  existing,
-                  item.data,
-                  manager,
+                    const result =
+                      await this.gamePersistence.upsertWithExistingGame(
+                        existing,
+                        item.data,
+                        manager,
+                      );
+
+                    await this.createPipelineItem(
+                      pipelineRunId,
+                      'game',
+                      result.gameId,
+                      result.operation,
+                      manager,
+                    );
+
+                    return result;
+                  },
                 );
-
-                await this.createPipelineItem(
-                  pipelineRunId,
-                  'game',
-                  result.gameId,
-                  result.operation,
-                  manager,
-                );
-
-                return result;
-              });
 
               retryHistogram.set(
                 item.attempt,
@@ -475,26 +478,39 @@ export class PersistenceOrchestratorService {
     return Math.round(sorted[rank]);
   }
 
-  private mapFailureReason(
-    code: string,
-    message?: string,
-  ): SaveFailureReason {
+  private mapFailureReason(code: string, message?: string): SaveFailureReason {
     const normalizedCode = code?.toUpperCase?.() ?? '';
     const normalizedMessage = message?.toLowerCase?.() ?? '';
 
-    if (normalizedCode === '23505' || /duplicate|unique/.test(normalizedMessage)) {
+    if (
+      normalizedCode === '23505' ||
+      /duplicate|unique/.test(normalizedMessage)
+    ) {
       return 'DUPLICATE_CONSTRAINT';
     }
-    if (normalizedCode === '23502' || normalizedCode === '23514' || normalizedCode === '22P02') {
+    if (
+      normalizedCode === '23502' ||
+      normalizedCode === '23514' ||
+      normalizedCode === '22P02'
+    ) {
       return 'VALIDATION_FAILED';
     }
-    if (/steam/.test(normalizedMessage) && /not found|404/.test(normalizedMessage)) {
+    if (
+      /steam/.test(normalizedMessage) &&
+      /not found|404/.test(normalizedMessage)
+    ) {
       return 'STEAM_APP_NOT_FOUND';
     }
-    if (/rawg/.test(normalizedMessage) && /not found|404/.test(normalizedMessage)) {
+    if (
+      /rawg/.test(normalizedMessage) &&
+      /not found|404/.test(normalizedMessage)
+    ) {
       return 'RAWG_GAME_NOT_FOUND';
     }
-    if (normalizedCode === 'RATE_LIMIT' || /rate limit/.test(normalizedMessage)) {
+    if (
+      normalizedCode === 'RATE_LIMIT' ||
+      /rate limit/.test(normalizedMessage)
+    ) {
       return 'RATE_LIMIT';
     }
     return 'UNKNOWN';

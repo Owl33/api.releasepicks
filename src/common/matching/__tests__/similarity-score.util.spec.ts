@@ -12,7 +12,9 @@ describe('similarity-score', () => {
       rawgReleaseDate: new Date('2020-04-10T00:00:00Z'),
       steamReleaseDate: new Date('2020-04-11T00:00:00Z'),
       rawgCompanies: [{ name: 'Square Enix', role: 'publisher' }] as any,
-      steamCompanies: [{ name: 'SQUARE ENIX CO., LTD.', role: 'publisher' }] as any,
+      steamCompanies: [
+        { name: 'SQUARE ENIX CO., LTD.', role: 'publisher' },
+      ] as any,
       rawgGenres: ['Role-playing (RPG)'],
       steamGenres: ['role-playing (rpg)'],
       pcReleaseAligned: true,

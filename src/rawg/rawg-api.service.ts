@@ -360,7 +360,11 @@ export class RawgApiService {
     const sanitized: Record<string, any> = {};
     for (const [key, value] of Object.entries(params)) {
       const lowered = key.toLowerCase();
-      if (lowered === 'key' || lowered.endsWith('key') || lowered.includes('token')) {
+      if (
+        lowered === 'key' ||
+        lowered.endsWith('key') ||
+        lowered.includes('token')
+      ) {
         sanitized[key] = '***';
         continue;
       }

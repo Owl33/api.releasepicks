@@ -143,7 +143,10 @@ export class GamePersistenceService {
       const byCandidateOgSlug = await manager.findOne(Game, {
         where: { og_slug: ILike(candidate) },
       });
-      if (byCandidateOgSlug && !this.isSteamIdConflict(byCandidateOgSlug, data)) {
+      if (
+        byCandidateOgSlug &&
+        !this.isSteamIdConflict(byCandidateOgSlug, data)
+      ) {
         this.logger.verbose(
           `🔁 [GamePersistence] 후보 OG 슬러그 매칭 성공 og_slug=${candidate} → gameId=${byCandidateOgSlug.id}`,
         );
@@ -240,7 +243,8 @@ export class GamePersistenceService {
 
     const parentGame = isDlc ? await this.findParentGame(data, manager) : null;
     const parentPopularity = parentGame?.popularity_score ?? null;
-    const allowDlcContent = !isDlc || this.shouldAllowDlcContent(parentPopularity);
+    const allowDlcContent =
+      !isDlc || this.shouldAllowDlcContent(parentPopularity);
 
     const savedGame = await manager.save(Game, game);
 
@@ -275,7 +279,9 @@ export class GamePersistenceService {
       return;
     }
     const isSteamGame = existing.steam_id !== null && existing.steam_id > 0;
-    const isRawgDataSource = data.rawgId !== null && !data.steamId;
+    const isRawgPayload =
+      data.matchingContext?.source === 'rawg' ||
+      (!data.steamId && data.rawgId !== null && data.rawgId !== undefined);
     const resolved = await this.slugPolicy.resolve(manager, {
       selfId: existing.id,
       name: data.name,
@@ -288,38 +294,15 @@ export class GamePersistenceService {
 
     const gameType = data.gameType ?? existing.game_type ?? GameType.GAME;
     const isDlc = gameType === GameType.DLC;
-    const parentGame = isDlc ? await this.findParentGame(data, manager, existing) : null;
+    const parentGame = isDlc
+      ? await this.findParentGame(data, manager, existing)
+      : null;
     const parentPopularity = parentGame?.popularity_score ?? null;
-    const allowDlcContent = !isDlc || this.shouldAllowDlcContent(parentPopularity);
+    const allowDlcContent =
+      !isDlc || this.shouldAllowDlcContent(parentPopularity);
 
-    if (isSteamGame && isRawgDataSource) {
-      await manager.update(Game, existing.id, {
-        slug: resolved.slug,
-        og_slug: resolved.ogSlug,
-        release_date_date: data.releaseDate,
-        release_status: data.releaseStatus,
-        coming_soon: data.comingSoon,
-        popularity_score: data.popularityScore,
-        followers_cache: data.followersCache ?? null,
-        rawg_id: existing.rawg_id ?? data.rawgId,
-        updated_at: new Date(),
-      });
-
-      if (data.releases?.length) {
-        await this.syncReleases(existing.id, data.releases, manager, {
-          isDlc,
-          allowDlc: allowDlcContent,
-          parentPopularity,
-        });
-      }
-
-      if (data.companies?.length) {
-        await this.syncCompanies(existing.id, data.companies, manager, {
-          isDlc,
-          allowDlc: allowDlcContent,
-          parentPopularity,
-        });
-      }
+    if (isSteamGame && isRawgPayload) {
+      await this.applyRawgProtectionForSteamGame(existing, data, manager);
       return;
     }
     await manager.update(Game, existing.id, {
@@ -357,6 +340,93 @@ export class GamePersistenceService {
       allowDlc: allowDlcContent,
       parentPopularity,
     });
+  }
+
+  private async applyRawgProtectionForSteamGame(
+    existing: Game,
+    data: ProcessedGameData,
+    manager: EntityManager,
+  ): Promise<void> {
+    const ignored: string[] = [];
+
+    if (
+      data.popularityScore !== undefined &&
+      data.popularityScore !== existing.popularity_score
+    ) {
+      ignored.push('popularity_score');
+    }
+    if (
+      data.releaseStatus !== undefined &&
+      data.releaseStatus !== existing.release_status
+    ) {
+      ignored.push('release_status');
+    }
+    if (data.comingSoon !== existing.coming_soon) {
+      ignored.push('coming_soon');
+    }
+    if (data.releaseDate || existing.release_date_date) {
+      const incoming = data.releaseDate?.getTime() ?? null;
+      const current = existing.release_date_date?.getTime() ?? null;
+      if (incoming !== current) {
+        ignored.push('release_date');
+      }
+    }
+    if (data.followersCache !== undefined) {
+      const incomingFollowers = data.followersCache ?? null;
+      if (incomingFollowers !== existing.followers_cache) {
+        ignored.push('followers_cache');
+      }
+    }
+    if (data.slug && existing.slug && data.slug !== existing.slug) {
+      ignored.push('slug');
+    }
+    if (data.releases?.length) {
+      ignored.push('releases');
+    }
+    if (data.details) {
+      ignored.push('details');
+    }
+    if (data.companies?.length) {
+      ignored.push('companies');
+    }
+
+    if (ignored.length > 0) {
+      this.logger.warn(
+        `⚠️ [GamePersistence] RAWG 보호 정책 적용 – Steam 게임 필드 무시 gameId=${existing.id}, rawgId=${data.rawgId ?? 'null'}, fields=${ignored.join(',')}`,
+      );
+    }
+
+    const updatePayload: Partial<Game> & { updated_at?: Date } = {};
+    let hasUpdate = false;
+
+    if (
+      data.rawgId !== undefined &&
+      data.rawgId !== null &&
+      existing.rawg_id !== data.rawgId
+    ) {
+      updatePayload.rawg_id = data.rawgId;
+      hasUpdate = true;
+    }
+
+    if (
+      data.parentRawgId !== undefined &&
+      data.parentRawgId !== existing.parent_rawg_id
+    ) {
+      updatePayload.parent_rawg_id = data.parentRawgId ?? null;
+      hasUpdate = true;
+    }
+
+    if (hasUpdate) {
+      updatePayload.updated_at = new Date();
+      await manager.update(Game, existing.id, updatePayload);
+      this.logger.log(
+        `🛡️ [GamePersistence] RAWG 식별자만 갱신 gameId=${existing.id} rawgId=${data.rawgId ?? 'null'} parentRawgId=${data.parentRawgId ?? 'null'}`,
+      );
+    } else {
+      this.logger.debug(
+        `🛡️ [GamePersistence] RAWG 식별자 변경 없음 – Steam 게임 보호 gameId=${existing.id}`,
+      );
+    }
   }
 
   private async syncDetails(
@@ -523,19 +593,27 @@ export class GamePersistenceService {
     existing?: Game,
   ): Promise<Game | null> {
     if (data.parentSteamId) {
-      const bySteam = await manager.findOne(Game, { where: { steam_id: data.parentSteamId } });
+      const bySteam = await manager.findOne(Game, {
+        where: { steam_id: data.parentSteamId },
+      });
       if (bySteam) return bySteam;
     }
     if (data.parentRawgId) {
-      const byRawg = await manager.findOne(Game, { where: { rawg_id: data.parentRawgId } });
+      const byRawg = await manager.findOne(Game, {
+        where: { rawg_id: data.parentRawgId },
+      });
       if (byRawg) return byRawg;
     }
     if (existing?.parent_steam_id) {
-      const bySteam = await manager.findOne(Game, { where: { steam_id: existing.parent_steam_id } });
+      const bySteam = await manager.findOne(Game, {
+        where: { steam_id: existing.parent_steam_id },
+      });
       if (bySteam) return bySteam;
     }
     if (existing?.parent_rawg_id) {
-      const byRawg = await manager.findOne(Game, { where: { rawg_id: existing.parent_rawg_id } });
+      const byRawg = await manager.findOne(Game, {
+        where: { rawg_id: existing.parent_rawg_id },
+      });
       if (byRawg) return byRawg;
     }
     return null;

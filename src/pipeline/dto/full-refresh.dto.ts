@@ -10,6 +10,11 @@ import {
 import { ModeEnum } from './single-game-manual-dto';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
+export enum FullRefreshTargetEnum {
+  all = 'all',
+  zeroPopularity = 'zero-popularity',
+}
+
 export class FullRefreshDto {
   @ApiPropertyOptional({
     description: "수집 모드 ('bootstrap' | 'operational')",
@@ -54,4 +59,15 @@ export class FullRefreshDto {
   @Min(100)
   @Max(2000)
   batchSize?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "대상 필터 ('all' = 전체, 'zero-popularity' = 인기도 0인 본편)",
+    example: FullRefreshTargetEnum.zeroPopularity,
+    enum: FullRefreshTargetEnum,
+    default: FullRefreshTargetEnum.all,
+  })
+  @IsOptional()
+  @IsEnum(FullRefreshTargetEnum)
+  target?: FullRefreshTargetEnum;
 }

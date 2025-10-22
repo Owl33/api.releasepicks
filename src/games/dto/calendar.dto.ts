@@ -27,6 +27,7 @@ export interface CalendarReleaseDto {
   popularityScore: number;
   headerImage: string;
   genres: string[];
+  reviewScoreDesc: string | null;
   developers: string[];
   publishers: string[];
   currentPrice: number | null;

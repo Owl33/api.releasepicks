@@ -155,6 +155,26 @@ export class GameFilterDto {
   @IsString({ each: true })
   platforms?: string[]; // 플랫폼 배열 (OR 조건)
 
+  // ===== 리뷰 점수 필터 =====
+  @ApiPropertyOptional({
+    description:
+      'Steam 리뷰 요약(desc) 목록 (콤마 구분) — all, none, 영어 원문 값 사용',
+    example: 'Overwhelmingly Positive,Mixed',
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value
+        .split(',')
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0);
+    }
+    return value;
+  })
+  @IsArray()
+  @IsString({ each: true })
+  reviewScoreDesc?: string[]; // Steam 리뷰 요약 필터
+
   // ===== 인기도 필터 =====
   @ApiPropertyOptional({
     description: '최소 인기도 점수 (40~100)',
@@ -261,6 +281,7 @@ export interface FilteredGamesResponseDto {
     publishers?: string[];
     platforms?: string[];
     gameType?: GameTypeFilter; // ✅ 타입 명시화
+    reviewScoreDesc?: string[];
   };
   pagination: PaginationMeta;
   count: {

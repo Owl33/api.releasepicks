@@ -90,7 +90,7 @@ export class SlugPolicyService implements SlugPolicyPort {
     if (!current) current = 'game';
 
     let suffix = 2;
-    // eslint-disable-next-line no-constant-condition
+
     while (true) {
       const exists = await manager
         .createQueryBuilder(Game, 'game')
@@ -102,9 +102,10 @@ export class SlugPolicyService implements SlugPolicyPort {
 
       const suffixText = String(suffix++);
       const maxBaseLength = Math.max(1, 120 - suffixText.length - 1);
-      const trimmedBase = candidate.length > maxBaseLength
-        ? candidate.slice(0, maxBaseLength)
-        : candidate;
+      const trimmedBase =
+        candidate.length > maxBaseLength
+          ? candidate.slice(0, maxBaseLength)
+          : candidate;
 
       current = `${trimmedBase}-${suffixText}`;
       if (suffix > 9999) {

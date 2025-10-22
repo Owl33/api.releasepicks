@@ -78,7 +78,11 @@ export class MatchingReportWriter {
   /**
    * 집계 정보에 결과를 반영한다.
    */
-  recordResult(result: 'matched' | 'pending' | 'failed', score: number, reason?: string) {
+  recordResult(
+    result: 'matched' | 'pending' | 'failed',
+    score: number,
+    reason?: string,
+  ) {
     this.summary.processed += 1;
     if (result === 'matched') this.summary.matched += 1;
     else if (result === 'pending') this.summary.pending += 1;

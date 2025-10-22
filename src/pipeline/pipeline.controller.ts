@@ -16,6 +16,7 @@ import { Repository, In } from 'typeorm';
 import { Game } from '../entities/game.entity';
 import { PipelineRun } from '../entities/pipeline-run.entity';
 import { PipelineItem } from '../entities/pipeline-item.entity';
+import { GameType } from '../entities/enums';
 
 import { SteamDataPipelineService } from '../steam/services/steam-data-pipeline.service';
 import { RawgDataPipelineService } from '../rawg/rawg-data-pipeline.service';
@@ -37,7 +38,10 @@ import {
   ModeEnum,
   SourcesEnum,
 } from './dto/single-game-manual-dto';
-import { FullRefreshDto } from './dto/full-refresh.dto';
+import {
+  FullRefreshDto,
+  FullRefreshTargetEnum,
+} from './dto/full-refresh.dto';
 import { RawgNewDto } from '../rawg/dto/rawg-new.dto';
 import { RawgRefreshDto } from '../rawg/dto/rawg-refresh.dto';
 import {
@@ -185,7 +189,6 @@ export class PipelineController {
   //   }
   // }
 
-
   @Get('cron/steam-maintenance')
   @ApiOperation({
     summary: 'Steam 유지보수 (cron용)',
@@ -199,8 +202,16 @@ export class PipelineController {
         statusCode: 200,
         message: 'Steam maintenance completed',
         data: {
-          refresh: { statusCode: 200, message: '...', data: { pipelineRunId: 1 } },
-          steamNew: { statusCode: 200, message: '...', data: { pipelineRunId: 2 } },
+          refresh: {
+            statusCode: 200,
+            message: '...',
+            data: { pipelineRunId: 1 },
+          },
+          steamNew: {
+            statusCode: 200,
+            message: '...',
+            data: { pipelineRunId: 2 },
+          },
         },
       },
     },
@@ -674,9 +685,7 @@ export class PipelineController {
     @Body() params: SteamNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
     const mode =
-      params.mode === 'bootstrap'
-        ? ModeEnum.bootstrap
-        : ModeEnum.operational;
+      params.mode === 'bootstrap' ? ModeEnum.bootstrap : ModeEnum.operational;
     const limit = params.limit ?? 2000;
     const dryRun = params.dryRun ?? false;
 
@@ -685,7 +694,9 @@ export class PipelineController {
 
     this.logger.log('🆕 [Steam 신규 탐지] 시작');
     this.logger.log(`   - mode: ${mode}`);
-    this.logger.log(`   - limit: ${limit} (요청값: ${params.limit ?? 'undefined'})`);
+    this.logger.log(
+      `   - limit: ${limit} (요청값: ${params.limit ?? 'undefined'})`,
+    );
     this.logger.log(`   - dryRun: ${dryRun}`);
 
     const pipelineRun = await this.createPipelineRun(
@@ -814,12 +825,7 @@ export class PipelineController {
               `📥 [Steam 신규 탐지] 청크 ${batchIndex + 1}/${batchCount} — ${targetSlice.length}개 게임 수집 시작 (ID 범위: ${targetStart}-${targetEnd - 1})`,
             );
           },
-          onCollected: ({
-            batchIndex,
-            batchCount,
-            steamIds,
-            collected,
-          }) => {
+          onCollected: ({ batchIndex, batchCount, steamIds, collected }) => {
             this.logger.log(
               `📦 [Steam 신규 탐지] 청크 ${batchIndex + 1}/${batchCount} — 수집 완료: ${collected.length}/${steamIds.length}개`,
             );
@@ -1142,11 +1148,13 @@ export class PipelineController {
     const dryRun = params.dryRun ?? false;
     const batchSize = params.batchSize ?? 1000;
     const SAVE_BATCH_SIZE = 1000;
+    const target = params.target ?? FullRefreshTargetEnum.all;
 
     this.logger.log('♻️ [Steam 전체 갱신] 시작');
     this.logger.log(`   - mode: ${mode}`);
     this.logger.log(`   - dryRun: ${dryRun}`);
     this.logger.log(`   - batchSize: ${batchSize}`);
+    this.logger.log(`   - target: ${target}`);
 
     const pipelineRun = await this.createPipelineRun(
       'manual',
@@ -1155,12 +1163,21 @@ export class PipelineController {
     );
 
     try {
-      const rawTargets = await this.gamesRepository
+      const query = this.gamesRepository
         .createQueryBuilder('game')
         .innerJoin('game.details', 'detail')
         .innerJoin('game.releases', 'release')
         .select(['game.id AS game_id', 'game.steam_id AS steam_id'])
-        .where('game.steam_id IS NOT NULL')
+        .where('game.steam_id IS NOT NULL');
+
+      if (target === FullRefreshTargetEnum.zeroPopularity) {
+        query.andWhere('game.game_type = :gameType', {
+          gameType: GameType.GAME,
+        });
+        query.andWhere('game.popularity_score = 0');
+      }
+
+      const rawTargets = await query
         .distinct(true)
         .getRawMany<{
           game_id: string;
@@ -1201,6 +1218,7 @@ export class PipelineController {
               updated: 0,
               failed: 0,
               dryRun,
+              target,
             },
           },
         };
@@ -1281,9 +1299,7 @@ export class PipelineController {
           },
           onSaveSkipped: ({ reason }) => {
             if (reason === 'empty' && !dryRun) {
-              this.logger.warn(
-                '   ⚠️ 수집된 데이터가 없어 저장을 건너뜁니다.',
-              );
+              this.logger.warn('   ⚠️ 수집된 데이터가 없어 저장을 건너뜁니다.');
             }
           },
           onBatchComplete: ({
@@ -1345,6 +1361,7 @@ export class PipelineController {
             updated: batchResult.totalUpdated,
             failed: batchResult.totalFailed,
             dryRun,
+            target,
             failures:
               failureSummaries.length > 0 ? failureSummaries : undefined,
           },
@@ -1619,11 +1636,17 @@ export class PipelineController {
 
     for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
       const targetStart = batchIndex * effectiveFetchBatchSize;
-      const targetEnd = Math.min(targetStart + effectiveFetchBatchSize, totalTargets);
+      const targetEnd = Math.min(
+        targetStart + effectiveFetchBatchSize,
+        totalTargets,
+      );
       const targetSlice = targets.slice(targetStart, targetEnd);
       const steamIds = targetSlice
         .map(toSteamId)
-        .filter((id): id is number => typeof id === 'number' && Number.isFinite(id) && id > 0);
+        .filter(
+          (id): id is number =>
+            typeof id === 'number' && Number.isFinite(id) && id > 0,
+        );
 
       const baseContext: SteamBatchContextBase<TTarget> = {
         batchIndex,

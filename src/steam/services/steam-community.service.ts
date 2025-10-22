@@ -312,7 +312,7 @@ export class SteamCommunityService implements OnModuleDestroy {
   private buildQueries(appid: number, gameName: string): string[] {
     const q0 = gameName.trim();
     const q1 = this.simplifyName(q0);
-    const q2 = `appid ${appid}`; // 카드 텍스트에 appid가 직접 노출되는 케이스 대응
+    const q2 = `${appid}`; // 카드 텍스트에 appid가 직접 노출되는 케이스 대응
     // 같은 값이면 중복 제거
     const uniq = Array.from(new Set([q0, q1, q2].filter(Boolean)));
     return uniq;
@@ -560,20 +560,20 @@ export class SteamCommunityService implements OnModuleDestroy {
           // );
 
           if (out.firstMembers && Number.isFinite(out.firstMembers)) {
-            this.logger.debug(
-              `✅ [Search] 멤버 수 파싱 성공: ${out.firstMembers.toLocaleString()}`,
+            this.logger.log(
+              `✅ [Search] ${gameName} 멤버 수 파싱 성공: ${out.firstMembers.toLocaleString()}`,
             );
             return out.firstMembers;
           }
 
           // 카드 0개면 즉시 실패(다음 질의로)
           if (out.totalCards === 0) {
-            this.logger.debug('❌ [Search] 카드 0개 → 즉시 다음 질의로');
+            // this.logger.debug('❌ [Search] 카드 0개 → 즉시 다음 질의로');
             return 0;
           }
 
           // 카드가 있어도 매칭 0이면 실패
-          this.logger.debug('❌ [Search] 1페이지 매칭 실패');
+          this.logger.fatal('❌ [Search] 1페이지 매칭 실패');
           return 0;
         } catch (e: any) {
           const msg = e?.message ?? String(e);

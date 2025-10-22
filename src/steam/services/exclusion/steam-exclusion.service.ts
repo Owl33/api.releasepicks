@@ -58,9 +58,8 @@ export interface BucketStatus {
 @Injectable()
 export class SteamExclusionService {
   private readonly logger = new Logger(SteamExclusionService.name);
-  private cache:
-    | { bitmap: SteamExclusionBitmap; expiresAt: number }
-    | null = null;
+  private cache: { bitmap: SteamExclusionBitmap; expiresAt: number } | null =
+    null;
 
   constructor(
     @InjectRepository(SteamExcludedRegistry)
@@ -189,17 +188,15 @@ export class SteamExclusionService {
             continue;
           }
 
-          await manager
-            .getRepository(SteamExcludedRegistry)
-            .upsert(
-              {
-                bucket_id: bucket.bucketId,
-                bitmap: bucket.bitmap,
-                stats: bucket.stats,
-                last_updated_at: new Date(),
-              },
-              ['bucket_id'],
-            );
+          await manager.getRepository(SteamExcludedRegistry).upsert(
+            {
+              bucket_id: bucket.bucketId,
+              bitmap: bucket.bitmap,
+              stats: bucket.stats,
+              last_updated_at: new Date(),
+            },
+            ['bucket_id'],
+          );
         }
       },
     );
@@ -296,10 +293,7 @@ class SteamExclusionBitmap {
     const reason = this.findReason(bucket, offset);
     if (reason) {
       clearBit(bucket.reasonBitmaps[reason], offset);
-      bucket.byReason[reason] = Math.max(
-        0,
-        (bucket.byReason[reason] ?? 0) - 1,
-      );
+      bucket.byReason[reason] = Math.max(0, (bucket.byReason[reason] ?? 0) - 1);
     }
 
     bucket.total = Math.max(0, bucket.total - 1);
@@ -475,9 +469,10 @@ function toUint8Array(buffer: Buffer | Uint8Array): Uint8Array {
 }
 
 function normalizeStatsPayload(stats: unknown): BucketStatsPayload {
-  const payload = (typeof stats === 'object' && stats !== null
-    ? (stats as Partial<BucketStatsPayload>)
-    : {}) as Partial<BucketStatsPayload>;
+  const payload =
+    typeof stats === 'object' && stats !== null
+      ? (stats as Partial<BucketStatsPayload>)
+      : {};
   return {
     total: typeof payload.total === 'number' ? payload.total : 0,
     byReason: {

@@ -8,7 +8,10 @@ import {
   generateMonthRange,
   buildMonthlyParams,
 } from './utils/rawg-query-builder.util';
-import { extractPlatformFamilies, normalizePlatformSlug } from './utils/platform-normalizer';
+import {
+  extractPlatformFamilies,
+  normalizePlatformSlug,
+} from './utils/platform-normalizer';
 import {
   RawgGameDetails,
   RawgGameSearchResult,
@@ -37,9 +40,7 @@ import { rawgMonitor } from './utils/rawg-monitor';
 // YouTube 서비스 추가 (Phase 4)
 import { YouTubeService } from '../youtube/youtube.service';
 import { normalizeGameName } from '../common/utils/game-name-normalizer.util';
-import {
-  normalizeGameName as buildMatchingName,
-} from '../common/matching';
+import { normalizeGameName as buildMatchingName } from '../common/matching';
 import { normalizeSlugCandidate } from '../common/slug/slug-normalizer.util';
 import {
   buildSlugVariantsFromName,
@@ -169,7 +170,7 @@ export class RawgDataPipelineService {
     const failedMonths: string[] = [];
     const consoleIssues: string[] = [];
     let monthIndex = 0;
-    let shouldStop = false;
+    const shouldStop = false;
 
     while (queue.length && !shouldStop) {
       const task = queue.shift()!;
@@ -272,9 +273,8 @@ export class RawgDataPipelineService {
           );
           if (parentCount > 0) {
             try {
-              const parentGames = await this.rawgApiService.getParentGames(
-                rawgId,
-              );
+              const parentGames =
+                await this.rawgApiService.getParentGames(rawgId);
               if (parentGames.length > 0) {
                 isDlc = true;
                 parentRawgId = parentGames[0].id;
@@ -300,8 +300,9 @@ export class RawgDataPipelineService {
             slug: normalizedSlug,
             name: g.name,
             parentRawgId,
-            screenshots:
-              (g.short_screenshots || []).slice(0, 5).map((s: any) => s.image),
+            screenshots: (g.short_screenshots || [])
+              .slice(0, 5)
+              .map((s: any) => s.image),
             headerImage: g.background_image ?? null,
             released: g.released ?? null,
             platformFamilies: families,
@@ -313,10 +314,7 @@ export class RawgDataPipelineService {
           });
           seen.add(rawgId);
           addedCount++;
-
-          // 더 이상 limit으로 중단하지 않음 (전체 수집)
         }
-
         stat.gameCount = addedCount;
         stat.success = true;
         stat.reason = `ok(len=${games.length}, kept=${addedCount}, skipAdded=${skippedByAdded}, skipPop=${skippedByPopularity}, skipExisting=${skippedExisting})`;
@@ -671,7 +669,12 @@ export class RawgDataPipelineService {
     }
     const year = Number(match[1]);
     const month = Number(match[2]);
-    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    if (
+      !Number.isFinite(year) ||
+      !Number.isFinite(month) ||
+      month < 1 ||
+      month > 12
+    ) {
       throw new Error(`잘못된 월 값: ${value}`);
     }
     return [year, month];
@@ -801,16 +804,16 @@ export class RawgDataPipelineService {
         try {
           const releaseYear = releaseDate?.getUTCFullYear();
           const developerNames = Array.isArray(rawgDetails?.developers)
-            ? rawgDetails!.developers
+            ? rawgDetails.developers
                 .map((dev: any) =>
-                  typeof dev === 'string' ? dev : dev?.name ?? '',
+                  typeof dev === 'string' ? dev : (dev?.name ?? ''),
                 )
                 .filter((name: string) => name && name.length <= 60)
             : [];
           const publisherNames = Array.isArray(rawgDetails?.publishers)
-            ? rawgDetails!.publishers
+            ? rawgDetails.publishers
                 .map((pub: any) =>
-                  typeof pub === 'string' ? pub : pub?.name ?? '',
+                  typeof pub === 'string' ? pub : (pub?.name ?? ''),
                 )
                 .filter((name: string) => name && name.length <= 60)
             : [];
@@ -830,9 +833,8 @@ export class RawgDataPipelineService {
 
           if (picked?.url) {
             const youtubeDuration = picked.durationSeconds ?? null;
-            const acceptable = this.youtubeService.isDurationAcceptable(
-              youtubeDuration,
-            );
+            const acceptable =
+              this.youtubeService.isDurationAcceptable(youtubeDuration);
             if (acceptable) {
               youtubeVideoUrl = picked.url;
               this.logger.debug(
@@ -931,21 +933,22 @@ export class RawgDataPipelineService {
           };
 
           releases = raw.platformFamilies.map((family) => {
-          const storeInfo = storeLookup[family];
-          const platformInfo = raw.platformDetails.find((info) => {
-            if (!info.slug) return false;
-            const normalized = normalizePlatformSlug(info.slug);
-            return normalized === family;
-          });
-          const platformRaw = platformInfo?.releasedAt ?? raw.released ?? undefined;
-          const platformDate = platformRaw
-            ? this.safeParseDate(platformRaw) ?? releaseDate
-            : releaseDate;
-          if (!storeInfo) {
-            this.pushIssue(
-              consoleIssues,
-              `[${raw.sourceMonth}] 스토어 링크 누락 (${family}) - ${raw.name}`,
-            );
+            const storeInfo = storeLookup[family];
+            const platformInfo = raw.platformDetails.find((info) => {
+              if (!info.slug) return false;
+              const normalized = normalizePlatformSlug(info.slug);
+              return normalized === family;
+            });
+            const platformRaw =
+              platformInfo?.releasedAt ?? raw.released ?? undefined;
+            const platformDate = platformRaw
+              ? (this.safeParseDate(platformRaw) ?? releaseDate)
+              : releaseDate;
+            if (!storeInfo) {
+              this.pushIssue(
+                consoleIssues,
+                `[${raw.sourceMonth}] 스토어 링크 누락 (${family}) - ${raw.name}`,
+              );
             }
             const fallback = this.storeFallbackForFamily(family, raw.name);
             const chosenStore = storeInfo?.store ?? fallback.store;
@@ -959,7 +962,7 @@ export class RawgDataPipelineService {
               platform: family as Platform,
               store: storeInfo?.store ?? fallback.store,
               storeAppId:
-              storeInfo?.storeAppId?.trim() ??
+                storeInfo?.storeAppId?.trim() ??
                 `${raw.rawgId}-${family.toLowerCase()}`,
               storeUrl,
               releaseDateDate: platformDate ?? undefined,
@@ -1030,7 +1033,7 @@ export class RawgDataPipelineService {
       },
       releaseDateIso: releaseDate
         ? releaseDate.toISOString().slice(0, 10)
-        : releaseInfo.raw ?? null,
+        : (releaseInfo.raw ?? null),
       companySlugs: companies
         ?.map((company) => company.slug)
         .filter((slug): slug is string => Boolean(slug)),
@@ -1083,9 +1086,7 @@ export class RawgDataPipelineService {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
-  private selectBestReleaseDate(
-    raw: RawgIntermediate,
-  ): {
+  private selectBestReleaseDate(raw: RawgIntermediate): {
     date: Date | undefined;
     raw: string | undefined;
     status: ReleaseStatus;
@@ -1125,7 +1126,9 @@ export class RawgDataPipelineService {
     const chosen = candidates[0];
     const now = new Date();
     const comingSoon = chosen.date > now;
-    const status = comingSoon ? ReleaseStatus.COMING_SOON : ReleaseStatus.RELEASED;
+    const status = comingSoon
+      ? ReleaseStatus.COMING_SOON
+      : ReleaseStatus.RELEASED;
 
     return {
       date: chosen.date,

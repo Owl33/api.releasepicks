@@ -332,7 +332,9 @@ export class MultiPlatformMatchingService {
 
     buildSlugVariantsFromName(data.name).forEach((variant) => push(variant));
     if (data.ogName && data.ogName !== data.name) {
-      buildSlugVariantsFromName(data.ogName).forEach((variant) => push(variant));
+      buildSlugVariantsFromName(data.ogName).forEach((variant) =>
+        push(variant),
+      );
     }
 
     const duplicateSlugBase = detectDuplicateSlugBase(

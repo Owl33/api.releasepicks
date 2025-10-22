@@ -12,9 +12,7 @@ import { PersistenceSaveResult } from './persistence.types';
  */
 @Injectable()
 export class IntegratedPersistenceService {
-  constructor(
-    private readonly orchestrator: PersistenceOrchestratorService,
-  ) {}
+  constructor(private readonly orchestrator: PersistenceOrchestratorService) {}
 
   async saveProcessedGames(
     payload: ProcessedGameData[],

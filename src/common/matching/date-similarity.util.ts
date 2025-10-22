@@ -54,10 +54,14 @@ export function compareReleaseDates(
   else if (diffDays <= 7) score = 0.8;
   else if (diffDays <= 14) score = 0.7;
   else if (diffDays <= 30) score = 0.6;
-  else if (diffDays <= 90) score = 0.5; // 3개월
-  else if (diffDays <= 180) score = 0.4; // 6개월
-  else if (diffDays <= 365) score = 0.3; // 1년
-  else if (diffDays <= 730) score = 0.2; // 2년
+  else if (diffDays <= 90)
+    score = 0.5; // 3개월
+  else if (diffDays <= 180)
+    score = 0.4; // 6개월
+  else if (diffDays <= 365)
+    score = 0.3; // 1년
+  else if (diffDays <= 730)
+    score = 0.2; // 2년
   else if (diffDays <= 1825) score = 0.1; // 5년 (PC 포팅)
 
   return { diffDays, score: Number(score.toFixed(3)) };

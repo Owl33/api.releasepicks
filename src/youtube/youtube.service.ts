@@ -142,9 +142,7 @@ export class YouTubeService {
   private readonly scoreFreshBonusThresholdDays = Number(
     process.env.YT_FRESH_WINDOW_DAYS ?? 365,
   );
-  private readonly scoreFreshBonus = Number(
-    process.env.YT_FRESH_BONUS ?? 0.12,
-  );
+  private readonly scoreFreshBonus = Number(process.env.YT_FRESH_BONUS ?? 0.12);
   private readonly scoreOldPenaltyThresholdDays = Number(
     process.env.YT_OUTDATED_THRESHOLD_DAYS ?? 730,
   );
@@ -615,7 +613,8 @@ export class YouTubeService {
     let best = 0;
 
     for (const it of items) {
-      const secs = it.durationSeconds ?? this.parseDurationSeconds(it.durationText);
+      const secs =
+        it.durationSeconds ?? this.parseDurationSeconds(it.durationText);
       if (!this.isDurationAcceptable(secs)) {
         // this.logger.debug(
         //   `⏭️ [YouTube] 길이 조건 불만족(${secs ?? 'unknown'}s) → 스킵: ${it.url ?? it.title ?? ''}`,
@@ -770,9 +769,7 @@ export class YouTubeService {
     return controller.signal;
   }
 
-  private normalizeReleaseDate(
-    value?: string | Date,
-  ): Date | null {
+  private normalizeReleaseDate(value?: string | Date): Date | null {
     if (!value) return null;
     if (value instanceof Date) {
       return Number.isNaN(value.getTime()) ? null : value;
@@ -886,6 +883,8 @@ export class YouTubeService {
 
   public isDurationAcceptable(seconds?: number | null): boolean {
     if (seconds == null) return false;
-    return seconds >= this.minDurationSeconds && seconds <= this.maxDurationSeconds;
+    return (
+      seconds >= this.minDurationSeconds && seconds <= this.maxDurationSeconds
+    );
   }
 }

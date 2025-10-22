@@ -23,12 +23,8 @@ const STEAM_APP_EXCLUDE_PATTERNS: RegExp[] = [
 /**
  * Steam 앱 이름이 제외 대상인지 여부를 반환한다.
  */
-export function shouldExcludeSteamAppName(
-  name: unknown,
-): boolean {
+export function shouldExcludeSteamAppName(name: unknown): boolean {
   const normalized = typeof name === 'string' ? name.trim().toLowerCase() : '';
   if (!normalized) return false;
-  return STEAM_APP_EXCLUDE_PATTERNS.some((pattern) =>
-    pattern.test(normalized),
-  );
+  return STEAM_APP_EXCLUDE_PATTERNS.some((pattern) => pattern.test(normalized));
 }

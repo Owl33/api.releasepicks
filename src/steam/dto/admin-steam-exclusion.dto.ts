@@ -15,7 +15,8 @@ export class MarkSteamExclusionDto {
   steamId!: number;
 
   @ApiProperty({
-    description: "제외 사유 ('NON_GAME', 'NO_DETAILS', 'REQUEST_FAILED', 'MANUAL')",
+    description:
+      "제외 사유 ('NON_GAME', 'NO_DETAILS', 'REQUEST_FAILED', 'MANUAL')",
     example: 'NON_GAME',
   })
   @IsEnum(['NON_GAME', 'NO_DETAILS', 'REQUEST_FAILED', 'MANUAL'])

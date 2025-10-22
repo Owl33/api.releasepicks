@@ -1004,6 +1004,57 @@ export class GamesService {
       });
     }
 
+    // 리뷰 점수(desc) 필터
+    if (filters.reviewScoreDesc && filters.reviewScoreDesc.length > 0) {
+      const normalized = Array.from(
+        new Set(
+          filters.reviewScoreDesc
+            .map((v) => (typeof v === 'string' ? v.trim() : ''))
+            .filter((v) => v.length > 0),
+        ),
+      );
+
+      if (normalized.length > 0) {
+        const values: string[] = [];
+        let includeNone = false;
+
+        normalized.forEach((value) => {
+          if (value.toLowerCase() === 'all') {
+            return;
+          }
+          if (value.toLowerCase() === 'none') {
+            includeNone = true;
+            return;
+          }
+          values.push(value);
+        });
+
+        const conditions: string[] = [];
+        const params: Record<string, unknown> = {};
+
+        if (values.length > 0) {
+          conditions.push(
+            '(detail.review_score_desc IN (:...reviewScoreValues) OR release.review_score_desc IN (:...reviewScoreValues))',
+          );
+          params.reviewScoreValues = values;
+        }
+
+        if (includeNone) {
+          conditions.push(
+            "((detail.review_score_desc IS NULL OR detail.review_score_desc = '') AND NOT EXISTS (SELECT 1 FROM game_releases gr WHERE gr.game_id = game.id AND gr.review_score_desc IS NOT NULL AND gr.review_score_desc <> ''))",
+          );
+        }
+
+        if (conditions.length > 0) {
+          const whereClause =
+            conditions.length === 1
+              ? conditions[0]
+              : `(${conditions.join(' OR ')})`;
+          base.andWhere(whereClause, params);
+        }
+      }
+    }
+
     // ---------------------------------------------------------
     // 2) "게임 단위로" 그룹핑하여 페이징 기준(키셋) 만들기
     //    - sortBy 에 따라 대표 컬럼을 선택
@@ -1014,7 +1065,9 @@ export class GamesService {
     // ---------------------------------------------------------
     // ✅ 타입 안전성 강화: SortBy, SortOrder 사용
     const sortBy: SortBy = filters.sortBy ?? 'releaseDate';
-    const sortOrder: SortOrder = (filters.sortOrder ?? 'ASC').toUpperCase() as SortOrder;
+    const sortOrder: SortOrder = (
+      filters.sortOrder ?? 'ASC'
+    ).toUpperCase() as SortOrder;
 
     const grouped = base
       .clone()
@@ -1080,6 +1133,7 @@ export class GamesService {
           publishers: filters.publishers,
           platforms: filters.platforms,
           gameType: gameTypeFilter,
+          reviewScoreDesc: filters.reviewScoreDesc,
         },
         pagination,
         count: { total, filtered: 0 },
@@ -1119,7 +1173,9 @@ export class GamesService {
 
         'detail.screenshots AS detail_screenshots',
         'detail.genres AS detail_genres',
+        'detail.review_score_desc AS detail_review_score_desc',
         'detail.header_image as header_image',
+        'release.review_score_desc AS release_review_score_desc',
       ])
       .where('game.id IN (:...ids)', { ids: pageGameIds })
       .andWhere('(detail.id IS NULL OR detail.sexual = false)')
@@ -1161,6 +1217,12 @@ export class GamesService {
       const currentPrice = priceCents ? priceCents / 100 : null;
       const isFreeFlag = row.release_is_free === true;
       const isPcPlatform = platform === Platform.PC;
+      const detailReview = this.sanitizeReviewScoreDesc(
+        row.detail_review_score_desc,
+      );
+      const releaseReview = this.sanitizeReviewScoreDesc(
+        row.release_review_score_desc,
+      );
       const existing = aggregateMap.get(aggregateKey);
       if (existing) {
         this.pushUnique(existing.releaseIds, Number(row.release_id));
@@ -1211,6 +1273,11 @@ export class GamesService {
             existing.currentPrice = currentPrice;
           }
         }
+        if (detailReview) {
+          existing.reviewScoreDesc = detailReview;
+        } else if (!existing.reviewScoreDesc && releaseReview) {
+          existing.reviewScoreDesc = releaseReview;
+        }
         continue;
       }
 
@@ -1235,10 +1302,15 @@ export class GamesService {
         currentPrice,
         isFree: isFreeFlag,
         gameType: (row.game_type as GameType) ?? GameType.GAME,
+        reviewScoreDesc: detailReview ?? releaseReview ?? null,
         hasPcPriority: isPcPlatform,
       };
 
-      if (!aggregate.hasPcPriority && store === Store.STEAM && currentPrice !== null) {
+      if (
+        !aggregate.hasPcPriority &&
+        store === Store.STEAM &&
+        currentPrice !== null
+      ) {
         aggregate.currentPrice = currentPrice;
       }
 
@@ -1299,6 +1371,7 @@ export class GamesService {
         publishers: filters.publishers,
         platforms: filters.platforms,
         gameType: gameTypeFilter,
+        reviewScoreDesc: filters.reviewScoreDesc,
       },
       pagination,
       count: {
@@ -1307,6 +1380,14 @@ export class GamesService {
       },
       data,
     };
+  }
+
+  private sanitizeReviewScoreDesc(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
   }
 
   private parseDateLoose(value?: string | Date | null): Date | null {
