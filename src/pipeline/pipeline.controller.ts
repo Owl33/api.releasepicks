@@ -8,6 +8,7 @@
   UsePipes,
   Param,
   Get,
+  UseGuards,
 } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
@@ -52,6 +53,7 @@ import {
   ApiTags,
   ApiOkResponse,
 } from '@nestjs/swagger';
+import { ServiceRoleGuard } from '../common/guards/service-role.guard';
 type SteamBatchRunningTotals = {
   collected: number;
   created: number;
@@ -143,6 +145,7 @@ interface SteamBatchHooks<TTarget> {
 
 @ApiTags('Pipeline')
 @Controller('api/pipeline')
+@UseGuards(ServiceRoleGuard)
 export class PipelineController {
   private readonly logger = new Logger(PipelineController.name);
 

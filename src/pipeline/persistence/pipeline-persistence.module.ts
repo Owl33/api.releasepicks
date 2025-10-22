@@ -20,7 +20,6 @@ import { MultiPlatformMatchingService } from './services/multi-platform-matching
 
 /**
  * PipelinePersistenceModule
- * - Phase 3 Persistence 계층 1차 스켈레톤
  */
 @Module({
   imports: [
