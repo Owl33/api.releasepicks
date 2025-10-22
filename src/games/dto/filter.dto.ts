@@ -209,7 +209,7 @@ export class GameFilterDto {
   @Transform(({ value }) => parseInt(value, 10))
   @IsInt()
   @Min(1)
-  @Max(200)
+  @Max(40)
   pageSize?: number; // 페이지 크기 (기본 20, 범위 10-50)
 
   // ===== 정렬 =====
