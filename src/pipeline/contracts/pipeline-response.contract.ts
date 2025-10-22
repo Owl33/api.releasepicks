@@ -101,7 +101,7 @@ export interface PipelineRunResult {
     updated: number;
     failed: number;
     dryRun: boolean;
-    target?: 'all' | 'zero-popularity';
+    target?: 'all' | 'zero-popularity' | 'missing-followers';
     failures?: {
       steamId: number | null;
       rawgId: number | null;

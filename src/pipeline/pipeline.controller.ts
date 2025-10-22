@@ -1165,16 +1165,30 @@ export class PipelineController {
     try {
       const query = this.gamesRepository
         .createQueryBuilder('game')
-        .innerJoin('game.details', 'detail')
-        .innerJoin('game.releases', 'release')
         .select(['game.id AS game_id', 'game.steam_id AS steam_id'])
         .where('game.steam_id IS NOT NULL');
 
-      if (target === FullRefreshTargetEnum.zeroPopularity) {
-        query.andWhere('game.game_type = :gameType', {
-          gameType: GameType.GAME,
-        });
-        query.andWhere('game.popularity_score = 0');
+      switch (target) {
+        case FullRefreshTargetEnum.zeroPopularity:
+          query.andWhere('game.game_type = :gameType', {
+            gameType: GameType.GAME,
+          });
+          query.andWhere('game.popularity_score = 0');
+          this.logger.log(
+            '   - zero-popularity 모드: 세부 정보 미보유 본편도 포함합니다.',
+          );
+          break;
+        case FullRefreshTargetEnum.missingFollowers:
+          query.andWhere('game.followers_cache IS NULL');
+          query.andWhere('game.popularity_score > 0');
+          this.logger.log(
+            '   - missing-followers 모드: 팔로워 캐시 미보유 게임을 갱신합니다.',
+          );
+          break;
+        default:
+          query.innerJoin('game.details', 'detail');
+          query.innerJoin('game.releases', 'release');
+          break;
       }
 
       const rawTargets = await query

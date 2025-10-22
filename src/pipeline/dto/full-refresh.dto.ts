@@ -13,6 +13,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 export enum FullRefreshTargetEnum {
   all = 'all',
   zeroPopularity = 'zero-popularity',
+  missingFollowers = 'missing-followers',
 }
 
 export class FullRefreshDto {
@@ -62,7 +63,7 @@ export class FullRefreshDto {
 
   @ApiPropertyOptional({
     description:
-      "대상 필터 ('all' = 전체, 'zero-popularity' = 인기도 0인 본편)",
+      "대상 필터 ('all' = 전체, 'zero-popularity' = 인기도 0인 본편, 'missing-followers' = 인기도 양수이지만 팔로워 캐시가 비어 있는 게임)",
     example: FullRefreshTargetEnum.zeroPopularity,
     enum: FullRefreshTargetEnum,
     default: FullRefreshTargetEnum.all,
