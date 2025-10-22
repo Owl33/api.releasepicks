@@ -209,8 +209,8 @@ export class GameFilterDto {
   @Transform(({ value }) => parseInt(value, 10))
   @IsInt()
   @Min(1)
-  @Max(40)
-  pageSize?: number; // 페이지 크기 (기본 20, 범위 10-50)
+  @Max(250)
+  pageSize?: number; // 페이지 크기
 
   // ===== 정렬 =====
   @ApiPropertyOptional({
