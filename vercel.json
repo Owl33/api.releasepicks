@@ -9,6 +9,11 @@
   ],
   "routes": [
     {
+      "src": "^/api/cron/steam-maintenance$",
+      "dest": "api/cron/steam-maintenance.ts",
+      "methods": ["GET", "POST"]
+    },
+    {
       "src": "/(.*)",
       "dest": "api/index.ts",
       "methods": ["GET", "POST", "PUT", "PATCH", "OPTIONS", "DELETE"],
@@ -19,7 +24,7 @@
   ],
   "crons": [
     {
-      "path": "/api/pipeline/cron/steam-maintenance",
+      "path": "/api/cron/steam-maintenance",
       "schedule": "0 17 * * *"
     }
   ]
