@@ -1,12 +1,10 @@
 {
   "version": 2,
 
-  "builds": [
-    {
-      "src": "api/index.ts",
-      "use": "@vercel/node"
-    }
-  ],
+   "builds": [
+       { "src": "api/index.ts", "use": "@vercel/node" },
+       { "src": "api/cron/steam-maintenance.ts", "use": "@vercel/node" }
+     ],
   "routes": [
     {
       "src": "^/api/cron/steam-maintenance$",
