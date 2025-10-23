@@ -63,6 +63,10 @@ interface RawgMonthlyRangeOptions {
   pageSize?: number;
   excludeExisting?: boolean;
   dryRun?: boolean;
+  onMonthChunk?: (
+    monthKey: string,
+    items: ProcessedGameData[],
+  ) => Promise<void>;
 }
 
 interface RawgCollectByIdOptions {
@@ -326,9 +330,15 @@ export class RawgDataPipelineService {
             consoleIssues,
             processedData.length,
           );
-          processedData.push(...mapped);
-        }
 
+          if (options.onMonthChunk) {
+            // ★ 월 단위 즉시 저장(컨트롤러가 넘긴 콜백)
+            await options.onMonthChunk(monthKey, mapped);
+          } else {
+            // 기존 동작 유지(모두 모아 반환)
+            processedData.push(...mapped);
+          }
+        }
         this.logger.log(
           `✅ [RAWG] ${monthKey} 완료 — 총:${games.length}, 저장:${addedCount}, added필터:${skippedByAdded}, 인기필터:${skippedByPopularity}, 기존:${skippedExisting}`,
         );

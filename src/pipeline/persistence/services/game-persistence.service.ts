@@ -366,7 +366,7 @@ export class GamePersistenceService {
     }
     if (data.releaseDate || existing.release_date_date) {
       const incoming = data.releaseDate?.getTime() ?? null;
-      const current = existing.release_date_date?.getTime() ?? null;
+      const current = existing?.release_date_date ? existing?.release_date_date?.getTime() : null;
       if (incoming !== current) {
         ignored.push('release_date');
       }

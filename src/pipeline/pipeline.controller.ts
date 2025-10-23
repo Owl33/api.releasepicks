@@ -39,10 +39,7 @@ import {
   ModeEnum,
   SourcesEnum,
 } from './dto/single-game-manual-dto';
-import {
-  FullRefreshDto,
-  FullRefreshTargetEnum,
-} from './dto/full-refresh.dto';
+import { FullRefreshDto, FullRefreshTargetEnum } from './dto/full-refresh.dto';
 import { RawgNewDto } from '../rawg/dto/rawg-new.dto';
 import { RawgRefreshDto } from '../rawg/dto/rawg-refresh.dto';
 import {
@@ -306,6 +303,7 @@ export class PipelineController {
       },
     },
   })
+  // controller.ts (executeRawgNew) 발췌
   async executeRawgNew(
     @Body() dto: RawgNewDto,
   ): Promise<ApiResponse<PipelineRunResult>> {
@@ -320,7 +318,17 @@ export class PipelineController {
     );
 
     try {
-      const processed = await this.rawgDataPipeline.collectNewGames({
+      const aggregated: PersistenceSaveResult = {
+        created: 0,
+        updated: 0,
+        failed: 0,
+        failures: [],
+      };
+      let failureSummaries: ReturnType<typeof this.mapFailureDetails> = [];
+      const months: string[] = [];
+      let totalCollected = 0;
+
+      await this.rawgDataPipeline.collectNewGames({
         startMonth: dto.startMonth,
         endMonth: dto.endMonth,
         monthsBack: dto.monthsBack,
@@ -330,59 +338,46 @@ export class PipelineController {
         metacritic: dto.metacritic,
         pageSize: dto.pageSize,
         excludeExisting,
-      });
 
-      const totalCollected = processed.length;
-      const groupedByMonth = new Map<string, ProcessedGameData[]>();
-      for (const item of processed) {
-        const monthKey = item.sourceMonth ?? 'unknown';
-        if (!groupedByMonth.has(monthKey)) {
-          groupedByMonth.set(monthKey, []);
-        }
-        groupedByMonth.get(monthKey)!.push(item);
-      }
-      const orderedMonths = Array.from(groupedByMonth.keys()).sort();
+        // ★ 월 단위 콜백: 여기서 즉시 저장
+        onMonthChunk: async (monthKey, items) => {
+          months.push(monthKey);
+          totalCollected += items.length;
 
-      const aggregated: PersistenceSaveResult = {
-        created: 0,
-        updated: 0,
-        failed: 0,
-        failures: [],
-      };
-      let failureSummaries: ReturnType<typeof this.mapFailureDetails> = [];
+          if (dryRun || items.length === 0) {
+            this.logger.log(
+              `🧪 [RAWG 신규] ${monthKey} 드라이런 — 저장 생략 (${items.length}건)`,
+            );
+            return;
+          }
 
-      if (!dryRun && totalCollected > 0) {
-        const SAVE_BATCH_SIZE = 1000;
-        for (const monthKey of orderedMonths) {
-          const items = groupedByMonth.get(monthKey)!;
+          const SAVE_BATCH_SIZE = 1000;
           const totalChunks = Math.ceil(items.length / SAVE_BATCH_SIZE) || 1;
           this.logger.log(
             `💾 [RAWG 신규] ${monthKey} 월 저장 시작 (${items.length}건, 청크=${totalChunks})`,
           );
-          for (let index = 0; index < items.length; index += SAVE_BATCH_SIZE) {
-            const chunk = items.slice(index, index + SAVE_BATCH_SIZE);
-            const chunkNo = Math.floor(index / SAVE_BATCH_SIZE) + 1;
+
+          for (let i = 0; i < items.length; i += SAVE_BATCH_SIZE) {
+            const chunk = items.slice(i, i + SAVE_BATCH_SIZE);
+            const chunkNo = Math.floor(i / SAVE_BATCH_SIZE) + 1;
             this.logger.log(
               `   chunk ${chunkNo}/${totalChunks} 저장 (${chunk.length}건)`,
             );
-            const chunkResult = await this.persistence.saveProcessedGames(
+
+            const r = await this.persistence.saveProcessedGames(
               chunk,
               pipelineRun.id,
             );
-            aggregated.created += chunkResult.created;
-            aggregated.updated += chunkResult.updated;
-            aggregated.failed += chunkResult.failed;
-            if (chunkResult.failures?.length) {
-              aggregated.failures.push(...chunkResult.failures);
-            }
+            aggregated.created += r.created;
+            aggregated.updated += r.updated;
+            aggregated.failed += r.failed;
+            if (r.failures?.length) aggregated.failures.push(...r.failures);
           }
-        }
+        },
+      });
 
+      if (aggregated.failures.length) {
         failureSummaries = this.mapFailureDetails(aggregated.failures);
-      } else if (dryRun) {
-        this.logger.log(`🧪 [RAWG 신규] 드라이런 모드 — 저장 생략`);
-      } else {
-        this.logger.log(`ℹ️ [RAWG 신규] 저장할 데이터가 없습니다.`);
       }
 
       await this.completePipelineRun(
@@ -418,7 +413,7 @@ export class PipelineController {
             startMonth: dto.startMonth ?? null,
             endMonth: dto.endMonth ?? null,
             pageSize: dto.pageSize ?? null,
-            months: orderedMonths,
+            months: Array.from(new Set(months)).sort(), // 정렬된 월 목록
             failures:
               failureSummaries.length > 0 ? failureSummaries : undefined,
           },
@@ -428,7 +423,6 @@ export class PipelineController {
     } catch (error) {
       const err = this.normalizeError(error);
       this.logger.error(`❌ [RAWG 신규] 실패 - ${err.message}`);
-
       await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
       throw err;
     }
@@ -1100,319 +1094,324 @@ export class PipelineController {
     }
   }
 
-@Post('steam/full-refresh')
-@UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-@ApiOperation({
-  summary: 'Steam 전체 게임 갱신',
-  description:
-    '저장된 모든 Steam 게임에 대해 상세 정보를 재수집합니다. 비용이 큰 작업이므로 주의해서 사용하세요.',
-})
-@ApiBody({
-  type: FullRefreshDto,
-  examples: {
-    default: {
-      summary: '예시',
-      value: {
-        mode: 'operational',
-        dryRun: true,
-        limit: 500,
-        // target 생략 시: 오늘 포함 ±2개월만 갱신
+  @Post('steam/full-refresh')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary: 'Steam 전체 게임 갱신',
+    description:
+      '저장된 모든 Steam 게임에 대해 상세 정보를 재수집합니다. 비용이 큰 작업이므로 주의해서 사용하세요.',
+  })
+  @ApiBody({
+    type: FullRefreshDto,
+    examples: {
+      default: {
+        summary: '예시',
+        value: {
+          mode: 'operational',
+          dryRun: true,
+          limit: 500,
+          // target 생략 시: 오늘 포함 ±2개월만 갱신
+        },
       },
     },
-  },
-})
-@ApiOkResponse({ /* 생략: 동일 */ })
-async executeFullGamesRefresh(
-  @Body() params: FullRefreshDto,
-): Promise<ApiResponse<PipelineRunResult>> {
-  const mode = params.mode ?? ModeEnum.operational;
-  const dryRun = params.dryRun ?? false;
-  const batchSize = params.batchSize ?? 1000;
-  const SAVE_BATCH_SIZE = 1000;
+  })
+  @ApiOkResponse({
+    /* 생략: 동일 */
+  })
+  async executeFullGamesRefresh(
+    @Body() params: FullRefreshDto,
+  ): Promise<ApiResponse<PipelineRunResult>> {
+    const mode = params.mode ?? ModeEnum.operational;
+    const dryRun = params.dryRun ?? false;
+    const batchSize = params.batchSize ?? 1000;
+    const SAVE_BATCH_SIZE = 1000;
 
-  // ✅ target이 "들어왔는지" 여부를 별도로 판단
-  const targetProvided = Object.prototype.hasOwnProperty.call(params, 'target') &&
-                         params.target !== undefined && params.target !== null;
+    // ✅ target이 "들어왔는지" 여부를 별도로 판단
+    const targetProvided =
+      Object.prototype.hasOwnProperty.call(params, 'target') &&
+      params.target !== undefined &&
+      params.target !== null;
 
-  const target = targetProvided ? params.target! : FullRefreshTargetEnum.all;
+    const target = targetProvided ? params.target! : FullRefreshTargetEnum.all;
 
-  // ✅ KST(Asia/Seoul) 기준으로 오늘 날짜 ±2개월 윈도우 계산 (target 미지정 시만 사용)
-  const makeKstDate = () =>
-    new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+    // ✅ KST(Asia/Seoul) 기준으로 오늘 날짜 ±2개월 윈도우 계산 (target 미지정 시만 사용)
+    const makeKstDate = () =>
+      new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
 
-  const formatDate = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;          // DATE 컬럼 비교용
-  };
+    const formatDate = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`; // DATE 컬럼 비교용
+    };
 
-  const nowKst = makeKstDate();
-  const startKst = new Date(nowKst);
-  startKst.setMonth(startKst.getMonth() - 2); // -2개월
-  const endKst = new Date(nowKst);
-  endKst.setMonth(endKst.getMonth() + 2);     // +2개월
+    const nowKst = makeKstDate();
+    const startKst = new Date(nowKst);
+    startKst.setMonth(startKst.getMonth() - 2); // -2개월
+    const endKst = new Date(nowKst);
+    endKst.setMonth(endKst.getMonth() + 2); // +2개월
 
-  const startDateParam = formatDate(startKst);
-  const endDateParam = formatDate(endKst);
+    const startDateParam = formatDate(startKst);
+    const endDateParam = formatDate(endKst);
 
-  this.logger.log('♻️ [Steam 전체 갱신] 시작');
-  this.logger.log(`   - mode: ${mode}`);
-  this.logger.log(`   - dryRun: ${dryRun}`);
-  this.logger.log(`   - batchSize: ${batchSize}`);
-  this.logger.log(`   - target: ${target}`);
-  if (!targetProvided) {
-    this.logger.log(
-      `   - target 미지정: Asia/Seoul 기준 오늘 포함 ±2개월 윈도우 적용 (${startDateParam} ~ ${endDateParam})`,
-    );
-  }
-
-  const pipelineRun = await this.createPipelineRun(
-    'manual',
-    'full',
-    'full_refresh_games_manual',
-  );
-
-  try {
-    const query = this.gamesRepository
-      .createQueryBuilder('game')
-      .select(['game.id AS game_id', 'game.steam_id AS steam_id'])
-      .where('game.steam_id IS NOT NULL');
-
-    switch (target) {
-      case FullRefreshTargetEnum.zeroPopularity:
-        query.andWhere('game.game_type = :gameType', {
-          gameType: GameType.GAME,
-        });
-        query.andWhere('game.popularity_score = 0');
-        this.logger.log(
-          '   - zero-popularity 모드: 세부 정보 미보유 본편도 포함합니다.',
-        );
-        break;
-
-      case FullRefreshTargetEnum.missingFollowers:
-        query.andWhere('game.followers_cache IS NULL');
-        query.andWhere('game.popularity_score > 0');
-        this.logger.log(
-          '   - missing-followers 모드: 팔로워 캐시 미보유 게임을 갱신합니다.',
-        );
-        break;
-
-      default:
-        // 기본(all) 처리 — 세부정보/릴리즈 조인
-        query.innerJoin('game.details', 'detail');
-        query.innerJoin('game.releases', 'release');
-
-        // ✅ target을 명시하지 않은 경우에만 날짜 윈도우 필터 적용 (오늘 포함 ±2개월)
-        if (!targetProvided) {
-          query.andWhere(
-            'release.release_date_date BETWEEN :startDate AND :endDate',
-            { startDate: startDateParam, endDate: endDateParam },
-          );
-        }
-        break;
+    this.logger.log('♻️ [Steam 전체 갱신] 시작');
+    this.logger.log(`   - mode: ${mode}`);
+    this.logger.log(`   - dryRun: ${dryRun}`);
+    this.logger.log(`   - batchSize: ${batchSize}`);
+    this.logger.log(`   - target: ${target}`);
+    if (!targetProvided) {
+      this.logger.log(
+        `   - target 미지정: Asia/Seoul 기준 오늘 포함 ±2개월 윈도우 적용 (${startDateParam} ~ ${endDateParam})`,
+      );
     }
 
-    const rawTargets = await query
-      .distinct(true)
-      .getRawMany<{ game_id: string; steam_id: number | null }>();
+    const pipelineRun = await this.createPipelineRun(
+      'manual',
+      'full',
+      'full_refresh_games_manual',
+    );
 
-    const targets = rawTargets.map((row) => ({
-      gameId: Number(row.game_id),
-      steamId:
-        row.steam_id !== null && Number.isFinite(Number(row.steam_id))
-          ? Number(row.steam_id)
-          : null,
-    }));
+    try {
+      const query = this.gamesRepository
+        .createQueryBuilder('game')
+        .select(['game.id AS game_id', 'game.steam_id AS steam_id'])
+        .where('game.steam_id IS NOT NULL');
 
-    const totalGames = targets.length;
-    if (totalGames === 0) {
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'completed',
-        'no-targets',
-        0,
-        0,
-        0,
+      switch (target) {
+        case FullRefreshTargetEnum.zeroPopularity:
+          query.andWhere('game.game_type = :gameType', {
+            gameType: GameType.GAME,
+          });
+          query.andWhere('game.popularity_score = 0');
+          this.logger.log(
+            '   - zero-popularity 모드: 세부 정보 미보유 본편도 포함합니다.',
+          );
+          break;
+
+        case FullRefreshTargetEnum.missingFollowers:
+          query.andWhere('game.followers_cache IS NULL');
+          query.andWhere('game.popularity_score > 0');
+          this.logger.log(
+            '   - missing-followers 모드: 팔로워 캐시 미보유 게임을 갱신합니다.',
+          );
+          break;
+
+        default:
+          // 기본(all) 처리 — 세부정보/릴리즈 조인
+          query.innerJoin('game.details', 'detail');
+          query.innerJoin('game.releases', 'release');
+
+          // ✅ target을 명시하지 않은 경우에만 날짜 윈도우 필터 적용 (오늘 포함 ±2개월)
+          if (!targetProvided) {
+            query.andWhere(
+              'release.release_date_date BETWEEN :startDate AND :endDate',
+              { startDate: startDateParam, endDate: endDateParam },
+            );
+          }
+          break;
+      }
+
+      const rawTargets = await query
+        .distinct(true)
+        .getRawMany<{ game_id: string; steam_id: number | null }>();
+
+      const targets = rawTargets.map((row) => ({
+        gameId: Number(row.game_id),
+        steamId:
+          row.steam_id !== null && Number.isFinite(Number(row.steam_id))
+            ? Number(row.steam_id)
+            : null,
+      }));
+
+      const totalGames = targets.length;
+      if (totalGames === 0) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'no-targets',
+          0,
+          0,
+          0,
+        );
+        return {
+          statusCode: 200,
+          message: '갱신할 게임이 없습니다.',
+          data: {
+            pipelineRunId: pipelineRun.id,
+            phase: 'full',
+            totalProcessed: 0,
+            finishedAt: new Date(),
+            fullRefreshSummary: {
+              totalGames: 0,
+              processedGames: 0,
+              steamRequested: 0,
+              collected: 0,
+              updated: 0,
+              failed: 0,
+              dryRun,
+              target,
+              // 참고: target 미지정 여부를 추가로 보고하고 싶다면 여기에 flag를 내려줄 수도 있음
+            },
+          },
+        };
+      }
+
+      const steamIdSet = new Set<number>();
+      targets.forEach((t) => {
+        if (t.steamId && t.steamId > 0) steamIdSet.add(t.steamId);
+      });
+
+      const totalSteamIds = steamIdSet.size;
+
+      this.logger.log(
+        `📊 [Steam 전체 갱신] 대상 ${totalGames}건 (Steam=${totalSteamIds})`,
       );
+
+      const totalBatches = Math.ceil(totalGames / batchSize);
+      this.logger.log(
+        `🧮 [Steam 전체 갱신] ${totalGames}건을 ${totalBatches}개 배치(${batchSize}개 기준)로 처리`,
+      );
+
+      let processedGames = 0;
+      const batchResult = await this.runSteamCollectionBatches<
+        (typeof targets)[number]
+      >({
+        targets,
+        toSteamId: (target) =>
+          typeof target.steamId === 'number' ? target.steamId : null,
+        mode,
+        pipelineRunId: pipelineRun.id,
+        dryRun,
+        fetchBatchSize: batchSize,
+        saveBatchSize: SAVE_BATCH_SIZE,
+        allowCreate: false,
+        progressTotal: totalSteamIds > 0 ? totalSteamIds : undefined,
+        hooks: {
+          onBatchStart: ({
+            batchIndex,
+            batchCount,
+            targetStart,
+            targetEnd,
+            targetTotal,
+            steamIds,
+            steamProgressStart,
+            steamProgressEnd,
+            totalUniqueSteamIds,
+          }) => {
+            this.logger.log(
+              `🔁 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 시작 — 게임 ${
+                targetStart + 1
+              }-${targetEnd}/${targetTotal}`,
+            );
+            if (steamIds.length > 0) {
+              const totalSteam =
+                totalUniqueSteamIds > 0 ? totalUniqueSteamIds : steamIds.length;
+              this.logger.log(
+                `   🔄 Steam 수집 시작 — ${steamIds.length}건 (누적 ${
+                  steamProgressStart + 1
+                }-${steamProgressEnd}/${totalSteam})`,
+              );
+            } else {
+              this.logger.log('   ℹ️ Steam 대상 없음 (배치)');
+            }
+          },
+          onCollected: ({ steamIds, collected }) => {
+            if (steamIds.length > 0) {
+              this.logger.log(
+                `   ✅ Steam 수집 완료 — ${collected.length}/${steamIds.length}건`,
+              );
+            }
+          },
+          onBeforeSave: ({ saveChunkIndex, saveChunkCount, saveChunk }) => {
+            if (dryRun || saveChunk.length === 0) return;
+            this.logger.log(
+              `   💾 저장 ${saveChunkIndex + 1}/${saveChunkCount} — ${
+                saveChunk.length
+              }건`,
+            );
+          },
+          onSaveResult: ({ saveResult }) => {
+            this.logger.log(
+              `      ↳ 결과 updated=${saveResult.updated}, failed=${saveResult.failed}`,
+            );
+          },
+          onSaveSkipped: ({ reason }) => {
+            if (reason === 'empty' && !dryRun) {
+              this.logger.warn('   ⚠️ 수집된 데이터가 없어 저장을 건너뜁니다.');
+            }
+          },
+          onBatchComplete: ({
+            batchIndex,
+            batchCount,
+            targetSlice,
+            totalUpdatedSoFar,
+            totalFailedSoFar,
+          }) => {
+            processedGames += targetSlice.length;
+            this.logger.log(
+              `📈 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 완료 — 누적 처리 ${processedGames}/${totalGames}, 업데이트 ${totalUpdatedSoFar}, 실패 ${totalFailedSoFar}`,
+            );
+          },
+        },
+      });
+
+      const failureSummaries = this.mapFailureDetails(batchResult.failures);
+
+      if (dryRun) {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          'dry-run',
+          batchResult.totalCollected,
+          batchResult.totalUpdated,
+          0,
+        );
+      } else {
+        await this.completePipelineRun(
+          pipelineRun.id,
+          'completed',
+          undefined,
+          batchResult.totalCollected,
+          batchResult.totalUpdated,
+          batchResult.totalFailed,
+        );
+      }
+
+      this.logger.log(
+        `✅ [Steam 전체 갱신] 완료 — 대상=${totalGames}, 수집=${batchResult.totalCollected}, 업데이트=${batchResult.totalUpdated}, 실패=${batchResult.totalFailed}, dryRun=${dryRun}`,
+      );
+
       return {
         statusCode: 200,
-        message: '갱신할 게임이 없습니다.',
+        message: dryRun
+          ? 'Steam 전체 갱신 드라이런 완료'
+          : 'Steam 전체 갱신 완료',
         data: {
           pipelineRunId: pipelineRun.id,
           phase: 'full',
-          totalProcessed: 0,
+          totalProcessed: batchResult.totalCollected,
           finishedAt: new Date(),
           fullRefreshSummary: {
-            totalGames: 0,
-            processedGames: 0,
-            steamRequested: 0,
-            collected: 0,
-            updated: 0,
-            failed: 0,
+            totalGames,
+            processedGames,
+            steamRequested: batchResult.totalRequestedSteamIds,
+            collected: batchResult.totalCollected,
+            updated: batchResult.totalUpdated,
+            failed: batchResult.totalFailed,
             dryRun,
             target,
-            // 참고: target 미지정 여부를 추가로 보고하고 싶다면 여기에 flag를 내려줄 수도 있음
+            failures:
+              failureSummaries.length > 0 ? failureSummaries : undefined,
           },
         },
       };
+    } catch (error) {
+      const err = this.normalizeError(error);
+      this.logger.error(`❌ [Steam 전체 갱신] 실패 - ${err.message}`);
+      await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
+      throw err;
     }
-
-    const steamIdSet = new Set<number>();
-    targets.forEach((t) => {
-      if (t.steamId && t.steamId > 0) steamIdSet.add(t.steamId);
-    });
-
-    const totalSteamIds = steamIdSet.size;
-
-    this.logger.log(
-      `📊 [Steam 전체 갱신] 대상 ${totalGames}건 (Steam=${totalSteamIds})`,
-    );
-
-    const totalBatches = Math.ceil(totalGames / batchSize);
-    this.logger.log(
-      `🧮 [Steam 전체 갱신] ${totalGames}건을 ${totalBatches}개 배치(${batchSize}개 기준)로 처리`,
-    );
-
-    let processedGames = 0;
-    const batchResult = await this.runSteamCollectionBatches<
-      (typeof targets)[number]
-    >({
-      targets,
-      toSteamId: (target) =>
-        typeof target.steamId === 'number' ? target.steamId : null,
-      mode,
-      pipelineRunId: pipelineRun.id,
-      dryRun,
-      fetchBatchSize: batchSize,
-      saveBatchSize: SAVE_BATCH_SIZE,
-      allowCreate: false,
-      progressTotal: totalSteamIds > 0 ? totalSteamIds : undefined,
-      hooks: {
-        onBatchStart: ({
-          batchIndex,
-          batchCount,
-          targetStart,
-          targetEnd,
-          targetTotal,
-          steamIds,
-          steamProgressStart,
-          steamProgressEnd,
-          totalUniqueSteamIds,
-        }) => {
-          this.logger.log(
-            `🔁 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 시작 — 게임 ${
-              targetStart + 1
-            }-${targetEnd}/${targetTotal}`,
-          );
-          if (steamIds.length > 0) {
-            const totalSteam =
-              totalUniqueSteamIds > 0 ? totalUniqueSteamIds : steamIds.length;
-            this.logger.log(
-              `   🔄 Steam 수집 시작 — ${steamIds.length}건 (누적 ${
-                steamProgressStart + 1
-              }-${steamProgressEnd}/${totalSteam})`,
-            );
-          } else {
-            this.logger.log('   ℹ️ Steam 대상 없음 (배치)');
-          }
-        },
-        onCollected: ({ steamIds, collected }) => {
-          if (steamIds.length > 0) {
-            this.logger.log(
-              `   ✅ Steam 수집 완료 — ${collected.length}/${steamIds.length}건`,
-            );
-          }
-        },
-        onBeforeSave: ({ saveChunkIndex, saveChunkCount, saveChunk }) => {
-          if (dryRun || saveChunk.length === 0) return;
-          this.logger.log(
-            `   💾 저장 ${saveChunkIndex + 1}/${saveChunkCount} — ${
-              saveChunk.length
-            }건`,
-          );
-        },
-        onSaveResult: ({ saveResult }) => {
-          this.logger.log(
-            `      ↳ 결과 updated=${saveResult.updated}, failed=${saveResult.failed}`,
-          );
-        },
-        onSaveSkipped: ({ reason }) => {
-          if (reason === 'empty' && !dryRun) {
-            this.logger.warn('   ⚠️ 수집된 데이터가 없어 저장을 건너뜁니다.');
-          }
-        },
-        onBatchComplete: ({
-          batchIndex,
-          batchCount,
-          targetSlice,
-          totalUpdatedSoFar,
-          totalFailedSoFar,
-        }) => {
-          processedGames += targetSlice.length;
-          this.logger.log(
-            `📈 [Steam 전체 갱신] 배치 ${batchIndex + 1}/${batchCount} 완료 — 누적 처리 ${processedGames}/${totalGames}, 업데이트 ${totalUpdatedSoFar}, 실패 ${totalFailedSoFar}`,
-          );
-        },
-      },
-    });
-
-    const failureSummaries = this.mapFailureDetails(batchResult.failures);
-
-    if (dryRun) {
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'completed',
-        'dry-run',
-        batchResult.totalCollected,
-        batchResult.totalUpdated,
-        0,
-      );
-    } else {
-      await this.completePipelineRun(
-        pipelineRun.id,
-        'completed',
-        undefined,
-        batchResult.totalCollected,
-        batchResult.totalUpdated,
-        batchResult.totalFailed,
-      );
-    }
-
-    this.logger.log(
-      `✅ [Steam 전체 갱신] 완료 — 대상=${totalGames}, 수집=${batchResult.totalCollected}, 업데이트=${batchResult.totalUpdated}, 실패=${batchResult.totalFailed}, dryRun=${dryRun}`,
-    );
-
-    return {
-      statusCode: 200,
-      message: dryRun
-        ? 'Steam 전체 갱신 드라이런 완료'
-        : 'Steam 전체 갱신 완료',
-      data: {
-        pipelineRunId: pipelineRun.id,
-        phase: 'full',
-        totalProcessed: batchResult.totalCollected,
-        finishedAt: new Date(),
-        fullRefreshSummary: {
-          totalGames,
-          processedGames,
-          steamRequested: batchResult.totalRequestedSteamIds,
-          collected: batchResult.totalCollected,
-          updated: batchResult.totalUpdated,
-          failed: batchResult.totalFailed,
-          dryRun,
-          target,
-          failures: failureSummaries.length > 0 ? failureSummaries : undefined,
-        },
-      },
-    };
-  } catch (error) {
-    const err = this.normalizeError(error);
-    this.logger.error(`❌ [Steam 전체 갱신] 실패 - ${err.message}`);
-    await this.completePipelineRun(pipelineRun.id, 'failed', err.message);
-    throw err;
   }
-}
 
   @Post('manual/game/:id')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
