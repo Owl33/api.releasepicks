@@ -167,6 +167,15 @@ export class SteamCommunityService implements OnModuleDestroy {
     return !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_VERSION;
   }
 
+  /** 샌드박스 제한 환경(GitHub Actions 등) 여부 */
+  private isSandboxRestrictedEnv() {
+    return (
+      process.env.CI === 'true' ||
+      !!process.env.GITHUB_ACTIONS ||
+      process.env.STEAM_PUPPETEER_NO_SANDBOX === 'true'
+    );
+  }
+
   /** 필요 시에만 브라우저 띄우기 (서버리스/로컬 분기) */
   private async getBrowser(): Promise<MinimalBrowser> {
     if (this.browserPromise) return this.browserPromise;
@@ -198,10 +207,17 @@ export class SteamCommunityService implements OnModuleDestroy {
       // 로컬 개발: puppeteer (devDependency) 사용
       this.browserPromise = (async () => {
         const local = await import('puppeteer');
+        const launchArgs = this.isSandboxRestrictedEnv()
+          ? ['--no-sandbox', '--disable-setuid-sandbox']
+          : [];
         const browser = await local.default.launch({
           headless: true,
+          args: launchArgs,
           defaultViewport: { width: 1280, height: 800 },
         });
+        if (launchArgs.length > 0) {
+          this.logger.log('⚙️  샌드박스 제한 환경 감지: --no-sandbox 옵션 적용');
+        }
         this.logger.log('✅ 로컬 브라우저 준비 완료');
         return browser as unknown as MinimalBrowser;
       })();
