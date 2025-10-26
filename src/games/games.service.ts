@@ -408,25 +408,46 @@ export class GamesService {
      * - details가 반드시 있는 게임만 (INNER JOIN)
      * - 완전 랜덤 ORDER BY RANDOM()
      */
-    const popularRows = await this.gameRepository
-      .createQueryBuilder('game')
-      .innerJoin('game.details', 'detail', 'detail.sexual = false') // 디테일 있는 게임만!
-      .select([
-        'game.id AS game_id',
-        'game.name AS game_name',
-        'game.slug AS game_slug',
-        'game.popularity_score AS game_popularity_score',
-        'game.release_date_date AS game_release_date',
-        'detail.header_image AS header_image',
-        'detail.screenshots AS detail_screenshots',
-      ])
-      .where('game.popularity_score > 70')
-      .andWhere("game.game_type <> 'dlc'")
-      .orderBy('md5( (game.id)::text || :salt )', 'ASC')
-      .setParameters({ salt: shuffleSalt })
-      .limit(popularLimit)
-      .getRawMany();
+const fourYearsBack = new Date(today);
+fourYearsBack.setFullYear(fourYearsBack.getFullYear() - 4);
+const fourYearsAhead = new Date(today);
+fourYearsAhead.setFullYear(fourYearsAhead.getFullYear() + 4);
 
+const popularRows = await this.gameRepository
+  .createQueryBuilder('game')
+  // details 반드시 존재 + sexual = false
+  .innerJoin('game.details', 'detail', 'detail.sexual = false')
+  .select([
+    'game.id AS game_id',
+    'game.name AS game_name',
+    'game.slug AS game_slug',
+    'game.popularity_score AS game_popularity_score',
+    'game.release_date_date AS game_release_date',
+    'detail.header_image AS header_image',
+    'detail.screenshots AS detail_screenshots',
+  ])
+  .where('game.popularity_score > 70')
+  .andWhere("game.game_type <> 'dlc'")
+  // ✅ release가 최소 1개 존재 + ±4년 범위 내인 것만
+  .andWhere(qb => {
+    // 엔티티를 쓰신다면 .from(GameRelease, 'r') 로 바꾸세요.
+    const sub = qb.subQuery()
+      .select('1')
+      .from('game_releases', 'r')
+      .where('r.game_id = game.id')
+      .andWhere('r.release_date_date BETWEEN :start AND :end')
+      .getQuery();
+    return `EXISTS ${sub}`;
+  })
+  .orderBy('md5( (game.id)::text || :salt )', 'ASC')
+  .setParameters({
+    salt: shuffleSalt,
+    start: fourYearsBack,
+    end: fourYearsAhead,
+  })
+  .limit(popularLimit)
+  .getRawMany();
+  
     const popularIds = popularRows.map((row) => Number(row.game_id));
     const popularReleaseSummary = await this.loadReleaseSummary(popularIds);
 
