@@ -19,13 +19,5 @@
         "Access-Control-Allow-Origin": "https://game-calendar-two.vercel.app"
       }
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/steam-maintenance",
-      "schedule": "0 17 * * *"
-    }
   ]
-
-
 }
