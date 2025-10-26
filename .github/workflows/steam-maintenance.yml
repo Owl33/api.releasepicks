@@ -13,11 +13,11 @@ on:
       refresh_limit:
         description: '출시 윈도우 갱신 limit (기본 1000)'
         required: false
-        type: number
+        type: string
       new_limit:
         description: 'Steam 신규 탐지 limit (기본 1000)'
         required: false
-        type: number
+        type: string
 
 concurrency:
   group: steam-maintenance
