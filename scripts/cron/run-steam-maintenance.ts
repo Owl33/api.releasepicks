@@ -1,27 +1,36 @@
 import 'dotenv/config';
-import axios, { AxiosError } from 'axios';
+import { NestFactory } from '@nestjs/core';
+import { Logger } from '@nestjs/common';
+import { AppModule } from '../../src/app.module';
+import { PipelineController } from '../../src/pipeline/pipeline.controller';
+import { SteamRefreshDto } from '../../src/pipeline/dto/steam-refresh.dto';
+import { SteamNewDto } from '../../src/pipeline/dto/steam-new.dto';
 
 interface CliOptions {
-  endpoint?: string;
-  timeoutMs?: number;
   dryRun?: boolean;
+  refreshLimit?: number;
+  newLimit?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30분
+const DEFAULT_REFRESH_LIMIT = 1000;
+const DEFAULT_NEW_LIMIT = 1000;
 
 // 간단한 CLI 인자 파서 (--key=value 형태만 지원)
 function parseCliOptions(): CliOptions {
   const options: CliOptions = {};
   const args = process.argv.slice(2);
   for (const arg of args) {
-    if (arg.startsWith('--endpoint=')) {
-      options.endpoint = arg.split('=')[1];
-      continue;
-    }
-    if (arg.startsWith('--timeoutMs=')) {
+    if (arg.startsWith('--refreshLimit=')) {
       const value = Number(arg.split('=')[1]);
       if (!Number.isNaN(value)) {
-        options.timeoutMs = value;
+        options.refreshLimit = value;
+      }
+      continue;
+    }
+    if (arg.startsWith('--newLimit=')) {
+      const value = Number(arg.split('=')[1]);
+      if (!Number.isNaN(value)) {
+        options.newLimit = value;
       }
       continue;
     }
@@ -32,102 +41,103 @@ function parseCliOptions(): CliOptions {
   return options;
 }
 
-function resolveEndpoint(cli: CliOptions): string {
-  if (cli.endpoint && cli.endpoint.trim().length > 0) {
-    return cli.endpoint.trim();
+function resolveLimit(
+  cliValue: number | undefined,
+  envKey: string,
+  fallback: number,
+): number {
+  if (typeof cliValue === 'number' && !Number.isNaN(cliValue)) {
+    return cliValue;
   }
-  const direct = process.env.STEAM_MAINTENANCE_ENDPOINT;
-  if (direct && direct.trim().length > 0) {
-    return direct.trim();
+  const envValueRaw = process.env[envKey];
+  if (envValueRaw) {
+    const parsed = Number(envValueRaw);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
   }
-  const base = process.env.PIPELINE_BASE_URL ?? process.env.API_BASE_URL;
-  if (base && base.trim().length > 0) {
-    return new URL('/api/cron/steam-maintenance', base.trim()).toString();
+  return fallback;
+}
+
+async function runDirectMode(cli: CliOptions) {
+  const refreshLimit = resolveLimit(
+    cli.refreshLimit,
+    'STEAM_CRON_REFRESH_LIMIT',
+    DEFAULT_REFRESH_LIMIT,
+  );
+  const newLimit = resolveLimit(
+    cli.newLimit,
+    'STEAM_CRON_NEW_LIMIT',
+    DEFAULT_NEW_LIMIT,
+  );
+  const dryRun = cli.dryRun ?? (process.env.STEAM_CRON_DRY_RUN === 'true');
+
+  console.log('[Cron][Direct] Nest 애플리케이션 컨텍스트 부팅', {
+    refreshLimit,
+    newLimit,
+    dryRun,
+  });
+
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    bufferLogs: true,
+  });
+  app.useLogger(['log', 'error', 'warn', 'debug', 'verbose']);
+  const logger = new Logger('SteamCronDirect');
+
+  const overallStart = Date.now();
+
+  try {
+    const pipeline = app.get(PipelineController);
+    const refreshDto = Object.assign(new SteamRefreshDto(), {
+      limit: refreshLimit,
+      dryRun,
+    });
+    const newDto = Object.assign(new SteamNewDto(), {
+      mode: 'operational',
+      limit: newLimit,
+      dryRun,
+    });
+
+    const refreshStart = Date.now();
+    logger.log('출시 윈도우 갱신 실행 시작');
+    const refreshResult = await pipeline.executeSteamRefresh(refreshDto);
+    logger.log('출시 윈도우 갱신 실행 완료', {
+      durationMs: Date.now() - refreshStart,
+      dryRun,
+      limit: refreshLimit,
+    });
+
+    const newStart = Date.now();
+    logger.log('Steam 신규 탐지 실행 시작');
+    const steamNewResult = await pipeline.executeSteamNew(newDto);
+    logger.log('Steam 신규 탐지 실행 완료', {
+      durationMs: Date.now() - newStart,
+      dryRun,
+      limit: newLimit,
+    });
+
+    console.log('[Cron][Direct] 전체 실행 완료', {
+      totalDurationMs: Date.now() - overallStart,
+    });
+    console.log('[Cron][Direct] 요약 응답', JSON.stringify({
+      refresh: refreshResult,
+      steamNew: steamNewResult,
+    }, null, 2));
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.error(`Direct 모드 실행 중 에러: ${error.message}`, error.stack);
+    } else {
+      logger.error('Direct 모드 실행 중 알 수 없는 에러', JSON.stringify(error));
+    }
+    process.exitCode = 1;
+  } finally {
+    await app.close();
   }
-  const vercelUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL ?? process.env.VERCEL_URL;
-  if (vercelUrl && vercelUrl.trim().length > 0) {
-    const normalized = vercelUrl.startsWith('http') ? vercelUrl : `https://${vercelUrl}`;
-    return new URL('/api/cron/steam-maintenance', normalized).toString();
-  }
-  throw new Error('엔드포인트를 결정할 수 없습니다. 환경 변수(STEAM_MAINTENANCE_ENDPOINT 등)를 확인하세요.');
 }
 
 async function main() {
   const cli = parseCliOptions();
-  const cronKey = (process.env.PIPELINE_CRON_KEY ?? '').trim();
-  if (!cronKey) {
-    throw new Error('PIPELINE_CRON_KEY가 설정되어 있어야 합니다. GitHub Secrets 또는 .env를 확인하세요.');
-  }
-
-  if (cli.dryRun) {
-    let preview: string | null = null;
-    try {
-      preview = resolveEndpoint(cli);
-    } catch (error) {
-      preview = `엔드포인트 미설정: ${(error as Error).message}`;
-    }
-    console.log('[Cron] dry-run 모드이므로 HTTP 호출을 생략합니다.', { endpointPreview: preview });
-    return;
-  }
-
-  const endpoint = resolveEndpoint(cli);
-  const timeoutMs = cli.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  console.log('[Cron] Steam 유지보수 호출 시작', {
-    endpoint,
-    timeoutMs,
-    timestamp: new Date().toISOString(),
-  });
-
-  const startedAt = Date.now();
-  try {
-    const response = await axios.get(endpoint, {
-      headers: {
-        'x-cron-key': cronKey,
-        'user-agent': 'game-calendar-gh-cron/1.0',
-      },
-      timeout: timeoutMs,
-      validateStatus: () => true,
-    });
-
-    const durationMs = Date.now() - startedAt;
-    console.log('[Cron] HTTP 응답 수신', {
-      status: response.status,
-      durationMs,
-    });
-
-    if (typeof response.data === 'string') {
-      console.log('[Cron] 응답 본문(문자열)', response.data);
-    } else {
-      console.log('[Cron] 응답 본문(JSON)', JSON.stringify(response.data, null, 2));
-    }
-
-    if (response.status >= 400) {
-      throw new Error(`Steam 유지보수 호출이 실패했습니다. status=${response.status}`);
-    }
-
-    console.log('[Cron] Steam 유지보수 호출 완료', {
-      durationMs,
-      finishedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    const durationMs = Date.now() - startedAt;
-    if (error instanceof AxiosError) {
-      console.error('[Cron] Axios 에러 발생', {
-        message: error.message,
-        code: error.code,
-        status: error.response?.status,
-        durationMs,
-        data: error.response?.data,
-      });
-    } else {
-      console.error('[Cron] 일반 에러 발생', {
-        message: (error as Error).message,
-        stack: (error as Error).stack,
-        durationMs,
-      });
-    }
-    process.exitCode = 1;
-  }
+  await runDirectMode(cli);
 }
 
 main().catch((error) => {

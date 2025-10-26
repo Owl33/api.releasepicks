@@ -6,14 +6,18 @@ on:
     - cron: '17 8 * * *'
   workflow_dispatch:
     inputs:
-      endpoint:
-        description: '수동 실행 시 사용할 엔드포인트 URL (미입력 시 기본 시크릿 사용)'
-        required: false
-        type: string
       dry_run:
-        description: 'HTTP 호출 없이 설정만 검증'
+        description: '실제 저장 없이 대상만 계산'
         required: false
         type: boolean
+      refresh_limit:
+        description: '출시 윈도우 갱신 limit (기본 1000)'
+        required: false
+        type: number
+      new_limit:
+        description: 'Steam 신규 탐지 limit (기본 1000)'
+        required: false
+        type: number
 
 concurrency:
   group: steam-maintenance
@@ -26,12 +30,24 @@ jobs:
     permissions:
       contents: read
     env:
-      PIPELINE_CRON_KEY: ${{ secrets.PIPELINE_CRON_KEY }}
-      STEAM_MAINTENANCE_ENDPOINT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.endpoint != '' && github.event.inputs.endpoint || secrets.STEAM_MAINTENANCE_ENDPOINT }}
+      NODE_ENV: production
       STEAM_CRON_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
+      STEAM_CRON_REFRESH_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_limit != '' && github.event.inputs.refresh_limit || '1000' }}
+      STEAM_CRON_NEW_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.new_limit != '' && github.event.inputs.new_limit || '1000' }}
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
+
+      - name: .env 파일 생성
+        env:
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+        run: |
+          if [ -z "$APP_ENV_FILE" ]; then
+            echo "APP_ENV_FILE 시크릿이 필요합니다." >&2
+            exit 1
+          fi
+          printf '%s
+' "$APP_ENV_FILE" > .env
 
       - name: Node.js 설정
         uses: actions/setup-node@v4
@@ -44,8 +60,11 @@ jobs:
 
       - name: Steam 유지보수 실행
         run: |
+          EXTRA_ARGS=""
           if [ "$STEAM_CRON_DRY_RUN" = "true" ]; then
-            npm run cron:steam-maintenance -- --dry-run
-          else
-            npm run cron:steam-maintenance
+            EXTRA_ARGS="--dry-run"
           fi
+
+          echo "refresh_limit=$STEAM_CRON_REFRESH_LIMIT, new_limit=$STEAM_CRON_NEW_LIMIT, dry_run=$STEAM_CRON_DRY_RUN"
+          set -e
+          npm run cron:steam-maintenance -- $EXTRA_ARGS
