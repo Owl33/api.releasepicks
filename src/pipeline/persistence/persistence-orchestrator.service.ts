@@ -166,14 +166,17 @@ export class PersistenceOrchestratorService {
               );
             }
             createdCount++;
-            this.logger.log(
-              `➕ [통합 저장] 생성 gameId=${targetGameId ?? '-'} (${identity}) name="${item.data.name}" ${durationMs}ms`,
-            );
+            this.logger.log(`➕ [통합 저장] 생성`);
+            this.logger.log(` 게임 아이디=${targetGameId ?? '-'} `);
+            this.logger.log(` 게임 이름 =${item.data.name ?? '-'} `);
+            this.logger.log(` 게임 외부 정보=${identity ?? '-'} `);
           } else if (operation === 'updated') {
             updatedCount++;
-            this.logger.log(
-              `🛠️ [통합 저장] 업데이트 gameId=${targetGameId ?? '-'} by=${matchedByKey} (${identity}) name="${item.data.name}" ${durationMs}ms`,
-            );
+            this.logger.log(`🛠️ [통합 저장] 업데이트 `);
+            this.logger.log(` 게임 아이디=${targetGameId ?? '-'} `);
+            this.logger.log(` 게임 이름 =${item.data.name ?? '-'} `);
+            this.logger.log(` 출처 By = ${matchedByKey ?? '-'} `);
+            this.logger.log(` 게임 외부 정보=${identity ?? '-'} `);
           }
 
           processedCount++;

@@ -14,7 +14,7 @@ export const RAWG_PLATFORM_IDS = {
 
 // 월 단위 통합 수집 파라미터(기본값)
 export const RAWG_COLLECTION = {
-  pageSize: 200 as const,
+  pageSize: 50 as const,
   ordering: '-added' as const,
   pastMonths: 24,
   futureMonths: 12,

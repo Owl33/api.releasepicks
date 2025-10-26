@@ -681,24 +681,7 @@ export class SteamAppDetailsService {
     return Array.isArray(v) ? v.join(' ') : String(v);
   }
 
-  private htmlToText(html: string): string {
-    return html
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
 
-  private countHits(text: string, patterns: string[]): number {
-    let n = 0;
-    for (const p of patterns) {
-      if (text.includes(p)) n++;
-    }
-    return n;
-  }
 
   /** 성인향 판정 로그 */
   private logSexualDecision(
@@ -721,18 +704,7 @@ export class SteamAppDetailsService {
     );
   }
 
-  /**
-   * 출시일 정보 파싱 (현재 미사용: 필요 시 교체)
-   */
-  private parseReleaseDate(releaseDate: any): Date | null {
-    if (!releaseDate?.date) return null;
-    try {
-      const dateStr = releaseDate.date.replace(/,/g, '');
-      return new Date(dateStr);
-    } catch {
-      return null;
-    }
-  }
+
 
   /**
    * 가격 정보 파싱

@@ -33,7 +33,7 @@ export class PopularityCalculator {
     // S+: 500k 이상은 별도 처리(아래 computeSPlus)
   ] as const;
   private static readonly RAWG_ADDED_TO_FOLLOWERS_FACTOR = Number(
-    process.env.RAWG_ADDED_TO_FOLLOWERS_FACTOR ?? '150',
+    process.env.RAWG_ADDED_TO_FOLLOWERS_FACTOR ?? '100',
   );
 
   private static clamp(n: number, lo: number, hi: number) {

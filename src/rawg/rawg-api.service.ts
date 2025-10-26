@@ -25,7 +25,7 @@ export class RawgApiService {
   private readonly baseUrl = RAWG_API_BASE_URL;
   private readonly apiKey: string;
 
-  private readonly rateLimit = 20;
+  private readonly rateLimit = 150;
   private requestCount = 0;
   private lastResetTime = Date.now();
 
@@ -77,6 +77,9 @@ export class RawgApiService {
       platforms?: string; // 권장: "187,18,186,1,7" 같은 통합 문자열 직접 전달
       page_size?: number;
       page?: number;
+      exclude_additions?: boolean; // ★ 추가
+      exclude_parents?: boolean; // (선택)
+      exclude_game_series?: boolean; // (선택)
 
       ordering?: string;
       metacritic?: string;
@@ -130,36 +133,47 @@ export class RawgApiService {
     dates: string;
     ordering?: string;
     metacritic?: string;
+    exclude_additions?: boolean ; // ★ 추가
+    exclude_parents?: boolean; // (선택)
+    exclude_game_series?: boolean; // (선택)
     pageSize?: number; // 총 수집 목표 수 (예: 200)
     maxPages?: number; // 안전장치 (기본 10)
   }): Promise<RawgGameSearchResult[]> {
-    const perPage = Math.min(
-      40,
-      Math.max(1, options.pageSize ?? RAWG_COLLECTION.pageSize),
-    ); // RAWG 제한 고려
-    const maxPages = Math.max(1, options.maxPages ?? 10);
+    const perPage = 40; // RAWG 최대
+
     const targetTotal = Math.max(
       1,
       options.pageSize ?? RAWG_COLLECTION.pageSize,
     );
+    const maxPages = Math.max(1, options.maxPages ?? 10);
 
     const results: RawgGameSearchResult[] = [];
     let fetched = 0;
     for (let page = 1; page <= maxPages; page++) {
+      const remaining = targetTotal - results.length;
+      if (remaining <= 0) break;
+
       const chunk = await this.searchGamesByPlatform('', {
         platforms: options.platforms,
         dates: options.dates,
         ordering: options.ordering,
         metacritic: options.metacritic,
-        page_size: perPage,
+        page_size: Math.min(perPage, remaining), // ← 남은 만큼만 요청(선택)
         page,
+        exclude_additions: options.exclude_additions,
+        exclude_parents: options.exclude_parents,
+        exclude_game_series: options.exclude_game_series,
       });
+
       if (!chunk || chunk.length === 0) break;
-      results.push(...chunk);
-      fetched += chunk.length;
-      if (chunk.length < perPage) break; // 마지막 페이지 추정
-      if (fetched >= targetTotal) break; // 목표량 도달
+
+      // 남은 목표만큼만 push (오버슈트 방지)
+      const sliceCount = Math.min(chunk.length, remaining);
+      results.push(...chunk.slice(0, sliceCount));
+
+      if (chunk.length < Math.min(perPage, remaining)) break; // 마지막 페이지 추정
     }
+
     return results;
   }
 

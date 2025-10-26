@@ -8,6 +8,7 @@ import { RawgModule } from './rawg/rawg.module';
 import { YouTubeModule } from './youtube/youtube.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { GamesModule } from './games/games.module';
+import { IgdbModule } from './igdb/igdb.module';
 // import { UnifiedGameModule } from './unified-game/unified-game.module';
 // import { SteamCommunityModule } from './steam-community/steamcommunity.module';
 // 🛡️ 통합 에러 처리 시스템
@@ -24,7 +25,7 @@ import { GamesModule } from './games/games.module';
     PipelineModule, // ✅ 통합 Pipeline Controller (Phase 3)
     YouTubeModule,
     GamesModule, // ✅ 프론트엔드 제공 REST API
-
+    IgdbModule,
     // ✅ 통합 모듈 (user_request.md 명세 구현 완료)
     // UnifiedGameModule,
     // SteamCommunityModule,

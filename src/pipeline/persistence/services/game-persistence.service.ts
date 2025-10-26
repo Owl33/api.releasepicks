@@ -364,13 +364,27 @@ export class GamePersistenceService {
     if (data.comingSoon !== existing.coming_soon) {
       ignored.push('coming_soon');
     }
+    const dateKey = (v: unknown): string | null => {
+      if (v == null) return null; // null | undefined
+      if (v instanceof Date) return v.toISOString().slice(0, 10);
+      if (typeof v === 'string') {
+        const s = v.trim();
+        if (!s) return null; // 빈 문자열 방어
+        return s.slice(0, 10); // 'YYYY-MM-DD...' 대응
+      }
+      return null;
+    };
+
     if (data.releaseDate || existing.release_date_date) {
-      const incoming = data.releaseDate?.getTime() ?? null;
-      const current = existing?.release_date_date ? existing?.release_date_date?.getTime() : null;
-      if (incoming !== current) {
+      const incomingKey = dateKey(data.releaseDate);
+      const currentKey = dateKey(existing?.release_date_date);
+
+      // 둘 중 하나라도 있으면 비교 수행
+      if (incomingKey !== currentKey) {
         ignored.push('release_date');
       }
     }
+
     if (data.followersCache !== undefined) {
       const incomingFollowers = data.followersCache ?? null;
       if (incomingFollowers !== existing.followers_cache) {

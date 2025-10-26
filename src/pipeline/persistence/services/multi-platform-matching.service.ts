@@ -56,13 +56,15 @@ export class MultiPlatformMatchingService {
 
     if (!candidates.length) {
       if (context?.candidateSlugs?.length) {
-        this.logger.warn(
-          `🔍 [멀티 매칭] 후보 미발견 rawgId=${data.rawgId} name="${data.name}" 슬러그후보=${context.candidateSlugs.join(',')}`,
-        );
+        this.logger.warn(`🔍 [멀티 매칭] 후보 미발견`);
+        this.logger.warn(`rawg 아이디 =${data.rawgId}`);
+        this.logger.warn(`이름 = ${data.name}`);
+        this.logger.warn(`슬러그후보 =${context.candidateSlugs.join(',')}`);
       } else {
-        this.logger.warn(
-          `🔍 [멀티 매칭] 후보 미발견 rawgId=${data.rawgId} name="${data.name}" 슬러그후보=없음`,
-        );
+        this.logger.warn(`🔍 [멀티 매칭] 후보 미발견`);
+        this.logger.warn(`rawg 아이디 =${data.rawgId}`);
+        this.logger.warn(`이름 = ${data.name}`);
+        this.logger.warn(`슬러그후보 = 없음`);
       }
       await this.applyDecision(data, {
         outcome: 'rejected',

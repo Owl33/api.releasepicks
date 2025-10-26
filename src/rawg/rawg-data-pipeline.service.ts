@@ -61,6 +61,10 @@ interface RawgMonthlyRangeOptions {
   ordering?: '-released' | '-added';
   metacritic?: string;
   pageSize?: number;
+  // exclude_parents?: boolean;
+  // exclude_additions?: boolean;
+  // exclude_game_series?: boolean;
+
   excludeExisting?: boolean;
   dryRun?: boolean;
   onMonthChunk?: (
@@ -109,6 +113,7 @@ export class RawgDataPipelineService {
       ordering: opts.ordering,
       metacritic: opts.metacritic,
       excludeExisting: false,
+
     });
   }
 
@@ -211,6 +216,9 @@ export class RawgDataPipelineService {
           metacritic: params.metacritic,
           pageSize,
           maxPages: 10,
+          exclude_parents: true,
+          exclude_additions: true,
+          exclude_game_series: true,
         });
 
         if (!games) {
@@ -725,15 +733,16 @@ export class RawgDataPipelineService {
         this.logger.log(`🔧 [RAWG] 매핑 진행 ${logPrefix}`);
       }
 
-      this.logger.debug(`🎯 [RAWG] 상세 매핑 시작 — ${logPrefix}`);
+      this.logger.debug(`🎯 [RAWG] 상세 매핑 시작`);
+      this.logger.debug(` ${logPrefix}`);
       try {
         const gameData = await this.mapToProcessedGameData(raw, consoleIssues);
         processedData.push(gameData);
-        this.logger.debug(`✅ [RAWG] 상세 매핑 완료 — ${logPrefix}`);
+        this.logger.debug(`✅ [RAWG] 상세 매핑 완료`);
+        this.logger.debug(`${logPrefix}`);
       } catch (error: any) {
-        this.logger.error(
-          `❌ [RAWG] 상세 매핑 실패 — ${logPrefix}: ${error?.message ?? error}`,
-        );
+        this.logger.error(`❌ [RAWG] 상세 매핑 실패`);
+        this.logger.error(`${logPrefix}: ${error?.message ?? error}`);
         throw error;
       }
     }
@@ -848,7 +857,11 @@ export class RawgDataPipelineService {
             if (acceptable) {
               youtubeVideoUrl = picked.url;
               this.logger.debug(
-                `✨ [YouTube] 트레일러 선택 - ${raw.name}: ${youtubeVideoUrl} (confidence=${picked.confidence}, score=${picked.score.toFixed(3)}, views=${picked.viewCount ?? 'n/a'})`,
+                `✨ [YouTube] 트레일러 선택 - 게임 명 ${raw.name} ) `,
+              );
+
+              this.logger.debug(
+                `주소: ${youtubeVideoUrl} (confidence=${picked.confidence}, score=${picked.score.toFixed(3)}, views=${picked.viewCount ?? 'n/a'}`,
               );
             } else {
               // this.logger.debug(
@@ -932,7 +945,7 @@ export class RawgDataPipelineService {
               rawgDetails.description_raw ??
               rawgDetails.description ??
               undefined,
-            sexual: false,
+            sexual: this.isSexualByTags(rawgDetails),
             website: rawgDetails.website || undefined,
             genres: rawgDetails.genres?.map((g: any) => g.name) || [],
             tags: rawgDetails.tags?.slice(0, 10).map((t: any) => t.name) || [],
@@ -1094,6 +1107,36 @@ export class RawgDataPipelineService {
     const normalized = value.split('T')[0];
     const parsed = new Date(normalized);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  private isSexualByTags(rawgDetails?: RawgGameDetails | null): boolean {
+    if (!rawgDetails) return false;
+
+    // 키워드 리스트(원하면 더 추가 가능)
+    const KEYWORDS = [
+      'hentai',
+      'sex',
+      'nsfw',
+      'adult only',
+      'adults only',
+      'eroge',
+      'ecchi',
+      'porn',
+      'sexual content',
+    ];
+
+    // RAWG는 tags/genres가 [{ name: string }] 형식
+    const names: string[] = [
+      ...(rawgDetails.tags?.map((t: any) =>
+        String(t?.name ?? '').toLowerCase(),
+      ) ?? []),
+      ...(rawgDetails.genres?.map((g: any) =>
+        String(g?.name ?? '').toLowerCase(),
+      ) ?? []),
+    ].filter(Boolean);
+
+    if (names.length === 0) return false;
+
+    return KEYWORDS.some((kw) => names.some((n) => n.includes(kw)));
   }
 
   private selectBestReleaseDate(raw: RawgIntermediate): {
