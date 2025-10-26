@@ -54,17 +54,23 @@ function resolveEndpoint(cli: CliOptions): string {
 
 async function main() {
   const cli = parseCliOptions();
-  const endpoint = resolveEndpoint(cli);
   const cronKey = (process.env.PIPELINE_CRON_KEY ?? '').trim();
   if (!cronKey) {
     throw new Error('PIPELINE_CRON_KEY가 설정되어 있어야 합니다. GitHub Secrets 또는 .env를 확인하세요.');
   }
 
   if (cli.dryRun) {
-    console.log('[Cron] dry-run 모드이므로 HTTP 호출을 생략합니다.', { endpoint });
+    let preview: string | null = null;
+    try {
+      preview = resolveEndpoint(cli);
+    } catch (error) {
+      preview = `엔드포인트 미설정: ${(error as Error).message}`;
+    }
+    console.log('[Cron] dry-run 모드이므로 HTTP 호출을 생략합니다.', { endpointPreview: preview });
     return;
   }
 
+  const endpoint = resolveEndpoint(cli);
   const timeoutMs = cli.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   console.log('[Cron] Steam 유지보수 호출 시작', {
     endpoint,

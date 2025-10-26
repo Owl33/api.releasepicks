@@ -1,0 +1,51 @@
+name: Steam Maintenance Cron
+
+on:
+  schedule:
+    # UTC 08:17 → KST 17:17 (매일 1회 실행)
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: '수동 실행 시 사용할 엔드포인트 URL (미입력 시 기본 시크릿 사용)'
+        required: false
+        type: string
+      dry_run:
+        description: 'HTTP 호출 없이 설정만 검증'
+        required: false
+        type: boolean
+
+concurrency:
+  group: steam-maintenance
+  cancel-in-progress: false
+
+jobs:
+  run-maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      PIPELINE_CRON_KEY: ${{ secrets.PIPELINE_CRON_KEY }}
+      STEAM_MAINTENANCE_ENDPOINT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.endpoint != '' && github.event.inputs.endpoint || secrets.STEAM_MAINTENANCE_ENDPOINT }}
+      STEAM_CRON_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: Steam 유지보수 실행
+        run: |
+          if [ "$STEAM_CRON_DRY_RUN" = "true" ]; then
+            npm run cron:steam-maintenance -- --dry-run
+          else
+            npm run cron:steam-maintenance
+          fi
