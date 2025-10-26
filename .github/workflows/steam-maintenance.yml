@@ -2,8 +2,8 @@ name: Steam Maintenance Cron
 
 on:
   schedule:
-    # UTC 08:17 → KST 17:17 (매일 1회 실행)
-    - cron: '17 8 * * *'
+    # UTC 19:00 → KST 04:00 (매일 1회 실행)
+    - cron: '0 19 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
