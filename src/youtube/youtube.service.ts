@@ -381,65 +381,40 @@ export class YouTubeService {
       'gameplay trailer',
       'announcement trailer',
       'teaser trailer',
-      'teaser',
+      'story trailer',
     ];
     const trailerTokens = [
-      'trailer',
       'official',
       'reveal',
       'launch',
       'gameplay',
       'announcement',
       'teaser',
+      'overview',
     ];
-    const brandTerms = ['official', 'ps5', 'xbox', 'nintendo', 'pc', 'steam'];
-
-    const keywords = Array.from(
-      new Set(
-        (filters.keywords ?? [])
-          .filter((kw) => typeof kw === 'string')
-          .map((kw) => kw.trim())
-          .filter((kw) => kw.length > 0 && kw.length <= 60),
-      ),
-    ).slice(0, 6);
+    const platformTerms = ['ps5', 'playstation', 'xbox', 'nintendo', 'pc'];
 
     const set = new Set<string>();
 
-    // 가장 강한 조합: "이름" + trailer phrase (+연도)
     for (const phrase of trailerPhrases) {
       set.add(`${baseQuoted} ${phrase}${year ? ' ' + year : ''}`.trim());
     }
 
-    // 토큰 기반 조합 (단어별)
     for (const token of trailerTokens) {
-      set.add(`${baseLoose} ${token}`.trim());
       set.add(`${baseLoose} ${token} trailer`.trim());
-      if (year) set.add(`${baseLoose} ${token} ${year}`.trim());
+      if (year) set.add(`${baseLoose} ${token} trailer ${year}`.trim());
     }
 
-    // 브랜드/플랫폼 조합
-    for (const brand of brandTerms) {
-      set.add(`${baseLoose} ${brand} trailer`.trim());
-      if (year) set.add(`${baseLoose} ${brand} trailer ${year}`.trim());
+    for (const platform of platformTerms) {
+      set.add(`${baseLoose} ${platform} trailer`.trim());
+      if (year) set.add(`${baseLoose} ${platform} trailer ${year}`.trim());
     }
 
-    // 키워드 기반 강화 (개발사/배급사 등)
-    for (const keyword of keywords) {
-      set.add(`${baseLoose} ${keyword} trailer`.trim());
-      set.add(`${keyword} ${baseLoose} trailer`.trim());
-      if (year) set.add(`${baseLoose} ${keyword} trailer ${year}`.trim());
-    }
-
-    // 일반 trailer 기본 쿼리
     set.add(`${baseLoose} trailer`.trim());
     if (year) set.add(`${baseLoose} trailer ${year}`.trim());
 
-    // 추가 키워드(최전방) - 원래 filters 키워드를 루즈하게 배치
-    const extra = keywords.map((kw) => `${baseLoose} ${kw}`.trim());
-
-    // 최종 목록 (과도하게 길지 않게 상한)
-    const queries = [...extra, ...Array.from(set)];
-    const hardCap = Math.max(10, this.batchSize * 3);
+    const queries = Array.from(set);
+    const hardCap = Math.max(12, this.batchSize * 3);
     return queries.slice(0, hardCap);
   }
 
@@ -643,6 +618,19 @@ export class YouTubeService {
     const title = (item.title ?? '').toLowerCase();
     const desc = (item.description ?? '').toLowerCase();
     const channel = (item.channelTitle ?? '').toLowerCase();
+    const officialNamesRaw = (filters.keywords ?? [])
+      .filter((kw) => typeof kw === 'string')
+      .map((kw) => kw.trim())
+      .filter((kw) => kw.length > 0)
+      .slice(0, 6);
+    const officialNames = officialNamesRaw
+      .map((kw) => this.normalizeForMatching(kw))
+      .filter((kw) => kw.length > 0);
+    const channelNorm = this.normalizeForMatching(channel);
+    const titleNorm = this.normalizeForMatching(title);
+    const descNorm = this.normalizeForMatching(desc);
+    const slugInfo = this.extractSeriesInfo(name);
+    const titleInfo = this.extractSeriesInfo(title);
 
     let s = 0;
 
@@ -656,20 +644,20 @@ export class YouTubeService {
     // 신뢰 채널 가산
     if (this.trustedChannels.some((ch) => channel.includes(ch))) s += 0.2;
 
+    if (channelNorm && this.matchesOfficialName(channelNorm, officialNames)) {
+      s += 0.35;
+    }
+
     // Gameplay 약간 가산
     if (title.includes('gameplay')) s += 0.05;
 
-    // 추가 키워드(개발사/배급사 등) 반영
-    const keywordMatches = new Set<string>();
-    for (const kw of filters.keywords ?? []) {
-      const norm = kw?.toLowerCase().trim();
-      if (!norm || norm.length < 3) continue;
-      if (title.includes(norm) || desc.includes(norm)) {
-        keywordMatches.add(norm);
+    // 공식 키워드(개발사/퍼블리셔) 반영
+    for (const official of officialNames) {
+      if (!official || official.length < 3) continue;
+      if (titleNorm.includes(official) || descNorm.includes(official)) {
         s += 0.05;
       }
-      if (channel.includes(norm)) {
-        keywordMatches.add(norm);
+      if (channelNorm.includes(official)) {
         s += 0.07;
       }
     }
@@ -690,6 +678,10 @@ export class YouTubeService {
       } else if (diffDays >= this.scoreOldPenaltyThresholdDays) {
         s -= this.scoreOldPenalty;
       }
+    }
+
+    if (this.isSeriesMismatch(slugInfo, titleInfo)) {
+      s -= 0.12;
     }
 
     if (s > 1) s = 1;
@@ -879,6 +871,83 @@ export class YouTubeService {
 
     const result = value * multiplier;
     return Number.isFinite(result) ? result : null;
+  }
+
+  private normalizeForMatching(input: string): string {
+    return (input || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private matchesOfficialName(
+    channelNorm: string,
+    officials: string[],
+  ): boolean {
+    if (!channelNorm) return false;
+    return officials.some((name) =>
+      channelNorm === name
+        ? true
+        : channelNorm.includes(name) || name.includes(channelNorm),
+    );
+  }
+
+  private extractSeriesInfo(text: string): { base: string; suffix: string | null } {
+    const normalized = this.normalizeForMatching(text);
+    if (!normalized) {
+      return { base: '', suffix: null };
+    }
+    const match = normalized.match(/(.+?)\s+(?:part\s+)?((?:\d+)|(?:[ivxlcdm]+))$/i);
+    if (!match) {
+      return { base: normalized, suffix: null };
+    }
+    const base = match[1].trim();
+    const suffix = this.canonicalizeSeriesSuffix(match[2]);
+    return { base, suffix };
+  }
+
+  private canonicalizeSeriesSuffix(raw: string | null): string | null {
+    if (!raw) return null;
+    const numeric = raw.match(/\d+/);
+    if (numeric) return String(Number(numeric[0]));
+    const roman = raw.match(/([ivxlcdm]+)/i);
+    if (roman) {
+      const value = this.romanToNumber(roman[1]);
+      return value ? String(value) : roman[1].toLowerCase();
+    }
+    return raw.toLowerCase();
+  }
+
+  private romanToNumber(roman: string): number | null {
+    const map: Record<string, number> = {
+      i: 1,
+      v: 5,
+      x: 10,
+      l: 50,
+      c: 100,
+      d: 500,
+      m: 1000,
+    };
+    const chars = roman.toLowerCase().split('');
+    let total = 0;
+    for (let i = 0; i < chars.length; i++) {
+      const value = map[chars[i]];
+      const next = map[chars[i + 1]];
+      if (!value) return null;
+      if (next && next > value) total -= value;
+      else total += value;
+    }
+    return total;
+  }
+
+  private isSeriesMismatch(
+    slugInfo: { base: string; suffix: string | null },
+    titleInfo: { base: string; suffix: string | null },
+  ): boolean {
+    if (!slugInfo.suffix || !titleInfo.suffix) return false;
+    if (!slugInfo.base || !titleInfo.base) return false;
+    return slugInfo.base === titleInfo.base && slugInfo.suffix !== titleInfo.suffix;
   }
 
   public isDurationAcceptable(seconds?: number | null): boolean {

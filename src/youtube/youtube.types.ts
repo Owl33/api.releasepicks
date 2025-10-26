@@ -28,7 +28,7 @@ export interface YouTubeSearchFilters {
   releaseYear?: number;
   /** 실제 출시일(ISO 문자열 또는 Date) */
   releaseDate?: string | Date;
-  /** 추가 키워드 (앞쪽 로우에 우선 배치) */
+  /** 개발사/퍼블리셔 등 공식 이름 목록 (스코어링 용도) */
   keywords?: string[];
 }
 

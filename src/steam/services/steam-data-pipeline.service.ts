@@ -77,7 +77,7 @@ export class SteamDataPipelineService {
     process.env.STEAM_YT_MIN_VIEWCOUNT ?? '5000',
   );
   private readonly youtubeScoreFallbackThreshold = Number(
-    process.env.STEAM_YT_MIN_SCORE ?? '0.5',
+    process.env.STEAM_YT_MIN_SCORE ?? '0.75',
   );
 
   // AppList 캐시 (Phase 3 선행 구현)
@@ -329,27 +329,31 @@ export class SteamDataPipelineService {
             confidenceScore >= this.youtubeHighConfidenceScore;
           const strongView =
             (youtubePickedViewCount ?? 0) >= this.youtubeMinViewCount;
-          const belowScoreThreshold =
-            steamTrailerUrl != null &&
-            confidenceScore < this.youtubeScoreFallbackThreshold;
+          const allowYoutube =
+            confidenceScore >= this.youtubeScoreFallbackThreshold &&
+            confidenceLevel !== 'low';
 
-          if (belowScoreThreshold) {
-            if (steamTrailerUrl) {
-              this.logger.debug(
-                `${prefix}YouTube 점수 ${confidenceScore.toFixed(3)} < ${this.youtubeScoreFallbackThreshold} → Steam 비디오 우선`,
-              );
-              youtubeVideoUrl = steamTrailerUrl;
-            } else {
-              youtubeVideoUrl = youtubePickedUrl;
-            }
+          const forceSteam = !!steamTrailerUrl && !allowYoutube;
+          if (forceSteam) {
+            this.logger.debug(
+              `${prefix}YouTube 점수/신뢰도 부족(score=${confidenceScore.toFixed(3)}, confidence=${confidenceLevel}) → Steam 비디오 사용`,
+            );
+            youtubeVideoUrl = steamTrailerUrl;
           } else {
-            const shouldPreferYoutube =
-              popularityScore >= this.youtubeFallbackPopularityThreshold ||
-              !steamTrailerUrl ||
-              highConfidence ||
-              strongView;
+            if (!allowYoutube && !steamTrailerUrl) {
+              this.logger.debug(
+                `${prefix}YouTube 신뢰도 낮음이지만 Steam 비디오 없음 → YouTube 사용`,
+              );
+            }
 
-            if (shouldPreferYoutube) {
+            const shouldPreferYoutube =
+              allowYoutube &&
+              (popularityScore >= this.youtubeFallbackPopularityThreshold ||
+                !steamTrailerUrl ||
+                highConfidence ||
+                strongView);
+
+            if (shouldPreferYoutube || !steamTrailerUrl) {
               youtubeVideoUrl = youtubePickedUrl;
               if (!steamTrailerUrl) {
                 this.logger.debug(
@@ -362,7 +366,7 @@ export class SteamDataPipelineService {
               }
             } else {
               this.logger.debug(
-                `${prefix}YouTube 결과 길이 정상이나 인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
+                `${prefix}인기(${popularityScore}) < ${this.youtubeFallbackPopularityThreshold} → Steam 비디오 우선`,
               );
               youtubeVideoUrl = steamTrailerUrl ?? youtubePickedUrl;
             }
