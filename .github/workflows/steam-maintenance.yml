@@ -14,10 +14,12 @@ on:
         description: '출시 윈도우 갱신 limit (기본 1000)'
         required: false
         type: string
+        default: '1000'
       new_limit:
         description: 'Steam 신규 탐지 limit (기본 1000)'
         required: false
         type: string
+        default: '1000'
 
 concurrency:
   group: steam-maintenance
@@ -32,8 +34,8 @@ jobs:
     env:
       NODE_ENV: production
       STEAM_CRON_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
-      STEAM_CRON_REFRESH_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_limit != '' && github.event.inputs.refresh_limit || '1000' }}
-      STEAM_CRON_NEW_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.new_limit != '' && github.event.inputs.new_limit || '1000' }}
+      STEAM_CRON_REFRESH_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_limit || '1000' }}
+      STEAM_CRON_NEW_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.new_limit || '1000' }}
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
@@ -46,8 +48,7 @@ jobs:
             echo "APP_ENV_FILE 시크릿이 필요합니다." >&2
             exit 1
           fi
-          printf '%s
-' "$APP_ENV_FILE" > .env
+          printf '%s\n' "${APP_ENV_FILE}" > .env
 
       - name: Node.js 설정
         uses: actions/setup-node@v4
