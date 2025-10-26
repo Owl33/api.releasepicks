@@ -1195,7 +1195,7 @@ export class SteamDataPipelineService {
 
   private async findReleaseWindowCandidates(limit: number): Promise<Game[]> {
     const now = new Date();
-    const startDate = this.formatDateString(this.addDays(now, -30));
+    const startDate = this.formatDateString(this.addDays(now, -60));
     const endDate = this.formatDateString(this.addDays(now, 60));
     const refreshThreshold = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
@@ -1214,12 +1214,17 @@ export class SteamDataPipelineService {
         new Brackets((qb) => {
           qb.where('game.coming_soon = true')
             .orWhere('game.release_status IN (:...statuses)', {
-              statuses: [ReleaseStatus.COMING_SOON, ReleaseStatus.EARLY_ACCESS],
+              statuses: [
+                ReleaseStatus.COMING_SOON,
+                ReleaseStatus.EARLY_ACCESS,
+                ReleaseStatus.TBA,
+              ],
             })
             .orWhere('game.release_date_date BETWEEN :startDate AND :endDate', {
               startDate,
               endDate,
-            });
+            })
+            .orWhere('game.release_date_date IS NULL');
         }),
       )
       .andWhere(

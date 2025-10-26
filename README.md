@@ -44,6 +44,11 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+## API 문서 (Swagger)
+
+서버를 실행한 뒤 `http://localhost:8080/docs` 에 접속하면 Swagger UI로 백엔드 REST API 명세를 확인할 수 있습니다.  
+JWT 인증이 필요한 엔드포인트는 상단의 `Authorize` 버튼을 눌러 토큰을 입력한 후 요청을 보내세요.
+
 ## Run tests
 
 ```bash
@@ -56,6 +61,12 @@ $ npm run test:e2e
 # test coverage
 $ npm run test:cov
 ```
+
+## Cron 운영 가이드
+
+- Vercel Cron 대신 GitHub Actions가 Steam 유지보수 파이프라인을 호출합니다.
+- 시크릿 설정, 수동 실행, 로그 확인 절차는 `docs/cron-github-actions.md`에 상세히 정리되어 있습니다.
+- 로컬에서 즉시 검증하려면 `.env`를 구성한 뒤 `npm run cron:steam-maintenance`를 실행하세요.
 
 ## Deployment
 
