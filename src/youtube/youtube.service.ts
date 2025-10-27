@@ -438,10 +438,22 @@ export class YouTubeService {
         if (signal?.aborted) throw e;
 
         const msg = e instanceof Error ? e.message : String(e);
-        const retryable =
-          /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|fetch failed|HTTP 429|HTTP 5\d\d|YT_TIMEOUT/i.test(
-            msg,
-          );
+        const retryable = (() => {
+          if (e instanceof Error) {
+            const nm = (e as any).name ?? '';
+            const m = e.message ?? '';
+            if (nm === 'AbortError') return true; // abort는 네트워크 이슈로 간주해서 재시도 허용
+            if (/YT_TIMEOUT/i.test(m)) return true;
+            if (
+              /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|fetch failed|HTTP 429|HTTP 5\d\d|This operation was aborted/i.test(
+                m,
+              )
+            )
+              return true;
+          }
+          return false;
+        })();
+
         if (!retryable || attempt > this.maxRetries) break;
 
         const backoff = 250 * attempt + Math.floor(Math.random() * 200);
@@ -462,11 +474,15 @@ export class YouTubeService {
   ): Promise<YouTubeSearchItem[]> {
     // Node 18+ 전제: 글로벌 fetch/AbortController 사용 가능
     const controller = new AbortController();
-    const combined = this.combineSignals(outerSignal, controller.signal);
-    const timeout = setTimeout(
-      () => controller.abort(new Error('YT_TIMEOUT')),
-      this.perRequestTimeoutMs,
+    let timeoutFired = false;
+    const { signal: combined, cleanup } = this.combineSignals(
+      outerSignal,
+      controller.signal,
     );
+    const timeout = setTimeout(() => {
+      timeoutFired = true;
+      controller.abort(); // 이유 문자열을 넣는 것보다 여기선 플래그로 구분
+    }, this.perRequestTimeoutMs);
 
     try {
       const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D`; // 동영상만
@@ -492,10 +508,26 @@ export class YouTubeService {
       }
 
       const html: string = await res.text();
+      if (/verify you are a human|consent|captcha/i.test(html)) {
+        throw new Error('YT_BLOCKED_OR_CONSENT_PAGE');
+      }
       const items = this.parseYouTubeResults(html);
       return items;
+    } catch (err: unknown) {
+      if (timeoutFired) {
+        throw new Error('YT_TIMEOUT');
+      }
+      // abort가 외부 signal (outerSignal) 때문에 발생했는지 확인
+      if (outerSignal?.aborted) {
+        // 외부 취소 신호의 경우 재시도 하지 않고 상위로 전파
+        throw new Error('OUTER_ABORT');
+      }
+      throw err;
     } finally {
       clearTimeout(timeout);
+      try {
+        cleanup();
+      } catch {}
     }
   }
 
@@ -751,14 +783,44 @@ export class YouTubeService {
   private combineSignals(
     a?: AbortSignal,
     b?: AbortSignal,
-  ): AbortSignal | undefined {
-    if (!a && !b) return undefined;
+  ): { signal?: AbortSignal; cleanup: () => void } {
+    if (!a && !b) return { signal: undefined, cleanup: () => {} };
+
     const controller = new AbortController();
-    const onAbort = () => controller.abort();
-    a?.addEventListener('abort', onAbort);
-    b?.addEventListener('abort', onAbort);
+
+    const onAbortA = () => controller.abort();
+    const onAbortB = () => controller.abort();
+
+    try {
+      if (a) a.addEventListener('abort', onAbortA);
+      if (b) b.addEventListener('abort', onAbortB);
+    } catch {
+      // 안전: 일부 환경에서는 addEventListener가 실패할 수 있음
+    }
+
+    // 안전망: 우리 controller가 abort되면 a/b에서 리스너 제거
+    const onControllerAbort = () => {
+      try {
+        if (a) a.removeEventListener('abort', onAbortA);
+        if (b) b.removeEventListener('abort', onAbortB);
+      } catch {}
+    };
+    controller.signal.addEventListener('abort', onControllerAbort);
+
+    // 즉시 이미 abort된 signal이 있으면 controller도 abort
     if (a?.aborted || b?.aborted) controller.abort();
-    return controller.signal;
+
+    const cleanup = () => {
+      try {
+        if (a) a.removeEventListener('abort', onAbortA);
+        if (b) b.removeEventListener('abort', onAbortB);
+      } catch {}
+      try {
+        controller.signal.removeEventListener('abort', onControllerAbort);
+      } catch {}
+    };
+
+    return { signal: controller.signal, cleanup };
   }
 
   private normalizeReleaseDate(value?: string | Date): Date | null {
@@ -893,12 +955,17 @@ export class YouTubeService {
     );
   }
 
-  private extractSeriesInfo(text: string): { base: string; suffix: string | null } {
+  private extractSeriesInfo(text: string): {
+    base: string;
+    suffix: string | null;
+  } {
     const normalized = this.normalizeForMatching(text);
     if (!normalized) {
       return { base: '', suffix: null };
     }
-    const match = normalized.match(/(.+?)\s+(?:part\s+)?((?:\d+)|(?:[ivxlcdm]+))$/i);
+    const match = normalized.match(
+      /(.+?)\s+(?:part\s+)?((?:\d+)|(?:[ivxlcdm]+))$/i,
+    );
     if (!match) {
       return { base: normalized, suffix: null };
     }
@@ -947,7 +1014,9 @@ export class YouTubeService {
   ): boolean {
     if (!slugInfo.suffix || !titleInfo.suffix) return false;
     if (!slugInfo.base || !titleInfo.base) return false;
-    return slugInfo.base === titleInfo.base && slugInfo.suffix !== titleInfo.suffix;
+    return (
+      slugInfo.base === titleInfo.base && slugInfo.suffix !== titleInfo.suffix
+    );
   }
 
   public isDurationAcceptable(seconds?: number | null): boolean {
