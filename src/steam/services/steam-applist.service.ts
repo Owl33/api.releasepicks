@@ -16,11 +16,14 @@ import { shouldExcludeSteamAppName } from '../utils/steam-app-filters.util';
 export class SteamAppListService {
   private readonly logger = new Logger(SteamAppListService.name);
   private readonly steamApiUrl = 'https://api.steampowered.com';
+  private readonly steamKey : string;
 
   constructor(
     private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.steamKey = config.get<string>('STEAM_API_KEY') || '';
+  }
 
   /**
    * Steam AppList 전체 수집
@@ -32,7 +35,7 @@ export class SteamAppListService {
     try {
       this.logger.log('🚀 Steam AppList 전체 수집 시작');
 
-      const url = `${this.steamApiUrl}/ISteamApps/GetAppList/v2/`;
+      const url = `${this.steamApiUrl}/IStoreService/GetAppList/v1/?key=${this.steamKey}`;
       const response = await firstValueFrom(
         this.httpService.get(url, {
           timeout: 30000, // 30초 타임아웃 (대용량 데이터)
