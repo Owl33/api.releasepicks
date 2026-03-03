@@ -31,41 +31,96 @@ export class SteamAppListService {
    *
    * @returns Steam 앱 목록 (appid, name)
    */
-  async fetchFullAppList(): Promise<SteamApp[]> {
-    try {
-      this.logger.log('🚀 Steam AppList 전체 수집 시작');
+async fetchFullAppList(): Promise<SteamApp[]> {
+  try {
+    this.logger.log("🚀 Steam AppList 전체 수집 시작 (IStoreService/GetAppList)");
 
-      const url = `${this.steamApiUrl}/IStoreService/GetAppList/v1/?key=${this.steamKey}&max_results=300000&last_appid=0`;
+    // Steam 문서: default 10k, max 50k
+    const MAX_RESULTS = 50_000; 
+
+    const all: SteamApp[] = [];
+    const seen = new Set<number>();
+
+    let cursor = 0;            // last_appid로 이어받는 커서
+    let page = 0;
+    const MAX_PAGES_GUARD = 50_000; // 혹시 모를 무한루프 방지
+
+    while (page < MAX_PAGES_GUARD) {
+      page += 1;
+
       const response = await firstValueFrom(
-        this.httpService.get(url, {
-          timeout: 30000, // 30초 타임아웃 (대용량 데이터)
+        this.httpService.get(`${this.steamApiUrl}/IStoreService/GetAppList/v1/`, {
+          timeout: 60_000,
+          params: {
+            key: this.steamKey,
+            max_results: MAX_RESULTS,
+            last_appid: cursor,
+            // 필요하면: include_games/include_dlc/include_software/include_videos/include_hardware
+          },
         }),
       );
 
-      const apps = response.data?.applist?.apps || [];
-      this.logger.log(`📥 Steam AppList 수집 완료: ${apps.length}개`);
+      // IStoreService 응답은 보통 data.response 아래로 옴
+      const data = response.data;
+      const resp = data?.response ?? data?.applist ?? data; // 혹시 형태가 다른 경우 방어
+      const appsRaw: any[] = resp?.apps ?? [];
+      const haveMore: boolean = Boolean(resp?.have_more_results);
+      const nextCursor: number = Number(resp?.last_appid ?? 0);
 
-      // 유효한 게임만 필터링
-      const validApps = apps.filter((app) => this.isValidGameApp(app));
-      this.logger.log(`✅ 유효한 게임 필터링: ${validApps.length}개`);
+      // 페이지가 비었으면 종료
+      if (!Array.isArray(appsRaw) || appsRaw.length === 0) {
+        this.logger.warn(`⚠️ page=${page} apps=0 => 종료 (cursor=${cursor})`);
+        break;
+      }
 
-      return validApps
-        .map((app) => {
-          const appid = Number(app.appid);
-          if (!Number.isFinite(appid) || appid <= 0) {
-            return null;
-          }
-          return {
-            appid,
-            name: app.name?.trim() || '',
-          } satisfies SteamApp | null;
-        })
-        .filter((app): app is SteamApp => app !== null);
-    } catch (error) {
-      this.logger.error(`❌ Steam AppList 수집 실패: ${error.message}`);
-      throw new Error(`Steam AppList API 호출 실패: ${error.message}`);
+      // ✅ "중복 페이지" 방지 핵심:
+      // 요청한 cursor와 응답 last_appid가 같으면 진행이 멈춘 것(중복/스턱) → 이 페이지는 합치지 않고 종료
+      if (nextCursor === cursor) {
+        this.logger.warn(
+          `⚠️ cursor 진행 없음(nextCursor==cursor==${cursor}) => 중복 페이지로 판단, 합치지 않고 종료`,
+        );
+        break;
+      }
+
+      // 이 페이지 데이터 합치기(중복 appid는 Set으로 스킵)
+      let added = 0;
+      for (const app of appsRaw) {
+        const appid = Number(app?.appid);
+        if (!Number.isFinite(appid) || appid <= 0) continue;
+
+        // 기존 로직 유지: 유효한 게임만
+        if (!this.isValidGameApp(app)) continue;
+
+        if (seen.has(appid)) continue;
+        seen.add(appid);
+
+        all.push({
+          appid,
+          name: (app?.name ?? "").trim(),
+        });
+
+        added += 1;
+      }
+
+      this.logger.log(
+        `📄 page=${page} raw=${appsRaw.length} added=${added} total=${all.length} cursor=${cursor} -> next=${nextCursor} haveMore=${haveMore}`,
+      );
+
+      // 다음 페이지로 이동
+      cursor = nextCursor;
+
+      // 문서 플래그 기준으로 정상 종료
+      if (!haveMore) break;
     }
+
+    this.logger.log(`📥 Steam AppList 수집 완료: ${all.length}개 (valid & dedup)`);
+
+    return all;
+  } catch (error) {
+    this.logger.error(`❌ Steam AppList 수집 실패: ${error}`);
+    throw new Error(`Steam AppList API 호출 실패: ${error}`);
   }
+}
 
   /**
    * 유효한 게임 앱 여부 검증
